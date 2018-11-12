@@ -1,9 +1,13 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Message where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
+import Data.Aeson ( ToJSON, FromJSON ) -- aeson
 import Data.List ( mapAccumL ) -- base
 import qualified Data.Map as M -- containers
 import Data.Text ( Text ) -- text
 import Data.Void ( Void ) -- base
+import GHC.Generics ( Generic ) -- ghc
 import Text.Megaparsec ( Parsec, many, some, takeWhile1P, (<|>), (<?>) ) -- megaparsec
 import Text.Megaparsec.Char ( char ) -- megaparsec
 import Text.Megaparsec.Char.Lexer ( decimal ) -- megaparsec
@@ -17,7 +21,10 @@ data Message
     | Reference Pointer
     | Location Address
     | Structured [Message]
-  deriving ( Eq, Ord, Show ) -- TODO: Implement custom Show.
+  deriving ( Eq, Ord, Show, Generic ) -- TODO: Implement custom Show.
+
+instance FromJSON Message
+instance ToJSON Message
 
 {-
 Pointer ::= "$" [1-9]*[0-9]

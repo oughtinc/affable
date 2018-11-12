@@ -1,9 +1,13 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Command where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
+import Data.Aeson ( ToJSON, FromJSON ) -- aeson
 import qualified Data.Map as M -- containers
 import Data.Text ( Text ) -- text
 import Data.Void ( Void ) -- base
+import GHC.Generics ( Generic ) -- ghc
 import Text.Megaparsec ( Parsec, (<|>), (<?>) ) -- megaparsec
 import Text.Megaparsec.Char ( string', space1 ) -- megaparsec
 
@@ -14,7 +18,10 @@ data Command
     | Reply Message
     | View Pointer
     | Send Address Message
-  deriving ( Eq, Ord, Show ) -- TODO: Implement custom Show.
+  deriving ( Eq, Ord, Show, Generic ) -- TODO: Implement custom Show.
+
+instance FromJSON Command
+instance ToJSON Command
 
 {-
 -- Case-insensitive strings.

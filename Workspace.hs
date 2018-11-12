@@ -1,4 +1,9 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Workspace where
+import Data.Aeson ( ToJSON, FromJSON ) -- aeson
+import GHC.Generics ( Generic ) -- ghc
+
 import Message
 import Time
 
@@ -13,8 +18,10 @@ data Workspace = Workspace {
     time :: Time
     -- ... TODO
 
-  } deriving ( Show )
+  } deriving ( Eq, Show, Generic )
+
+instance FromJSON Workspace
+instance ToJSON Workspace
 
 -- emptyWorkspace :: Message -> Workspace
 -- emptyWorkspace q = Workspace { question = q, subQuestions = [], expandedPointers = M.empty }
-
