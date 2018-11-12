@@ -1,3 +1,5 @@
+**Pre-alpha. Doesn't do anything meaningful yet.**
+
 Topics to explore:
     - Framework that allows automation based on actions or whatever is appropriate.
     - Framework that allows continuous distillation
@@ -17,7 +19,7 @@ Topics to explore:
 
 Current design notes:
 
-Core is a concurrent system.
+Core is conceptually a concurrent system.
     
 Automation is a wrapper around concurrent processes.
     

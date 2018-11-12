@@ -9,11 +9,9 @@
 -- {-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
-import Database.SQLite.Simple ( 
-    Connection, Query, open, close, query, execute, execute_, executeMany, executeNamed, lastInsertRowId ) -- sqlite-simple
+import Database.SQLite.Simple ( Connection, Query, open, close, query, execute, execute_, executeMany, executeNamed, lastInsertRowId ) -- sqlite-simple
 import Network.Wai.Handler.Warp ( run ) -- warp
-import Servant ( 
-    (:<|>)(..), (:>), Server, Get, Post, Proxy(..), Capture, QueryParam, ReqBody, JSON, Raw, serveDirectoryWebApp ) -- servant-server
+import Servant ( (:<|>)(..), (:>), Server, Get, Post, Proxy(..), Capture, QueryParam, ReqBody, JSON, Raw, serveDirectoryWebApp ) -- servant-server
 import Servant.JS ( writeJSForAPI, axios, defAxiosOptions ) -- servant-js
 import Servant.Server ( serve, Application ) -- servant-server
 import System.Environment ( getArgs ) -- base
@@ -57,9 +55,9 @@ server = do
     case args of
         ["gen"] -> writeJSForAPI (Proxy :: Proxy CommandAPI) (axios defAxiosOptions) "static/command-api.js"
         _ -> do
-            conn <- open ":memory:" -- TODO: For now.
+            conn <- open ":memory:" -- TODO: For now. I do want this to be persistent in the long run.
             run 8081 (overallApp conn)
-            close conn -- TODO: Doensn't get here. Use approach in https://stackoverflow.com/a/45846292
+            close conn -- TODO: Doesn't get here. Use approach in https://stackoverflow.com/a/45846292
 
 -- example = parseTest messageParser "foo [bar baz [quux]] $2 @4"
 example = parseTest commandParser "send @81 foo [bar baz [quux]] $2 @4"

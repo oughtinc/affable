@@ -8,6 +8,10 @@ import Database.SQLite.Simple.FromRow ( FromRow(..), field ) -- sqlite-simple
 
 -- TODO: Logical times maybe should be part of primary key. They also are structured objects so maybe a foreign key to something... (?)
 
+-- NOTE: This is clearly tied to SQLite, though it may well be nice to use a server-based system
+-- in the future, e.g. Postgres. The changes to support or generalize this should be pretty trivial
+-- so I'm not too concerned about it right now.
+
 type LogicalTime = Int64
 
 {-
