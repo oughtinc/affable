@@ -39,7 +39,8 @@ I think I can arrange things so that there is an abstract logical time concept
 and varying it will lead to different semantics. For example, a constant time
 should lead to every process having identity, while a vector clock would lead
 to causally independent messages to the "same" process producing independent
-processes.
+processes. Another possibility is that logical time is the full history
+of received messages.
 
 I'm going to see how it goes having the scratchpad be handled with
 self-messages. Adding explicit support for the scratchpad should be
