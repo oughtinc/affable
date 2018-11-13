@@ -14,6 +14,7 @@ import qualified Data.Map as M -- containers
 import Data.String ( fromString ) -- base
 import Data.Text ( Text ) -- text
 import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
+import qualified Data.Text.Lazy.Builder.Int as T ( decimal ) -- text
 import Data.Void ( Void ) -- base
 import GHC.Generics ( Generic ) -- ghc
 import Text.Megaparsec ( Parsec, many, some, takeWhile1P, (<|>), (<?>) ) -- megaparsec
@@ -49,13 +50,13 @@ pointerParser :: Parsec Void Text Pointer
 pointerParser =  (char '$' *> decimal) <?> "pointer"
 
 pointerToBuilder :: Pointer -> Builder
-pointerToBuilder p = singleton '$' <> fromString (show p)
+pointerToBuilder p = singleton '$' <> T.decimal p
 
 addressParser :: Parsec Void Text Address
 addressParser =  (char '@' *> decimal) <?> "address"
 
 addressToBuilder :: Address -> Builder
-addressToBuilder a = singleton '@' <> fromString (show a)
+addressToBuilder a = singleton '@' <> T.decimal a
 
 messageParser :: Parsec Void Text Message
 messageParser = Structured <$> some mParser <?> "message"
