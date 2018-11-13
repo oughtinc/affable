@@ -69,6 +69,8 @@ common deps
     Time,
     Command,
     DataModel,
+    CommandLine,
+    Util,
     SqliteSchedulerContext
 
   -- LANGUAGE extensions used by modules in this package.
@@ -85,7 +87,6 @@ executable affable
   import: deps
   -- .hs or .lhs file containing the Main module.
   main-is:             Main.hs
-
 
   -- Base language which the package is written in.
   default-language:    Haskell2010
