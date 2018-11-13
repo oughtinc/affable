@@ -1,11 +1,15 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Message where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
+import Data.Foldable ( foldMap ) -- base
 import Data.List ( mapAccumL ) -- base
 import qualified Data.Map as M -- containers
+import Data.String ( fromString ) -- base
 import Data.Text ( Text ) -- text
+import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
 import Data.Void ( Void ) -- base
 import GHC.Generics ( Generic ) -- ghc
 import Text.Megaparsec ( Parsec, many, some, takeWhile1P, (<|>), (<?>) ) -- megaparsec
@@ -48,7 +52,13 @@ messageParser = Structured <$> some mParser <?> "message"
     where mParser = (Reference <$> pointerParser)
                 <|> (Location <$> addressParser)
                 <|> (Structured <$> (char '[' *> many mParser <* char ']') <?> "submessage")
-                <|> (Text <$> takeWhile1P Nothing (\c -> c `notElem` "[]$@") <?> "text")
+                <|> (Text <$> takeWhile1P Nothing (\c -> c `notElem` ("[]$@" :: String)) <?> "text")
+
+messageToBuilder :: Message -> Builder
+messageToBuilder (Text t) = fromText t
+messageToBuilder (Reference p) = singleton '$' <> fromString (show p)
+messageToBuilder (Location a) = singleton '@' <> fromString (show a)
+messageToBuilder (Structured ms) = singleton '[' <> foldMap messageToBuilder ms <> singleton ']'
 
 -- TODO: Change this.
 type PointerEnvironment = M.Map Pointer Message
