@@ -54,7 +54,7 @@ server = do
     args <- getArgs
     case args of
         ["gen"] -> writeJSForAPI (Proxy :: Proxy CommandAPI) (axios defAxiosOptions) "static/command-api.js"
-        _ -> do
+        _ -> do -- Make this a server option with the no argument version being a single-user, commandline view.
             conn <- open ":memory:" -- TODO: For now. I do want this to be persistent in the long run.
             run 8081 (overallApp conn)
             close conn -- TODO: Doesn't get here. Use approach in https://stackoverflow.com/a/45846292

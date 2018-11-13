@@ -11,10 +11,11 @@ import Workspace
 -- Want to send messages to existing workspaces.
 
 data Event
-    = Join
-    | Create Message
+    = Create Message
     | Answer Workspace Message
+    | Expand Pointer -- TODO: Do I want this here?
     | Send Workspace Message
+    -- | Join -- This is to support more server-y stuff, i.e. a new person joining the computation.
   deriving ( Show )
 
 type UserId = () -- TODO
