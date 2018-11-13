@@ -12,6 +12,8 @@ import Database.SQLite.Simple.FromRow ( FromRow(..), field ) -- sqlite-simple
 -- in the future, e.g. Postgres. The changes to support or generalize this should be pretty trivial
 -- so I'm not too concerned about it right now.
 
+type WorkspaceId = Int64
+
 type LogicalTime = Int64
 
 {-
@@ -24,10 +26,10 @@ CREATE TABLE IF NOT EXISTS Workspaces (
 );
 -}
 
-data WorkspaceRow = WorkspaceRow { 
-    workspaceRow_id :: Int64,
+data WorkspaceRow = WorkspaceRow {
+    workspaceRow_id :: WorkspaceId,
     logicalTime :: LogicalTime,
-    parentWorkspaceId :: Maybe Int64,
+    parentWorkspaceId :: Maybe WorkspaceId,
     question :: Text }
   deriving ( Show )
 
@@ -52,10 +54,10 @@ CREATE TABLE IF NOT EXISTS Messages (
 data MessageRow = MessageRow {
     messageRow_id :: Int64,
     logicalTimeSent :: LogicalTime,
-    sourceWorkspaceId :: Int64,
-    targetWorkspaceId :: Int64,
+    sourceWorkspaceId :: WorkspaceId,
+    targetWorkspaceId :: WorkspaceId,
     messageRow_content :: Text }
-  deriving ( Show )    
+  deriving ( Show )
 
 instance FromRow MessageRow where
     fromRow = MessageRow <$> field <*> field <*> field <*> field <*> field
@@ -91,7 +93,7 @@ CREATE TABLE IF NOT EXISTS Answers (
 -}
 
 data AnswerRow = AnswerRow {
-    answerRow_workspaceId :: Int64,
+    answerRow_workspaceId :: WorkspaceId,
     logicalTimeAnswered :: LogicalTime,
     answer :: Text }
   deriving ( Show )
@@ -114,7 +116,7 @@ CREATE TABLE IF NOT EXISTS ExpandedPointers (
 -}
 
 data ExpandedPointerRow = ExpandedPointerRow {
-    expandedPointerRow_workspaceId :: Int64,
+    expandedPointerRow_workspaceId :: WorkspaceId,
     pointerId :: Int64,
     logicalTimeExpanded :: LogicalTime }
   deriving ( Show )
@@ -136,7 +138,7 @@ CREATE TABLE IF NOT EXISTS Commands (
 -}
 
 data CommandRow = CommandRow {
-    commandRow_workspaceId :: Int64, 
+    commandRow_workspaceId :: WorkspaceId,
     localTime :: Int64,
     command :: Text }
   deriving ( Show )

@@ -1,7 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Message where
+module Message (
+    Message(..), Pointer, Address,
+    pointerParser, addressParser, messageParser, pointerToBuilder, addressToBuilder, messageToBuilder,
+    PointerEnvironment, PointerRemapping, expandPointers, normalizeMessage, renumberMessage )
+  where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
 import Data.Foldable ( foldMap ) -- base
@@ -20,7 +24,7 @@ type Pointer = Int
 type Address = Int
 
 -- TODO: Perhaps add support for logic variables (?X perhaps) so this code can be shared.
-data Message 
+data Message
     = Text Text
     | Reference Pointer
     | Location Address
@@ -44,8 +48,14 @@ Msg ::= Pointer
 pointerParser :: Parsec Void Text Pointer
 pointerParser =  (char '$' *> decimal) <?> "pointer"
 
+pointerToBuilder :: Pointer -> Builder
+pointerToBuilder p = singleton '$' <> fromString (show p)
+
 addressParser :: Parsec Void Text Address
 addressParser =  (char '@' *> decimal) <?> "address"
+
+addressToBuilder :: Address -> Builder
+addressToBuilder a = singleton '@' <> fromString (show a)
 
 messageParser :: Parsec Void Text Message
 messageParser = Structured <$> some mParser <?> "message"
@@ -56,8 +66,8 @@ messageParser = Structured <$> some mParser <?> "message"
 
 messageToBuilder :: Message -> Builder
 messageToBuilder (Text t) = fromText t
-messageToBuilder (Reference p) = singleton '$' <> fromString (show p)
-messageToBuilder (Location a) = singleton '@' <> fromString (show a)
+messageToBuilder (Reference p) = pointerToBuilder p
+messageToBuilder (Location a) = addressToBuilder a
 messageToBuilder (Structured ms) = singleton '[' <> foldMap messageToBuilder ms <> singleton ']'
 
 -- TODO: Change this.
@@ -66,6 +76,7 @@ type PointerEnvironment = M.Map Pointer Message
 -- TODO: Use strict map.
 type PointerRemapping = M.Map Pointer Pointer
 
+-- Expand the pointers in the pointer environment that occur in the message.
 expandPointers :: PointerEnvironment -> Message -> Message
 expandPointers env       (Reference p) = case M.lookup p env of
                                             Nothing -> Reference p
@@ -77,7 +88,7 @@ expandPointers env                   t = t
 -- from those pointers to the Structured sub-Messages.
 normalizeMessage :: Int -> Message -> (PointerEnvironment, Message)
 normalizeMessage start = go True M.empty
-    where go isTopLevel env m@(Structured ms) 
+    where go isTopLevel env m@(Structured ms)
             = let p = M.size env + start
                   result = if isTopLevel then Structured ms' else Reference p
                   env' = M.insert p (Structured ms') env
@@ -85,16 +96,16 @@ normalizeMessage start = go True M.empty
               in (env'', result)
           go _ env m = (env, m)
 
--- Assumes that the mapping is a bijection, i.e. every key maps to a distinct value.
-invertMap :: (Ord k, Ord v) => M.Map k v -> M.Map v k
-invertMap = M.fromList . map (\(x,y) -> (y,x)) . M.assocs 
-
+-- Renumber the pointers so that they are labelled from `start`. Producing a mapping from
+-- the new (local) pointers to the old (global) pointers.
 renumberMessage :: Int -> Message -> (PointerRemapping, Message)
 renumberMessage start m = let (env, m') = go M.empty m in (invertMap env, m')
     where go env (Reference p) = case M.lookup p env of
                                     Just n -> (env, Reference n)
-                                    Nothing -> let !n = M.size env + start 
+                                    Nothing -> let !n = M.size env + start
                                                in (M.insert p n env, Reference n)
           go env (Structured ms) = let (env', ms') = mapAccumL go env ms
                                    in (env', Structured ms')
           go env m = (env, m)
+
+          invertMap = M.fromList . map (\(x,y) -> (y,x)) . M.assocs
