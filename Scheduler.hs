@@ -1,12 +1,8 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, WorkspaceId, Event, makeSingleUserScheduler ) where
-import Data.Int ( Int64 ) -- base
-import Data.IORef ( newIORef, readIORef, writeIORef ) -- base
-
-import DataModel ( WorkspaceId )
+module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), makeSingleUserScheduler ) where
 import Message
-import Workspace
+import Workspace ( Workspace, WorkspaceId )
 
 -- Want to spawn new workspaces.
 -- Want to update a current workspace consuming some logical time.
@@ -14,8 +10,8 @@ import Workspace
 
 data Event
     = Create Message
-    | Answer WorkspaceId Message
-    | Expand WorkspaceId Pointer -- TODO: Do I want this here?
+    | Answer Message
+    | Expand Pointer -- TODO: Do I want this here?
     | Send WorkspaceId Message
     -- | Join -- This is to support more server-y stuff, i.e. a new person joining the computation.
   deriving ( Show )
@@ -27,9 +23,9 @@ type SchedulerFn = UserId -> WorkspaceId -> Event -> IO (Maybe Workspace)
 -- TODO: This will need to be extended.
 
 data SchedulerContext extra = SchedulerContext {
-    createWorkspace :: Maybe WorkspaceId -> Message -> IO (),
+    createWorkspace :: WorkspaceId -> Message -> IO (),
     sendAnswer :: WorkspaceId -> Message -> IO (),
-    sendMessage :: WorkspaceId -> Message -> IO (),
+    sendMessage :: WorkspaceId -> WorkspaceId -> Message -> IO (),
     expandPointer :: WorkspaceId -> Pointer -> IO (),
     getWorkspace :: WorkspaceId -> IO Workspace,
     getNextWorkspace :: IO (Maybe WorkspaceId),
@@ -39,28 +35,23 @@ data SchedulerContext extra = SchedulerContext {
 -- NOTE: This is just a basic start.
 makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeSingleUserScheduler ctxt = do
-    currentIdRef <- newIORef Nothing
-
     let scheduler user workspaceId (Create msg) = do
-            currentId <- readIORef currentIdRef
-            createWorkspace ctxt currentId msg
+            createWorkspace ctxt workspaceId msg
             Just <$> getWorkspace ctxt workspaceId
 
-        scheduler user workspaceId (Answer ws msg) = do
-            sendAnswer ctxt ws msg
-            mNewCurrentId <- getNextWorkspace ctxt
-            case mNewCurrentId of
-                Just newCurrentId -> do
-                    writeIORef currentIdRef (Just newCurrentId)
-                    Just <$> getWorkspace ctxt newCurrentId
+        scheduler user workspaceId (Answer msg) = do
+            sendAnswer ctxt workspaceId msg
+            mNewWorkspaceId <- getNextWorkspace ctxt
+            case mNewWorkspaceId of
+                Just newWorkspaceId -> Just <$> getWorkspace ctxt newWorkspaceId
                 Nothing -> return Nothing
 
         scheduler user workspaceId (Send ws msg) = do
-            sendMessage ctxt ws msg
+            sendMessage ctxt workspaceId ws msg
             Just <$> getWorkspace ctxt workspaceId
 
-        scheduler user workspaceId (Expand ws ptr) = do
-            expandPointer ctxt ws ptr
+        scheduler user workspaceId (Expand ptr) = do
+            expandPointer ctxt workspaceId ptr
             Just <$> getWorkspace ctxt workspaceId
 
     return scheduler
