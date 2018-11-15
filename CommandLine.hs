@@ -38,7 +38,7 @@ renderWorkspace w = do
         case ma of
             Nothing -> return ()
             Just a -> do
-                putStr " -> "
+                putStr "    Answer: "
                 putMessageLn (expand a)
     T.putStrLn "Messages:"
     forM_ (zip [1..] $ messageHistory w) $ \(i, m) -> do

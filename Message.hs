@@ -59,20 +59,24 @@ addressToBuilder :: Address -> Builder
 addressToBuilder a = singleton '@' <> T.decimal a
 
 messageParser :: Parsec Void Text Message
-messageParser = Structured <$> some mParser <?> "message"
-    where mParser = (Reference <$> pointerParser)
-                <|> (Location <$> addressParser)
-                <|> (Structured <$> (char '[' *> many mParser <* char ']') <?> "submessage")
-                <|> (Text <$> takeWhile1P Nothing (\c -> c `notElem` ("[]$@" :: String)) <?> "text")
+messageParser = do
+    body <- some mParser <?> "message"
+    return $ case body of [x] -> x; _ -> Structured body
+  where mParser = (Reference <$> pointerParser)
+              <|> (Location <$> addressParser)
+              <|> (Structured <$> (char '[' *> many mParser <* char ']') <?> "submessage")
+              <|> (Text <$> takeWhile1P Nothing (\c -> c `notElem` ("[]$@" :: String)) <?> "text")
 
 parseMessageUnsafe :: Text -> Message
 parseMessageUnsafe t = case parse messageParser "" t of Right msg -> msg
 
 messageToBuilder :: Message -> Builder
-messageToBuilder (Text t) = fromText t
-messageToBuilder (Reference p) = pointerToBuilder p
-messageToBuilder (Location a) = addressToBuilder a
-messageToBuilder (Structured ms) = singleton '[' <> foldMap messageToBuilder ms <> singleton ']'
+messageToBuilder = go True
+    where go  True (Structured ms) = foldMap messageToBuilder ms
+          go False (Structured ms) = singleton '[' <> foldMap (go False) ms <> singleton ']'
+          go     _ (Text t) = fromText t
+          go     _ (Reference p) = pointerToBuilder p
+          go     _ (Location a) = addressToBuilder a
 
 -- TODO: Change this.
 type PointerEnvironment = M.Map Pointer Message
