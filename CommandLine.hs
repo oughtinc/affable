@@ -32,9 +32,9 @@ readCommand = do
 renderWorkspace :: Workspace -> IO ()
 renderWorkspace w = do
     T.putStr "Question: "
-    let expand = expandPointers (expandedPointers w)
+    let expand = expandPointers (expandedPointers w) -- TODO: Do renumbering.
     putMessageLn $ expand (question w)
-    T.putStrLn "Subquestions:"
+    if null (subQuestions w) then return () else T.putStrLn "Subquestions:"
     forM_ (zip [1..] $ subQuestions w) $ \(i, (q, ma)) -> do
         putStr ("  " ++ show i ++ ". ")
         putMessageLn (expand q)
@@ -43,7 +43,7 @@ renderWorkspace w = do
             Just a -> do
                 putStr "    Answer: "
                 putMessageLn (expand a)
-    T.putStrLn "Messages:"
+    if null (messageHistory w) then return () else T.putStrLn "Messages:"
     forM_ (zip [1..] $ messageHistory w) $ \(i, m) -> do
         putStr ("  " ++ show i ++ ". ")
         putMessageLn (expand m)
