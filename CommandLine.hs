@@ -7,7 +7,8 @@ import Data.Void ( Void ) -- base
 import qualified Data.Text.IO as T -- text
 import System.Console.ANSI ( clearScreen ) -- ansi-terminal
 import System.IO ( hFlush, stdout ) -- base
-import Text.Megaparsec ( ParseErrorBundle, parse, errorBundlePretty ) -- megaparsec
+-- import Text.Megaparsec ( ParseErrorBundle, parse, errorBundlePretty ) -- megaparsec 7.0
+import Text.Megaparsec ( ParseError, parse, parseErrorPretty ) -- megaparsec 6.5
 
 import Command ( Command(..), commandParser )
 import Message ( Message(..), messageToBuilder, expandPointers )
@@ -22,7 +23,8 @@ putMessage = T.putStr . toText . messageToBuilder
 putMessageLn :: Message -> IO ()
 putMessageLn = T.putStrLn . toText . messageToBuilder
 
-readCommand :: IO (Either (Text, ParseErrorBundle Text Void) Command)
+-- readCommand :: IO (Either (Text, ParseErrorBundle Text Void) Command) -- megaparsec 7.0
+readCommand :: IO (Either (Text, ParseError Char Void) Command) -- megaparsec 6.5
 readCommand = do
     l <- T.getLine
     return $ first ((,) l) (parse commandParser "" l)
@@ -62,7 +64,8 @@ commandLineInteraction scheduler = do
                   if line == "exit" then -- Probably make this case-insensitive and not sensitive to extra whitespace.
                       return ()
                     else do
-                      putStr (errorBundlePretty bundle)
+                      -- putStr (errorBundlePretty bundle) -- megaparsec 7.0
+                      putStr (parseErrorPretty bundle) -- megaparsec 6.5
                       go ws
               Right cmd -> do
                   mWorkspace <- scheduler userId ws (commandToEvent cmd)

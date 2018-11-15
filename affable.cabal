@@ -53,8 +53,8 @@ common deps
     containers          >= 0.5.11 && < 0.6,
     text                >= 1.2.3 && < 1.3,
     transformers        >= 0.5.5 && < 0.6,
-    megaparsec          >= 7.0.3 && < 7.1,
-    aeson               >= 1.4.1 && < 1.5,
+    megaparsec          >= 6.5.0 && < 7.0,
+    aeson               >= 1.3.1 && < 1.5,
     servant-server      >= 0.14.1 && < 0.15,
     servant-js          >= 0.9.3 && < 0.10,
     warp                >= 3.2.25 && < 3.3,
@@ -92,6 +92,7 @@ executable affable
   -- Base language which the package is written in.
   default-language:    Haskell2010
 
+-- TODO: Add a library stanza so the test-suite can just import the library.
 test-suite properties
     import: deps
     type: exitcode-stdio-1.0
