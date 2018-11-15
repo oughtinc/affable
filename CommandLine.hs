@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 module CommandLine where
 import Data.Bifunctor ( first ) -- base
+import Data.Foldable ( forM_ ) -- base
 import Data.Text ( Text ) -- text
 import Data.Void ( Void ) -- base
 import qualified Data.Text.IO as T -- text
@@ -8,7 +9,7 @@ import System.IO ( hFlush, stdout ) -- base
 import Text.Megaparsec ( ParseErrorBundle, parse, errorBundlePretty ) -- megaparsec
 
 import Command ( Command(..), commandParser )
-import Message ( Message(..), messageToBuilder )
+import Message ( Message(..), messageToBuilder, expandPointers )
 import Scheduler ( UserId, Event, SchedulerFn )
 import qualified Scheduler as Event ( Event (..) )
 import Util ( toText )
@@ -28,12 +29,24 @@ readCommand = do
 renderWorkspace :: Workspace -> IO ()
 renderWorkspace w = do
     T.putStr "Question: "
-    putMessageLn $ question w
-    -- TODO: Continue.
+    let expand = expandPointers (expandedPointers w)
+    putMessageLn $ expand (question w)
+    T.putStrLn "Subquestions:"
+    forM_ (zip [1..] $ subQuestions w) $ \(i, (q, ma)) -> do
+        putStr ("  " ++ show i ++ ". ")
+        putMessageLn (expand q)
+        case ma of
+            Nothing -> return ()
+            Just a -> do
+                putStr " -> "
+                putMessageLn (expand a)
+    T.putStrLn "Messages:"
+    forM_ (zip [1..] $ messageHistory w) $ \(i, m) -> do
+        putStr ("  " ++ show i ++ ". ")
+        putMessageLn (expand m)
 
 commandLineInteraction :: SchedulerFn -> IO ()
 commandLineInteraction scheduler = do
-    -- TODO: Insert some initial greeting.
     T.putStrLn "What is your question?"
     go 0
   where userId = 0 :: UserId
