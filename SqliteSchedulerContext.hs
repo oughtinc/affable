@@ -1,14 +1,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 module SqliteSchedulerContext ( makeSqliteSchedulerContext ) where
+import qualified Data.Map as M -- containers
 import Data.Text ( Text ) -- text
 import Database.SQLite.Simple ( Connection, Query, Only(..), NamedParam(..), query, execute, execute_, executeNamed, lastInsertRowId ) -- sqlite-simple
 
 import Command ( Command(..), commandToBuilder )
-import DataModel ( WorkspaceRow(..), LogicalTime )
+import DataModel ( LogicalTime )
 import Message
-import Scheduler
+import Scheduler ( SchedulerContext(..) )
+import Time ( Time(..) )
 import Util ( toText )
-import Workspace ( Workspace, WorkspaceId )
+import Workspace ( Workspace(..), WorkspaceId )
 
 makeSqliteSchedulerContext :: Connection -> IO (SchedulerContext Connection)
 makeSqliteSchedulerContext conn = return $
@@ -22,32 +24,74 @@ makeSqliteSchedulerContext conn = return $
         extraContent = conn
     }
 
-createWorkspaceSqlite :: Connection -> WorkspaceId -> Message -> IO ()
+createWorkspaceSqlite :: Connection -> WorkspaceId -> Message -> IO WorkspaceId
 createWorkspaceSqlite conn wId msg = do
     executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, question) VALUES (:time, :parent, :question)" [
-                        ":time" := (0 :: LogicalTime), 
-                        ":parent" := Just wId, 
+                        ":time" := (0 :: LogicalTime), -- TODO
+                        ":parent" := Just wId,
                         ":question" := toText (messageToBuilder msg)]
+    newWorkspaceId <- lastInsertRowId conn
     executeNamed conn "INSERT INTO Commands (workspaceId, localTime, command) VALUES (:workspace, :time, :cmd)" [
                         ":workspace" := wId,
-                        ":time" := (0 :: LogicalTime),
+                        ":time" := (0 :: LogicalTime), -- TODO
                         ":cmd" := toText (commandToBuilder $ Ask msg)]
+    return newWorkspaceId
 
 sendAnswerSqlite :: Connection -> WorkspaceId -> Message -> IO ()
 sendAnswerSqlite conn workspaceId msg = do
-    return () -- TODO
+    executeNamed conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (:workspace, :time, :answer)" [
+                        ":workspace" := workspaceId,
+                        ":time" := (0 :: LogicalTime), -- TODO
+                        ":answer" := toText (messageToBuilder msg)]
+    executeNamed conn "INSERT INTO Commands (workspaceId, localTime, command) VALUES (:workspace, :time, :cmd)" [
+                        ":workspace" := workspaceId,
+                        ":time" := (0 :: LogicalTime), -- TODO
+                        ":cmd" := toText (commandToBuilder $ Reply msg)]
 
 sendMessageSqlite :: Connection -> WorkspaceId -> WorkspaceId -> Message -> IO ()
 sendMessageSqlite conn srcId tgtId msg = do
-    return () -- TODO
+    executeNamed conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeAnswered, content) VALUES (:source, :target, :time, :content)" [
+                        ":source" := srcId,
+                        ":target" := tgtId,
+                        ":time" := (0 :: LogicalTime), -- TODO
+                        ":content" := toText (messageToBuilder msg)]
+    executeNamed conn "INSERT INTO Commands (workspaceId, localTime, command) VALUES (:workspace, :time, :cmd)" [
+                        ":workspace" := srcId,
+                        ":time" := (0 :: LogicalTime), -- TODO
+                        ":cmd" := toText (commandToBuilder $ Send (fromIntegral tgtId) msg)]
 
 expandPointerSqlite :: Connection -> WorkspaceId -> Pointer -> IO ()
 expandPointerSqlite conn workspaceId ptr = do
-    return () -- TODO
+    executeNamed conn "INSERT INTO ExpandedPointers (workspaceId, pointerId, logicalTimeExpanded) VALUES (:workspace, :pointer, :time)" [
+                        ":workspace" := workspaceId,
+                        ":pointer" := ptr,
+                        ":time" := (0 :: LogicalTime)] -- TODO
+    executeNamed conn "INSERT INTO Commands (workspaceId, localTime, command) VALUES (:workspace, :time, :cmd)" [
+                        ":workspace" := workspaceId,
+                        ":time" := (0 :: LogicalTime), -- TODO
+                        ":cmd" := toText (commandToBuilder $ View ptr)]
 
 getWorkspaceSqlite :: Connection -> WorkspaceId -> IO Workspace
 getWorkspaceSqlite conn workspaceId = do
-    return undefined -- TODO
+    -- TODO: Maybe use a transaction.
+    -- TODO: Probably order by logicalTime (which should become part of the primary key...) taking the latest, or something.
+    [(t, q)] <- query conn "SELECT logicalTime, question FROM Workspaces WHERE id = ? LIMIT 1" (Only workspaceId)
+    messages <- query conn "SELECT content FROM Messages WHERE targetWorkspaceId = ?" (Only workspaceId)
+    subquestions <- query conn "SELECT w.question, a.answer \
+                               \FROM Workspaces w \
+                               \LEFT OUTER JOIN Answers a ON w.id = a.workspaceId \
+                               \WHERE w.parentWorkspaceId = ?"  (Only workspaceId)
+    expanded <- query conn "SELECT pointerId, content \
+                           \FROM ExpandedPointers e \
+                           \INNER JOIN Pointers p ON e.pointerId = p.id \
+                           \WHERE e.workspaceId = ?" (Only workspaceId)
+    return $ Workspace {
+        identity = workspaceId,
+        question = parseMessageUnsafe q,
+        subQuestions = map (\(q, ma) -> (parseMessageUnsafe q, fmap parseMessageUnsafe ma)) subquestions,
+        messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
+        expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe m)) expanded,
+        time = Time t }
 
 getNextWorkspaceSqlite :: Connection -> IO (Maybe WorkspaceId)
 getNextWorkspaceSqlite conn = do

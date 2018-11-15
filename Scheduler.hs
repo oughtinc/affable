@@ -23,7 +23,7 @@ type SchedulerFn = UserId -> WorkspaceId -> Event -> IO (Maybe Workspace)
 -- TODO: This will need to be extended.
 
 data SchedulerContext extra = SchedulerContext {
-    createWorkspace :: WorkspaceId -> Message -> IO (),
+    createWorkspace :: WorkspaceId -> Message -> IO WorkspaceId,
     sendAnswer :: WorkspaceId -> Message -> IO (),
     sendMessage :: WorkspaceId -> WorkspaceId -> Message -> IO (),
     expandPointer :: WorkspaceId -> Pointer -> IO (),
@@ -33,11 +33,12 @@ data SchedulerContext extra = SchedulerContext {
   }
 
 -- NOTE: This is just a basic start.
+-- TODO: Need to normalize messages and save pointers.
 makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeSingleUserScheduler ctxt = do
     let scheduler user workspaceId (Create msg) = do
-            createWorkspace ctxt workspaceId msg
-            Just <$> getWorkspace ctxt workspaceId
+            newWorkspaceId <- createWorkspace ctxt workspaceId msg
+            Just <$> getWorkspace ctxt newWorkspaceId
 
         scheduler user workspaceId (Answer msg) = do
             sendAnswer ctxt workspaceId msg
