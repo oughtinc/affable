@@ -58,7 +58,8 @@ common deps
     servant-server      >= 0.14.1 && < 0.15,
     servant-js          >= 0.9.3 && < 0.10,
     warp                >= 3.2.25 && < 3.3,
-    sqlite-simple       >= 0.4.16 && < 0.5
+    sqlite-simple       >= 0.4.16 && < 0.5,
+    ansi-terminal       >= 0.8.2 && < 0.9
     -- ixset-typed         >= 0.4.0 && < 0.5
 
   -- Modules included in this executable, other than Main.

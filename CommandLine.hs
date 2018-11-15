@@ -5,6 +5,7 @@ import Data.Foldable ( forM_ ) -- base
 import Data.Text ( Text ) -- text
 import Data.Void ( Void ) -- base
 import qualified Data.Text.IO as T -- text
+import System.Console.ANSI ( clearScreen ) -- ansi-terminal
 import System.IO ( hFlush, stdout ) -- base
 import Text.Megaparsec ( ParseErrorBundle, parse, errorBundlePretty ) -- megaparsec
 
@@ -13,7 +14,7 @@ import Message ( Message(..), messageToBuilder, expandPointers )
 import Scheduler ( UserId, Event, SchedulerFn )
 import qualified Scheduler as Event ( Event (..) )
 import Util ( toText )
-import Workspace
+import Workspace ( Workspace(..), emptyWorkspace )
 
 putMessage :: Message -> IO ()
 putMessage = T.putStr . toText . messageToBuilder
@@ -47,27 +48,29 @@ renderWorkspace w = do
 
 commandLineInteraction :: SchedulerFn -> IO ()
 commandLineInteraction scheduler = do
-    T.putStrLn "What is your question?"
-    go 0
+    let initWorkspace = emptyWorkspace (Text "What is your question?")
+    renderWorkspace initWorkspace
+    go initWorkspace
   where userId = 0 :: UserId
-        go workspaceId = do
+        go ws = do
           T.putStr "> "
           hFlush stdout
           eCmd <- readCommand
+          clearScreen
           case eCmd of
               Left (line, bundle) -> do
                   if line == "exit" then -- Probably make this case-insensitive and not sensitive to extra whitespace.
                       return ()
                     else do
                       putStr (errorBundlePretty bundle)
-                      go workspaceId
+                      go ws
               Right cmd -> do
-                  mWorkspace <- scheduler userId workspaceId (commandToEvent cmd)
+                  mWorkspace <- scheduler userId ws (commandToEvent cmd)
                   case mWorkspace of
                       Nothing -> return ()
                       Just ws -> do
                           renderWorkspace ws
-                          go (identity ws)
+                          go ws
 
 -- TODO: Is there any need to separate these, i.e. Command and Event?
 commandToEvent :: Command -> Event
