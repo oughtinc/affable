@@ -61,7 +61,7 @@ addressToBuilder a = singleton '@' <> T.decimal a
 messageParser :: Parsec Void Text Message
 messageParser = do
     body <- some mParser <?> "message"
-    return $ case body of [x] -> x; _ -> Structured body
+    return $ case body of [x] -> x; _ -> Structured body -- TODO: Do I want to do this?
   where mParser = (Reference <$> pointerParser)
               <|> (Location <$> addressParser)
               <|> (Structured <$> (char '[' *> many mParser <* char ']') <?> "submessage")
@@ -72,7 +72,7 @@ parseMessageUnsafe t = case parse messageParser "" t of Right msg -> msg
 
 messageToBuilder :: Message -> Builder
 messageToBuilder = go True
-    where go  True (Structured ms) = foldMap messageToBuilder ms
+    where go  True (Structured ms) = foldMap (go False) ms
           go False (Structured ms) = singleton '[' <> foldMap (go False) ms <> singleton ']'
           go     _ (Text t) = fromText t
           go     _ (Reference p) = pointerToBuilder p
