@@ -57,7 +57,7 @@ sendAnswerSqlite conn ws msg = do
 sendMessageSqlite :: Connection -> Workspace -> WorkspaceId -> Message -> IO ()
 sendMessageSqlite conn ws tgtId msg = do
     let srcId = identity ws
-    executeNamed conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeAnswered, content) VALUES (:source, :target, :time, :content)" [
+    executeNamed conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (:source, :target, :time, :content)" [
                         ":source" := srcId,
                         ":target" := tgtId,
                         ":time" := (0 :: LogicalTime), -- TODO
