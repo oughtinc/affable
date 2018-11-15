@@ -3,11 +3,11 @@ module SqliteSchedulerContext ( makeSqliteSchedulerContext ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Data.Text ( Text ) -- text
-import Database.SQLite.Simple ( Connection, Query, Only(..), NamedParam(..), query, execute, execute_, executeNamed, lastInsertRowId ) -- sqlite-simple
+import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, executeMany, executeNamed, lastInsertRowId ) -- sqlite-simple
 
 import Command ( Command(..), commandToBuilder )
 import DataModel ( LogicalTime )
-import Message
+import Message ( Message, Pointer, normalizeMessage, messageToBuilder, parseMessageUnsafe )
 import Scheduler ( SchedulerContext(..) )
 import Time ( Time(..) )
 import Util ( toText )
@@ -25,6 +25,15 @@ makeSqliteSchedulerContext conn = return $
         extraContent = conn
     }
 
+-- Normalize the Message, write the new pointers to the database, then return the normalized message.
+insertMessagePointers :: Connection -> Message -> IO Message
+insertMessagePointers conn msg = do
+    let (pEnv, normalizedMsg) = normalizeMessage 0 msg
+    -- executeMany
+    -- TODO: Insert pointers into database.
+    -- type PointerEnvironment = M.Map Pointer Message
+    return normalizedMsg
+
 insertCommand :: Connection -> WorkspaceId -> Command -> IO ()
 insertCommand conn workspaceId cmd = do
     mt <- query conn "SELECT localTime FROM Commands WHERE workspaceId = ? ORDER BY localTime DESC LIMIT 1" (Only workspaceId)
@@ -32,7 +41,7 @@ insertCommand conn workspaceId cmd = do
     executeNamed conn "INSERT INTO Commands (workspaceId, localTime, command) VALUES (:workspace, :time, :cmd)" [
                         ":workspace" := workspaceId,
                         ":time" := (t :: Int64),
-                        ":cmd" := toText (commandToBuilder cmd)]
+                        ":cmd" := toText (commandToBuilder cmd)] -- TODO: Use normalized Messages here too?
 
 createWorkspaceSqlite :: Connection -> Workspace -> Message -> IO WorkspaceId
 createWorkspaceSqlite conn ws msg = do
@@ -97,8 +106,10 @@ getWorkspaceSqlite conn workspaceId = do
 getNextWorkspaceSqlite :: Connection -> IO (Maybe WorkspaceId)
 getNextWorkspaceSqlite conn = do
     -- TODO: How we order determines what workspace we're going to schedule next.
-    -- This gets a workspace that doesn't currently have an answer.
-    result <- query conn "SELECT w.id FROM Workspaces w WHERE NOT EXISTS(SELECT * FROM Answers a WHERE a.workspaceId = w.id) ORDER BY w.id LIMIT 1" ()
+    -- This gets a workspace that doesn't currently have an answer. TODO: For now, want the deepest (which is the newest) one...
+    result <- query conn "SELECT w.id \
+                         \FROM Workspaces w \
+                         \WHERE NOT EXISTS(SELECT * FROM Answers a WHERE a.workspaceId = w.id) ORDER BY w.id DESC LIMIT 1" ()
     case result of
         [] -> return Nothing
         [Only wId] -> return (Just wId)
