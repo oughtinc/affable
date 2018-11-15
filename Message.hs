@@ -3,7 +3,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Message (
     Message(..), Pointer, Address,
-    pointerParser, addressParser, messageParser, pointerToBuilder, addressToBuilder, messageToBuilder,
+    pointerParser, addressParser, messageParser, parseMessageUnsafe, pointerToBuilder, addressToBuilder, messageToBuilder,
     PointerEnvironment, PointerRemapping, expandPointers, normalizeMessage, renumberMessage )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
@@ -17,7 +17,7 @@ import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
 import qualified Data.Text.Lazy.Builder.Int as T ( decimal ) -- text
 import Data.Void ( Void ) -- base
 import GHC.Generics ( Generic ) -- ghc
-import Text.Megaparsec ( Parsec, many, some, takeWhile1P, (<|>), (<?>) ) -- megaparsec
+import Text.Megaparsec ( Parsec, parse, many, some, takeWhile1P, (<|>), (<?>) ) -- megaparsec
 import Text.Megaparsec.Char ( char ) -- megaparsec
 import Text.Megaparsec.Char.Lexer ( decimal ) -- megaparsec
 
@@ -64,6 +64,9 @@ messageParser = Structured <$> some mParser <?> "message"
                 <|> (Location <$> addressParser)
                 <|> (Structured <$> (char '[' *> many mParser <* char ']') <?> "submessage")
                 <|> (Text <$> takeWhile1P Nothing (\c -> c `notElem` ("[]$@" :: String)) <?> "text")
+
+parseMessageUnsafe :: Text -> Message
+parseMessageUnsafe t = case parse messageParser "" t of Right msg -> msg
 
 messageToBuilder :: Message -> Builder
 messageToBuilder (Text t) = fromText t
