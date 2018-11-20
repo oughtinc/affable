@@ -4,11 +4,11 @@
 module Message (
     Message(..), Pointer, Address,
     pointerParser, addressParser, messageParser, parseMessageUnsafe, pointerToBuilder, addressToBuilder, messageToBuilder,
-    PointerEnvironment, PointerRemapping, expandPointers, normalizeMessage, renumberMessage )
+    PointerEnvironment, PointerRemapping, expandPointers, normalizeMessage, renumberMessage, renumberAcc )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
-import Data.Foldable ( foldMap ) -- base
+import Data.Foldable ( foldl', foldMap ) -- base
 import Data.List ( mapAccumL ) -- base
 import qualified Data.Map as M -- containers
 import Data.String ( fromString ) -- base
@@ -106,16 +106,13 @@ normalizeMessage start = go True M.empty
               in (env'', Reference p)
           go _ env m = (env, m)
 
--- Renumber the pointers so that they are labelled from `start`. Producing a mapping from
--- the new (local) pointers to the old (global) pointers and vice versa.
-renumberMessage :: Int -> Message -> (PointerRemapping, PointerRemapping, Message)
-renumberMessage start m = let (env, m') = go M.empty m in (invertMap env, env, m')
-    where go env (Reference p) = case M.lookup p env of
-                                    Just n -> (env, Reference n)
-                                    Nothing -> let !n = M.size env + start
-                                               in (M.insert p n env, Reference n)
-          go env (Structured ms) = let (env', ms') = mapAccumL go env ms
-                                   in (env', Structured ms')
-          go env m = (env, m)
+-- Partial if the PointerRemapping doesn't include every pointer in the Message.
+renumberMessage :: PointerRemapping -> Message -> Message
+renumberMessage mapping (Structured ms) = Structured $ map (renumberMessage mapping) ms
+renumberMessage mapping (Reference p) = case M.lookup p mapping of Just p' -> Reference p'
+renumberMessage mapping msg = msg
 
-          invertMap = M.fromList . map (\(x,y) -> (y,x)) . M.assocs
+renumberAcc :: PointerRemapping -> Message -> PointerRemapping
+renumberAcc mapping (Structured ms) = foldl' renumberAcc mapping ms
+renumberAcc mapping (Reference p) = if p `M.member` mapping then mapping else M.insert p (M.size mapping) mapping
+renumberAcc mapping msg = mapping
