@@ -1,4 +1,3 @@
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -10,45 +9,17 @@
 module Main where
 import Database.SQLite.Simple ( Connection, withConnection, execute_ ) -- sqlite-simple
 import Network.Wai.Handler.Warp ( run ) -- warp
-import Servant ( (:<|>)(..), (:>), Server, Get, Post, Proxy(..), Capture, QueryParam, ReqBody, JSON, Raw, serveDirectoryWebApp ) -- servant-server
+import Servant ( Proxy(..) ) -- servant-server
 import Servant.JS ( writeJSForAPI, axios, defAxiosOptions ) -- servant-js
-import Servant.Server ( serve, Application ) -- servant-server
 import System.Environment ( getArgs ) -- base
 
-import Command
 import CommandLine ( commandLineInteraction )
 import Message
-import Scheduler ( SchedulerContext, makeSingleUserScheduler )
+import Scheduler ( makeSingleUserScheduler )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Time
+import Server ( CommandAPI, overallApp )
 import Workspace
-
--- Servant - ( TODO: move this elsewhere at some point ) -------------------------------------------------------------------------------------------------------------
-
--- TODO: Probably specify an generic "response" type and take in a generic "request" type that is basically a string.
--- Do parsing and some degree of rendering to text server-side.
-type StaticAPI = "static" :> Raw
-type CommandAPI = "command" :> ReqBody '[JSON] Command :> Post '[JSON] Workspace
-             :<|> "test" :> Get '[JSON] Command
-
-type OverallAPI = StaticAPI :<|> CommandAPI
-
-staticHandler :: Server StaticAPI
-staticHandler = serveDirectoryWebApp "static"
-
--- TODO: This is just placeholder.
-commandHandler :: Connection -> Server CommandAPI
-commandHandler conn
-    = (\cmd -> return $ emptyWorkspace (Structured [Text "foo ", Structured [Text "bar baz ", Reference 2, Text " ", Location 3]]))
- :<|> return (Reply (Structured [Text "foo ", Structured [Text "bar baz ", Reference 2, Text " ", Location 3]]))
-
-overallHandler :: Connection -> Server OverallAPI
-overallHandler conn = staticHandler :<|> commandHandler conn
-
-overallApp :: Connection -> Application
-overallApp conn = serve (Proxy :: Proxy OverallAPI) (overallHandler conn)
-
--- Main --------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 main :: IO ()
 main = do
@@ -58,7 +29,9 @@ main = do
         ["serve"] -> do
             withConnection ":memory:" $ \conn -> do -- TODO: For now. I do want this to be persistent in the long run.
                 initSqlite conn
-                run 8081 (overallApp conn)
+                execute_ conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, question) VALUES (0, 0, NULL, 'What is your question?')"
+                ctxt <- makeSqliteSchedulerContext conn
+                run 8081 (overallApp ctxt)
         _ -> do
             withConnection ":memory:" $ \conn -> do -- TODO: For now. I do want this to be persistent in the long run.
                 initSqlite conn
