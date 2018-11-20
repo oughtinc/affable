@@ -61,7 +61,7 @@ addressToBuilder a = singleton '@' <> T.decimal a
 messageParser :: Parsec Void Text Message
 messageParser = do
     body <- some mParser <?> "message"
-    return $ case body of [x] -> x; _ -> Structured body -- TODO: Do I want to do this?
+    return $ Structured body
   where mParser = (Reference <$> pointerParser)
               <|> (Location <$> addressParser)
               <|> (Structured <$> (char '[' *> many mParser <* char ']') <?> "submessage")
@@ -96,18 +96,20 @@ expandPointers env                   t = t
 -- from those pointers to the Structured sub-Messages.
 normalizeMessage :: Int -> Message -> (PointerEnvironment, Message)
 normalizeMessage start = go True M.empty
-    where go isTopLevel env m@(Structured ms)
+    where go True env (Structured ms)
+            = let (env', ms') = mapAccumL (go False) env ms
+              in (env', Structured ms')
+          go _ env (Structured ms)
             = let p = M.size env + start
-                  result = if isTopLevel then Structured ms' else Reference p
                   env' = M.insert p (Structured ms') env
                   (env'', ms') = mapAccumL (go False) env' ms -- A bit of knot typing occurring here.
-              in (env'', result)
+              in (env'', Reference p)
           go _ env m = (env, m)
 
 -- Renumber the pointers so that they are labelled from `start`. Producing a mapping from
--- the new (local) pointers to the old (global) pointers.
-renumberMessage :: Int -> Message -> (PointerRemapping, Message)
-renumberMessage start m = let (env, m') = go M.empty m in (invertMap env, m')
+-- the new (local) pointers to the old (global) pointers and vice versa.
+renumberMessage :: Int -> Message -> (PointerRemapping, PointerRemapping, Message)
+renumberMessage start m = let (env, m') = go M.empty m in (invertMap env, env, m')
     where go env (Reference p) = case M.lookup p env of
                                     Just n -> (env, Reference n)
                                     Nothing -> let !n = M.size env + start

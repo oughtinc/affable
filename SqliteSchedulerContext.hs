@@ -3,7 +3,7 @@ module SqliteSchedulerContext ( makeSqliteSchedulerContext ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Data.Text ( Text ) -- text
-import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, executeMany, executeNamed, lastInsertRowId ) -- sqlite-simple
+import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, query_, executeMany, executeNamed, lastInsertRowId ) -- sqlite-simple
 
 import Command ( Command(..), commandToBuilder )
 import DataModel ( LogicalTime )
@@ -28,10 +28,10 @@ makeSqliteSchedulerContext conn = return $
 -- Normalize the Message, write the new pointers to the database, then return the normalized message.
 insertMessagePointers :: Connection -> Message -> IO Message
 insertMessagePointers conn msg = do
-    let (pEnv, normalizedMsg) = normalizeMessage 0 msg
-    -- executeMany
-    -- TODO: Insert pointers into database.
-    -- type PointerEnvironment = M.Map Pointer Message
+    -- TODO: This is definitely a race condition.
+    [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+    let (pEnv, normalizedMsg) = normalizeMessage (maybe 0 succ lastPointerId) msg
+    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilder) pEnv))
     return normalizedMsg
 
 insertCommand :: Connection -> WorkspaceId -> Command -> IO ()
@@ -46,10 +46,11 @@ insertCommand conn workspaceId cmd = do
 createWorkspaceSqlite :: Connection -> Workspace -> Message -> IO WorkspaceId
 createWorkspaceSqlite conn ws msg = do
     let workspaceId = identity ws
+    msg' <- insertMessagePointers conn msg
     executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, question) VALUES (:time, :parent, :question)" [
                         ":time" := (0 :: LogicalTime), -- TODO
                         ":parent" := Just workspaceId,
-                        ":question" := toText (messageToBuilder msg)]
+                        ":question" := toText (messageToBuilder msg')]
     newWorkspaceId <- lastInsertRowId conn
     insertCommand conn workspaceId (Ask msg)
     return newWorkspaceId
@@ -57,20 +58,22 @@ createWorkspaceSqlite conn ws msg = do
 sendAnswerSqlite :: Connection -> Workspace -> Message -> IO ()
 sendAnswerSqlite conn ws msg = do
     let workspaceId = identity ws
+    msg' <- insertMessagePointers conn msg
     executeNamed conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (:workspace, :time, :answer)" [
                         ":workspace" := workspaceId,
                         ":time" := (0 :: LogicalTime), -- TODO
-                        ":answer" := toText (messageToBuilder msg)]
+                        ":answer" := toText (messageToBuilder msg')]
     insertCommand conn workspaceId (Reply msg)
 
 sendMessageSqlite :: Connection -> Workspace -> WorkspaceId -> Message -> IO ()
 sendMessageSqlite conn ws tgtId msg = do
     let srcId = identity ws
+    msg' <- insertMessagePointers conn msg
     executeNamed conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (:source, :target, :time, :content)" [
                         ":source" := srcId,
                         ":target" := tgtId,
                         ":time" := (0 :: LogicalTime), -- TODO
-                        ":content" := toText (messageToBuilder msg)]
+                        ":content" := toText (messageToBuilder msg')]
     insertCommand conn srcId (Send (fromIntegral tgtId) msg)
 
 expandPointerSqlite :: Connection -> Workspace -> Pointer -> IO ()
