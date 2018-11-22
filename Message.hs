@@ -30,7 +30,7 @@ data Message
     | Reference Pointer
     | Location Address
     | Structured [Message]
-  deriving ( Eq, Ord, Show, Generic ) -- TODO: Implement custom Show.
+  deriving ( Eq, Ord, Read, Show, Generic ) -- TODO: Implement custom Show.
 
 instance FromJSON Message
 instance ToJSON Message
@@ -64,7 +64,7 @@ messageParser = do
     return $ Structured body
   where mParser = (Reference <$> pointerParser)
               <|> (Location <$> addressParser)
-              <|> (Structured <$> (char '[' *> many mParser <* char ']') <?> "submessage")
+              <|> (Structured <$> (char '[' *> some mParser <* char ']') <?> "submessage")
               <|> (Text <$> takeWhile1P Nothing (\c -> c `notElem` ("[]$@" :: String)) <?> "text")
 
 parseMessageUnsafe :: Text -> Message
