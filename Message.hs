@@ -4,7 +4,8 @@
 module Message (
     Message(..), Pointer, Address,
     pointerParser, addressParser, messageParser, parseMessageUnsafe, pointerToBuilder, addressToBuilder, messageToBuilder,
-    PointerEnvironment, PointerRemapping, expandPointers, normalizeMessage, generalizeMessage, renumberMessage, renumberAcc )
+    PointerEnvironment, PointerRemapping, expandPointers, normalizeMessage, generalizeMessage, renumberMessage, renumberAcc,
+    matchMessage, collectPointers )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
@@ -13,6 +14,7 @@ import Data.Foldable ( foldl', foldMap ) -- base
 import Data.List ( mapAccumL ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Set as S -- containers
+import Data.Traversable ( sequenceA ) -- base
 import Data.String ( fromString ) -- base
 import Data.Text ( Text ) -- text
 import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
@@ -126,3 +128,18 @@ renumberAcc :: PointerRemapping -> Message -> PointerRemapping
 renumberAcc mapping (Structured ms) = foldl' renumberAcc mapping ms
 renumberAcc mapping (Reference p) = if p `M.member` mapping then mapping else M.insert p (M.size mapping) mapping
 renumberAcc mapping msg = mapping
+
+-- This assumes `pattern` has no duplicated pointers.
+matchMessage :: Message -> Message -> Maybe PointerEnvironment
+matchMessage (Text pt) (Text t) | pt == t = Just M.empty
+matchMessage (Location pa) (Location a) | pa == a = Just M.empty
+matchMessage (Structured pms) (Structured ms) = M.unions <$> sequenceA (zipWith matchMessage pms ms)
+matchMessage (Reference p) m@(Reference _) = Just (M.singleton p m)
+matchMessage (Reference p) m@(Structured _) = Just (M.singleton p m)
+matchMessage _ _ = Nothing
+
+collectPointers :: Message -> [Pointer]
+collectPointers msg = go msg []
+    where go (Reference p) acc = p:acc
+          go (Structured ms) acc = foldr go acc ms
+          go _ acc = acc
