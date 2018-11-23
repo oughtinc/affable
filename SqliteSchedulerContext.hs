@@ -24,8 +24,14 @@ makeSqliteSchedulerContext conn = return $
         getNextWorkspace = getNextWorkspaceSqlite conn,
         normalize = insertMessagePointers conn,
         generalize = insertGeneralizedMessagePointers conn,
+        dereference = dereferenceSqlite conn,
         extraContent = conn
     }
+
+dereferenceSqlite :: Connection -> Pointer -> IO Message
+dereferenceSqlite conn ptr = do
+    [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
+    return $! parseMessageUnsafe t
 
 -- Normalize the Message, write the new pointers to the database, then return the normalized message.
 insertMessagePointers :: Connection -> Message -> IO Message

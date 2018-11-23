@@ -1,7 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), makeSingleUserScheduler ) where
-import Message
+import Message ( Message, Pointer )
 import Workspace ( Workspace(identity), WorkspaceId )
 
 data Event
@@ -25,6 +25,7 @@ data SchedulerContext extra = SchedulerContext {
     getNextWorkspace :: IO (Maybe WorkspaceId),
     normalize :: Message -> IO Message,
     generalize :: Message -> IO Message,
+    dereference :: Pointer -> IO Message,
     extraContent :: extra -- This is to support making schedulers that can (e.g.) access SQLite directly.
   }
 
