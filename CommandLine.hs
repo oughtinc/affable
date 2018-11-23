@@ -41,7 +41,7 @@ renderWorkspace w = do
                         concatMap (\(q, ma) -> expand q:maybe [] ((:[]) . expand) ma) (subQuestions w),
                         map expand $ messageHistory w
                     ]
-    let expand' = renumberMessage mapping . expand
+    let expand' = maybe (error "renderWorkspace: Shouldn't happen.") id . renumberMessage mapping . expand
     putMessageLn $ expand' (question w)
     if null (subQuestions w) then return () else T.putStrLn "Subquestions:"
     forM_ (zip [1..] $ subQuestions w) $ \(i, (q, ma)) -> do
@@ -78,15 +78,20 @@ commandLineInteraction scheduler = do
                       putStr (parseErrorPretty bundle) -- megaparsec 6.5
                       go mapping ws
               Right cmd -> do
-                  mWorkspace <- scheduler userId ws (commandToEvent mapping cmd)
-                  case mWorkspace of
-                      Nothing -> return ()
-                      Just ws -> do
-                          mapping' <- renderWorkspace ws
-                          go mapping' ws
+                  case commandToEvent mapping cmd of
+                    Nothing -> do
+                        putStrLn "Reference to undefined pointer." -- TODO: Better wording.
+                        go mapping ws
+                    Just evt -> do
+                      mWorkspace <- scheduler userId ws evt
+                      case mWorkspace of
+                          Nothing -> return ()
+                          Just ws -> do
+                              mapping' <- renderWorkspace ws
+                              go mapping' ws
 
-commandToEvent :: PointerRemapping -> Command -> Event
-commandToEvent mapping (Ask msg) = Event.Create $ renumberMessage mapping msg
-commandToEvent mapping (Reply msg) = Event.Answer $ renumberMessage mapping msg
-commandToEvent mapping (View p) = Event.Expand $ maybe p id (M.lookup p mapping)
-commandToEvent mapping (Send addr msg) = Event.Send (fromIntegral addr) $ renumberMessage mapping msg
+commandToEvent :: PointerRemapping -> Command -> Maybe Event
+commandToEvent mapping (Ask msg) = Event.Create <$> renumberMessage mapping msg
+commandToEvent mapping (Reply msg) = Event.Answer <$> renumberMessage mapping msg
+commandToEvent mapping (View p) = Event.Expand <$> M.lookup p mapping
+commandToEvent mapping (Send addr msg) = Event.Send (fromIntegral addr) <$> renumberMessage mapping msg

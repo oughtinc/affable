@@ -14,7 +14,7 @@ import Data.Foldable ( foldl', foldMap ) -- base
 import Data.List ( mapAccumL ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Set as S -- containers
-import Data.Traversable ( sequenceA ) -- base
+import Data.Traversable ( sequenceA, traverse ) -- base
 import Data.String ( fromString ) -- base
 import Data.Text ( Text ) -- text
 import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
@@ -119,10 +119,10 @@ generalizeMessage fresh msg = case go (S.empty, M.empty, fresh) msg of ((_, mapp
           go s m = (s, m)
 
 -- Partial if the PointerRemapping doesn't include every pointer in the Message.
-renumberMessage :: PointerRemapping -> Message -> Message
-renumberMessage mapping (Structured ms) = Structured $ map (renumberMessage mapping) ms
-renumberMessage mapping (Reference p) = case M.lookup p mapping of Just p' -> Reference p'
-renumberMessage mapping msg = msg
+renumberMessage :: PointerRemapping -> Message -> Maybe Message
+renumberMessage mapping (Structured ms) = Structured <$> traverse (renumberMessage mapping) ms
+renumberMessage mapping (Reference p) = Reference <$> M.lookup p mapping
+renumberMessage mapping msg = Just msg
 
 renumberAcc :: PointerRemapping -> Message -> PointerRemapping
 renumberAcc mapping (Structured ms) = foldl' renumberAcc mapping ms
