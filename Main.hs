@@ -13,6 +13,7 @@ import Servant ( Proxy(..) ) -- servant-server
 import Servant.JS ( writeJSForAPI, axios, defAxiosOptions ) -- servant-js
 import System.Environment ( getArgs ) -- base
 
+import AutoInterpreter ( makeInterpreterScheduler )
 import CommandLine ( commandLineInteraction )
 import Message
 import Scheduler ( makeSingleUserScheduler )
@@ -29,13 +30,20 @@ main = do
         ["serve"] -> do
             withConnection ":memory:" $ \conn -> do -- TODO: For now. I do want this to be persistent in the long run.
                 initSqlite conn
-                execute_ conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, question) VALUES (0, 0, NULL, 'What is your question?')"
+                execute_ conn "INSERT OR IGNORE INTO Workspaces (id, logicalTime, parentWorkspaceId, question) VALUES (0, 0, NULL, 'What is your question?')"
                 ctxt <- makeSqliteSchedulerContext conn
                 run 8081 (overallApp ctxt)
+        ["wip"] -> do
+            withConnection ":memory:" $ \conn -> do -- TODO: For now. I do want this to be persistent in the long run.
+                initSqlite conn
+                execute_ conn "INSERT OR IGNORE INTO Workspaces (id, logicalTime, parentWorkspaceId, question) VALUES (0, 0, NULL, 'What is your question?')"
+                ctxt <- makeSqliteSchedulerContext conn
+                scheduler <- makeInterpreterScheduler ctxt
+                commandLineInteraction scheduler
         _ -> do
             withConnection ":memory:" $ \conn -> do -- TODO: For now. I do want this to be persistent in the long run.
                 initSqlite conn
-                execute_ conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, question) VALUES (0, 0, NULL, 'What is your question?')"
+                execute_ conn "INSERT OR IGNORE INTO Workspaces (id, logicalTime, parentWorkspaceId, question) VALUES (0, 0, NULL, 'What is your question?')"
                 ctxt <- makeSqliteSchedulerContext conn
                 scheduler <- makeSingleUserScheduler ctxt
                 commandLineInteraction scheduler

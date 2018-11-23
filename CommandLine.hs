@@ -36,7 +36,6 @@ renderWorkspace w = do
     T.putStr "Question: "
     let expand = expandPointers (expandedPointers w)
     -- TODO: Avoid expanding messages twice.
-    -- TODO: Figure out a scheme to get stable renumbering.
     let mapping = foldl' renumberAcc M.empty $ concat [
                         [expand $ question w],
                         concatMap (\(q, ma) -> expand q:maybe [] ((:[]) . expand) ma) (subQuestions w),
@@ -69,7 +68,7 @@ commandLineInteraction scheduler = do
           T.putStr "> "
           hFlush stdout
           eCmd <- readCommand
-          clearScreen
+          -- clearScreen
           case eCmd of
               Left (line, bundle) -> do
                   if line == "exit" then -- Probably make this case-insensitive and not sensitive to extra whitespace.
