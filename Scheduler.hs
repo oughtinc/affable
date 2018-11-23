@@ -4,14 +4,10 @@ module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), makeSin
 import Message
 import Workspace ( Workspace(identity), WorkspaceId )
 
--- Want to spawn new workspaces.
--- Want to update a current workspace consuming some logical time.
--- Want to send messages to existing workspaces.
-
 data Event
     = Create Message
     | Answer Message
-    | Expand Pointer -- TODO: Do I want this here?
+    | Expand Pointer
     | Send WorkspaceId Message
     -- | Join -- This is to support more server-y stuff, i.e. a new person joining the computation.
   deriving ( Show )
@@ -20,8 +16,6 @@ type UserId = Int
 
 type SchedulerFn = UserId -> Workspace -> Event -> IO (Maybe Workspace)
 
--- TODO: This will need to be extended.
-
 data SchedulerContext extra = SchedulerContext {
     createWorkspace :: Workspace -> Message -> IO WorkspaceId,
     sendAnswer :: Workspace -> Message -> IO (),
@@ -29,14 +23,14 @@ data SchedulerContext extra = SchedulerContext {
     expandPointer :: Workspace -> Pointer -> IO (),
     getWorkspace :: WorkspaceId -> IO Workspace,
     getNextWorkspace :: IO (Maybe WorkspaceId),
+    normalize :: Message -> IO Message,
+    generalize :: Message -> IO Message,
     extraContent :: extra -- This is to support making schedulers that can (e.g.) access SQLite directly.
   }
 
--- NOTE: This is just a basic start.
--- TODO: Need to normalize messages and save pointers.
 makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeSingleUserScheduler ctxt = do
-    let scheduler user workspace (Create msg) = do
+    let scheduler user workspace (Create msg) = do -- TODO: Generalize the Message so every pointer is distinct.
             newWorkspaceId <- createWorkspace ctxt workspace msg
             Just <$> getWorkspace ctxt newWorkspaceId
 

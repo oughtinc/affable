@@ -7,7 +7,7 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, que
 
 import Command ( Command(..), commandToBuilder )
 import DataModel ( LogicalTime )
-import Message ( Message, Pointer, normalizeMessage, messageToBuilder, parseMessageUnsafe )
+import Message ( Message, Pointer, normalizeMessage, generalizeMessage, messageToBuilder, parseMessageUnsafe )
 import Scheduler ( SchedulerContext(..) )
 import Time ( Time(..) )
 import Util ( toText )
@@ -22,6 +22,8 @@ makeSqliteSchedulerContext conn = return $
         expandPointer = expandPointerSqlite conn,
         getWorkspace = getWorkspaceSqlite conn,
         getNextWorkspace = getNextWorkspaceSqlite conn,
+        normalize = insertMessagePointers conn,
+        generalize = insertGeneralizedMessagePointers conn,
         extraContent = conn
     }
 
@@ -33,6 +35,14 @@ insertMessagePointers conn msg = do
     let (pEnv, normalizedMsg) = normalizeMessage (maybe 0 succ lastPointerId) msg
     executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilder) pEnv))
     return normalizedMsg
+
+insertGeneralizedMessagePointers :: Connection -> Message -> IO Message
+insertGeneralizedMessagePointers conn msg = do
+    -- TODO: This is definitely a race condition.
+    [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+    let (mapping, generalizedMsg) = generalizeMessage (maybe 0 succ lastPointerId) msg
+    executeMany conn "INSERT INTO Pointers (id, content) SELECT ?, o.content FROM Pointers o WHERE o.id = ?" (M.assocs mapping)
+    return generalizedMsg
 
 insertCommand :: Connection -> WorkspaceId -> Command -> IO ()
 insertCommand conn workspaceId cmd = do
@@ -85,6 +95,7 @@ expandPointerSqlite conn ws ptr = do
                         ":time" := (0 :: LogicalTime)] -- TODO
     insertCommand conn workspaceId (View ptr)
 
+-- TODO: Maybe maintain a cache of workspaces.
 getWorkspaceSqlite :: Connection -> WorkspaceId -> IO Workspace
 getWorkspaceSqlite conn workspaceId = do
     -- TODO: Maybe use a transaction.
