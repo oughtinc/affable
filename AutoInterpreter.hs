@@ -127,7 +127,7 @@ makeInterpreterScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeInterpreterScheduler ctxt = do
     let answerFn = ANSWER -- (0, 0) :: Name
     alternativesRef <- newIORef (M.empty :: M.Map Name [(Message, Exp')]) -- TODO: Load from database.
-    idRef <- newIORef (1 :: Int)
+    idRef <- newIORef (0 :: Int)
 
     requestMVar <- newEmptyMVar :: IO (MVar (Maybe WorkspaceId))
     responseMVar <- newEmptyMVar :: IO (MVar Exp')
@@ -146,6 +146,9 @@ makeInterpreterScheduler ctxt = do
             putMVar responseMVar e
             takeMVar requestMVar
 
+        match varEnv workspaceId f (Reference p) = do -- TODO: This is what is desired?
+            m <- dereference ctxt p
+            match varEnv workspaceId f m
         match varEnv workspaceId f m = do
             altsMap <- readIORef alternativesRef
             case M.lookup f altsMap of
@@ -153,7 +156,7 @@ makeInterpreterScheduler ctxt = do
                     let !mMatch = asum $ map (\(p, e) -> fmap (\bindings -> (M.union varEnv bindings, e)) $ matchMessage p m) alts
                     case mMatch of
                         Just result -> return result
-                        Nothing -> do
+                        Nothing -> do -- TODO: Need to *create* new workspaces on pattern match failure.
                             e <- blockOnUser (Just workspaceId)
                             pattern <- generalize ctxt m
                             modifyIORef' alternativesRef (M.insertWith (++) f [(pattern, e)]) -- TODO: Add to end? Technically shouldn't matter.
@@ -161,7 +164,7 @@ makeInterpreterScheduler ctxt = do
                             let !(Just bindings) = matchMessage pattern m -- This shouldn't fail.
                             let varEnv' = M.union varEnv bindings
                             return (varEnv', e)
-                Nothing -> do
+                Nothing -> do -- TODO: Need to *create* new workspaces on pattern match failure.
                     e <- blockOnUser (Just workspaceId)
                     pattern <- generalize ctxt m
                     modifyIORef' alternativesRef (M.insertWith (++) f [(pattern, e)])
@@ -171,8 +174,9 @@ makeInterpreterScheduler ctxt = do
                     return (varEnv', e)
 
         scheduler user workspace (Create msg) = do
-            msg <- normalize ctxt msg -- TODO: And generalize?
-            newWorkspaceId <- createWorkspace ctxt workspace msg
+            msg <- normalize ctxt msg
+            msg <- generalize ctxt msg -- TODO: Do this?
+            newWorkspaceId <- createWorkspace ctxt workspace msg -- TODO: Probably don't want to create workspaces here.
             let !workspaceId = identity workspace
             f <- genSym
             mNewWorkspaceId <- replyFromUser $ LetFun f (Call workspaceId f (Call newWorkspaceId answerFn (Value msg)))
@@ -206,7 +210,7 @@ makeInterpreterScheduler ctxt = do
     forkIO $ do
         -- let startExp = LetFun answerFn (Call answerFn (Value (Text "What is your question?")))
         e <- takeMVar responseMVar
-        case e of
+        case e of -- This is a bit hacky...
             LetFun _ (Call _ _ e) -> do
                 t <- evaluateExp' match M.empty M.empty (LetFun answerFn e)
                 T.putStrLn (toText (messageToBuilder t))
