@@ -41,7 +41,7 @@ expToBuilder' fBuilder vBuilder alternativesFor = go 0
     where go indent (Var x) = vBuilder x
           go indent (Value v) = valueToBuilder v
           go indent (Call ws f e) = fBuilder f <> singleton ':' <> decimal ws <> singleton '(' <> go 0 e <> singleton ')'
-          go indent (LetFun f body) | null alts = fromText "let " 
+          go indent (LetFun f body) | null alts = fromText "let "
                                                <> indentBuilder <> fromText "  " <> fBuilder f <> fromText "(_) = undefined"
                                                <> indentBuilder <> fromText "in " <> go indent body
                                     | otherwise = fromText "let"
@@ -83,14 +83,14 @@ evaluateExp' :: (Ord f, Ord v, Monad m)
              -> Exp f v
              -> m Value
 {-
-evaluateExp' :: (VarEnv Var -> Name -> Message -> IO (VarEnv Var, Exp Name Var))
+evaluateExp' :: (VarEnv Var -> WorkspaceId -> Name -> Message -> IO (VarEnv Var, Exp Name Var))
              -> VarEnv Var
              -> FunEnv IO Name
              -> Exp Name Var
              -> IO Value
 -}
 evaluateExp' match = go
-    where go varEnv funEnv (Var x) = return $ case M.lookup x varEnv of Just v -> v
+    where go varEnv funEnv (Var x) = return $! case M.lookup x varEnv of Just v -> v
           go varEnv funEnv (Value v) = return v
           go varEnv funEnv (Call ws f e) = do
             v <- go varEnv funEnv e
@@ -129,13 +129,10 @@ makeInterpreterScheduler ctxt = do
     alternativesRef <- newIORef (M.empty :: M.Map Name [(Message, Exp')]) -- TODO: Load from database.
     idRef <- newIORef (1 :: Int)
 
-    -- TODO: Think about this more.
-    -- requestMVar <- newMVar (Just 0) :: IO (MVar (Maybe WorkspaceId))
     requestMVar <- newEmptyMVar :: IO (MVar (Maybe WorkspaceId))
     responseMVar <- newEmptyMVar :: IO (MVar Exp')
 
     let genSym = atomicModifyIORef' idRef (\n -> (n+1, LOCAL n))
-    -- let genSym workspaceId = atomicModifyIORef' idRef (\n -> (LOCAL workspaceId (n+1), n))
 
         debugCode = do
             altMap <- readIORef alternativesRef
@@ -149,10 +146,7 @@ makeInterpreterScheduler ctxt = do
             putMVar responseMVar e
             takeMVar requestMVar
 
-        -- TODO: IDEA: Add a CallInWorkspace AST node?
         match varEnv workspaceId f m = do
-            let pattern = m -- TODO: We probably need to generalize and/or normalize m here.
-            let workspace = Workspace { identity = workspaceId } -- HACK
             altsMap <- readIORef alternativesRef
             case M.lookup f altsMap of
                 Just alts -> do
@@ -160,45 +154,44 @@ makeInterpreterScheduler ctxt = do
                     case mMatch of
                         Just result -> return result
                         Nothing -> do
-                            newWorkspaceId <- case f of
-                                                ANSWER -> createWorkspace ctxt workspace pattern
-                                                _ -> return workspaceId
-                            e <- blockOnUser (Just newWorkspaceId)
+                            e <- blockOnUser (Just workspaceId)
+                            pattern <- generalize ctxt m
                             modifyIORef' alternativesRef (M.insertWith (++) f [(pattern, e)]) -- TODO: Add to end? Technically shouldn't matter.
                             debugCode
-                            let varEnv' = varEnv -- TODO: Add bindings?
+                            let !(Just bindings) = matchMessage pattern m -- This shouldn't fail.
+                            let varEnv' = M.union varEnv bindings
                             return (varEnv', e)
                 Nothing -> do
-                    newWorkspaceId <- case f of
-                                        ANSWER -> createWorkspace ctxt workspace pattern
-                                        _ -> return workspaceId
-                    e <- blockOnUser (Just newWorkspaceId)
+                    e <- blockOnUser (Just workspaceId)
+                    pattern <- generalize ctxt m
                     modifyIORef' alternativesRef (M.insertWith (++) f [(pattern, e)])
                     debugCode
-                    let varEnv' = varEnv -- TODO: Add bindings?
+                    let !(Just bindings) = matchMessage pattern m -- This shouldn't fail.
+                    let varEnv' = M.union varEnv bindings
                     return (varEnv', e)
 
         scheduler user workspace (Create msg) = do
-            -- newWorkspaceId <- createWorkspace ctxt workspace msg
-            -- let f = (newWorkspaceId, 0)
+            msg <- normalize ctxt msg -- TODO: And generalize?
+            newWorkspaceId <- createWorkspace ctxt workspace msg
             let !workspaceId = identity workspace
-            f <- genSym -- (identity workspace)
-            mNewWorkspaceId <- replyFromUser $ LetFun f (Call workspaceId f (Call workspaceId answerFn (Value msg)))
+            f <- genSym
+            mNewWorkspaceId <- replyFromUser $ LetFun f (Call workspaceId f (Call newWorkspaceId answerFn (Value msg)))
             case mNewWorkspaceId of
                 Just newWorkspaceId -> Just <$> getWorkspace ctxt newWorkspaceId
                 Nothing -> return Nothing
 
         scheduler user workspace (Answer msg) = do
+            msg <- normalize ctxt msg
             sendAnswer ctxt workspace msg
             mNewWorkspaceId <- replyFromUser (Value msg)
             case mNewWorkspaceId of
                 Just newWorkspaceId -> Just <$> getWorkspace ctxt newWorkspaceId
                 Nothing -> return Nothing
 
-        scheduler user workspace (Expand ptr) = do -- TODO: Validate that ptr refers to an in-scope pointer/"variable".
+        scheduler user workspace (Expand ptr) = do -- TODO: Validate that ptr refers to an in-scope pointer/"variable". Is remapping needed as well?
             expandPointer ctxt workspace ptr
             let !workspaceId = identity workspace
-            f <- genSym -- (identity workspace)
+            f <- genSym
             mNewWorkspaceId <- replyFromUser $ LetFun f (Call workspaceId f (Var ptr)) -- TODO: ptr needs to correspond to a "variable"
             case mNewWorkspaceId of
                 Just newWorkspaceId -> Just <$> getWorkspace ctxt newWorkspaceId
