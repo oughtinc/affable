@@ -30,9 +30,9 @@ type Address = Int
 
 -- TODO: Perhaps add support for logic variables (?X perhaps) so this code can be shared.
 data Message
-    = Text Text
-    | Reference Pointer
-    | Location Address
+    = Text !Text
+    | Reference !Pointer
+    | Location !Address
     | Structured [Message]
   deriving ( Eq, Ord, Read, Show, Generic ) -- TODO: Implement custom Show.
 
@@ -110,6 +110,15 @@ normalizeMessage start = go True M.empty
 
 -- Creates a message where all pointers are distinct. The output is a mapping
 -- from fresh pointers to the old pointers.
+-- Replaces all pointers with distinct pointers.
+generalizeMessage :: Int -> Message -> (PointerRemapping, Message)
+generalizeMessage fresh msg = go M.empty msg
+    where go mapping (Structured ms) = second Structured $ mapAccumL go mapping ms
+          go mapping m@(Reference old) = (M.insert new old mapping, Reference new)
+            where !new = M.size mapping + fresh
+          go s m = (s, m)
+{-
+-- Only makes pointers for duplicates. Reuses the old pointers.
 generalizeMessage :: Int -> Message -> (PointerRemapping, Message)
 generalizeMessage fresh msg = case go (S.empty, M.empty, fresh) msg of ((_, mapping, _), m) -> (mapping, m)
     where go s (Structured ms) = second Structured $ mapAccumL go s ms
@@ -117,6 +126,7 @@ generalizeMessage fresh msg = case go (S.empty, M.empty, fresh) msg of ((_, mapp
             | p `S.member` seen = ((seen, M.insert fresh p mapping, fresh+1), Reference fresh)
             | otherwise = ((S.insert p seen, mapping, fresh), m)
           go s m = (s, m)
+-}
 
 -- Partial if the PointerRemapping doesn't include every pointer in the Message.
 renumberMessage :: PointerRemapping -> Message -> Maybe Message
