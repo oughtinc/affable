@@ -37,7 +37,7 @@ expToBuilder' :: (f -> Builder) -> (v -> Builder) -> (f -> [(Message, Exp f v)])
 expToBuilder' fBuilder vBuilder alternativesFor = go 0
     where go indent (Var x) = vBuilder x
           go indent (Value v) = valueToBuilder v
-          go indent (Call f e) = fBuilder f <> {-singleton ':' <> decimal ws <>-} singleton '(' <> go 0 e <> singleton ')'
+          go indent (Call f e) = fBuilder f <> singleton '(' <> go 0 e <> singleton ')'
           go indent (LetFun f body) | null alts = fromText "let "
                                                <> indentBuilder <> fromText "  " <> fBuilder f <> fromText "(_) = undefined"
                                                <> indentBuilder <> fromText "in " <> go indent body
@@ -108,8 +108,8 @@ type Exp' = Exp Name Var
 -- NOTE: Instead of using forkIO and co, we could use a monad other than IO for
 -- expression evaluation that supports suspending a computation or implements cooperative
 -- concurrency.
-makeInterpreterScheduler :: SchedulerContext extra -> IO SchedulerFn
-makeInterpreterScheduler ctxt = do
+makeInterpreterScheduler :: SchedulerContext extra -> WorkspaceId -> IO SchedulerFn
+makeInterpreterScheduler ctxt initWorkspaceId = do
     let answerFn = ANSWER
     alternativesRef <- newIORef (M.empty :: M.Map Name [(Message, Exp')]) -- TODO: Load from database.
     idRef <- newIORef (0 :: Int)
@@ -137,7 +137,9 @@ makeInterpreterScheduler ctxt = do
         match varEnv workspaceId f m = do
             workspace <- getWorkspace ctxt workspaceId
             altsMap <- readIORef alternativesRef
-            case M.lookup f altsMap of
+            case M.lookup f altsMap of -- TODO: Could mark workspaces as "human-influenced" when a pattern match failure is hit
+                                       -- or when any subquestions are marked. This would allow "garbage collecting" workspaces
+                                       -- with answers that are not "human-influenced", i.e. were created entirely through automation.
                 Just alts -> do
                     let !mMatch = asum $ map (\(p, e) -> fmap (\bindings -> (p, M.union varEnv bindings, e)) $ matchMessage p m) alts
                     -- This is a bit hacky. If this approach is the way to go, make these patterns individual constructors.
@@ -209,7 +211,7 @@ makeInterpreterScheduler ctxt = do
     forkIO $ do
         Create msg <- takeMVar responseMVar -- TODO: Better error handling.
         let startExp = LetFun answerFn (Call answerFn (Value msg))
-        t <- evaluateExp' match expandPointers M.empty M.empty 0 startExp
+        t <- evaluateExp' match expandPointers M.empty M.empty initWorkspaceId startExp
         T.putStrLn (toText (messageToBuilder t))
         blockOnUser Nothing
         return ()

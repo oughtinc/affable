@@ -15,12 +15,10 @@ import System.Environment ( getArgs ) -- base
 
 import AutoInterpreter ( makeInterpreterScheduler )
 import CommandLine ( commandLineInteraction )
-import Message
-import Scheduler ( makeSingleUserScheduler )
+import Scheduler ( getWorkspace, createInitialWorkspace, makeSingleUserScheduler )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
-import Time
 import Server ( CommandAPI, overallApp )
-import Workspace
+import Workspace ( identity )
 
 main :: IO ()
 main = do
@@ -28,25 +26,25 @@ main = do
     case args of
         ["gen-api"] -> writeJSForAPI (Proxy :: Proxy CommandAPI) (axios defAxiosOptions) "static/command-api.js"
         ["serve"] -> do
-            withConnection ":memory:" $ \conn -> do -- TODO: For now. I do want this to be persistent in the long run.
+            withConnection ":memory:" $ \conn -> do
                 initSqlite conn
                 execute_ conn "INSERT OR IGNORE INTO Workspaces (id, logicalTime, parentWorkspaceId, question) VALUES (0, 0, NULL, 'What is your question?')"
                 ctxt <- makeSqliteSchedulerContext conn
                 run 8081 (overallApp ctxt)
         ["wip"] -> do
-            withConnection ":memory:" $ \conn -> do -- TODO: For now. I do want this to be persistent in the long run.
+            withConnection ":memory:" $ \conn -> do
                 initSqlite conn
-                execute_ conn "INSERT OR IGNORE INTO Workspaces (id, logicalTime, parentWorkspaceId, question) VALUES (0, 0, NULL, 'What is your question?')"
                 ctxt <- makeSqliteSchedulerContext conn
-                scheduler <- makeInterpreterScheduler ctxt
-                commandLineInteraction scheduler
+                initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
+                scheduler <- makeInterpreterScheduler ctxt $! identity initWorkspace
+                commandLineInteraction initWorkspace scheduler
         _ -> do
             withConnection ":memory:" $ \conn -> do -- TODO: For now. I do want this to be persistent in the long run.
                 initSqlite conn
-                execute_ conn "INSERT OR IGNORE INTO Workspaces (id, logicalTime, parentWorkspaceId, question) VALUES (0, 0, NULL, 'What is your question?')"
                 ctxt <- makeSqliteSchedulerContext conn
+                initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
                 scheduler <- makeSingleUserScheduler ctxt
-                commandLineInteraction scheduler
+                commandLineInteraction initWorkspace scheduler
 
 -- TODO: Move this elsewhere at some point.
 initSqlite :: Connection -> IO ()

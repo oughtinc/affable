@@ -18,7 +18,7 @@ type WorkspaceId = Int64
 
 -- This is what needs to be rendered (possibly with stuff hidden) to the user.
 data Workspace = Workspace {
-    identity :: WorkspaceId,
+    identity :: !WorkspaceId,
     question :: Question,
     subQuestions :: [(Question, Maybe Answer)],
     messageHistory :: [Message], -- TODO: Do we want the history to include who the message was from?

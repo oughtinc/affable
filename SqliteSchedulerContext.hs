@@ -16,6 +16,7 @@ import Workspace ( Workspace(..), WorkspaceId )
 makeSqliteSchedulerContext :: Connection -> IO (SchedulerContext Connection)
 makeSqliteSchedulerContext conn = return $
     SchedulerContext {
+        createInitialWorkspace = createInitialWorkspaceSqlite conn,
         createWorkspace = createWorkspaceSqlite conn,
         sendAnswer = sendAnswerSqlite conn,
         sendMessage = sendMessageSqlite conn,
@@ -58,6 +59,14 @@ insertCommand conn workspaceId cmd = do
                         ":workspace" := workspaceId,
                         ":time" := (t :: Int64),
                         ":cmd" := toText (commandToBuilder cmd)] -- TODO: Use normalized Messages here too?
+
+createInitialWorkspaceSqlite :: Connection -> IO WorkspaceId
+createInitialWorkspaceSqlite conn = do
+    executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, question) VALUES (:time, :parent, :question)" [
+                        ":time" := (0 :: LogicalTime),
+                        ":parent" := (Nothing :: Maybe WorkspaceId),
+                        ":question" := ("What is your question?" :: Text)]
+    lastInsertRowId conn
 
 createWorkspaceSqlite :: Connection -> Workspace -> Message -> IO WorkspaceId
 createWorkspaceSqlite conn ws msg = do

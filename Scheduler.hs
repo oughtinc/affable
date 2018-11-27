@@ -17,6 +17,7 @@ type UserId = Int
 type SchedulerFn = UserId -> Workspace -> Event -> IO (Maybe Workspace)
 
 data SchedulerContext extra = SchedulerContext {
+    createInitialWorkspace :: IO WorkspaceId,
     createWorkspace :: Workspace -> Message -> IO WorkspaceId,
     sendAnswer :: Workspace -> Message -> IO (),
     sendMessage :: Workspace -> WorkspaceId -> Message -> IO (),

@@ -58,9 +58,8 @@ renderWorkspace w = do
         putMessageLn (expand' m)
     return $ invertMap mapping
 
-commandLineInteraction :: SchedulerFn -> IO ()
-commandLineInteraction scheduler = do
-    let initWorkspace = emptyWorkspace (Text "What is your question?")
+commandLineInteraction :: Workspace -> SchedulerFn -> IO ()
+commandLineInteraction initWorkspace scheduler = do
     mapping <- renderWorkspace initWorkspace
     go mapping initWorkspace
   where userId = 0 :: UserId
