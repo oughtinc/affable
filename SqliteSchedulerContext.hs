@@ -7,7 +7,8 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, que
 
 import Command ( Command(..), commandToBuilder )
 import DataModel ( LogicalTime )
-import Message ( Message, Pointer, normalizeMessage, generalizeMessage, messageToBuilder, parseMessageUnsafe )
+import Message ( Message, Pointer, PointerEnvironment, PointerRemapping,
+                 normalizeMessage, generalizeMessage, instantiatePattern, messageToBuilder, parseMessageUnsafe )
 import Scheduler ( SchedulerContext(..) )
 import Time ( Time(..) )
 import Util ( toText )
@@ -25,6 +26,7 @@ makeSqliteSchedulerContext conn = return $
         getNextWorkspace = getNextWorkspaceSqlite conn,
         normalize = insertMessagePointers conn,
         generalize = insertGeneralizedMessagePointers conn,
+        instantiate = insertInstantiatedPatternPointers conn,
         dereference = dereferenceSqlite conn,
         extraContent = conn
     }
@@ -50,6 +52,14 @@ insertGeneralizedMessagePointers conn msg = do
     let (mapping, generalizedMsg) = generalizeMessage (maybe 0 succ lastPointerId) msg
     executeMany conn "INSERT INTO Pointers (id, content) SELECT ?, o.content FROM Pointers o WHERE o.id = ?" (M.assocs mapping)
     return generalizedMsg
+
+insertInstantiatedPatternPointers :: Connection -> PointerEnvironment -> Message -> IO (PointerRemapping, Message)
+insertInstantiatedPatternPointers conn env msg = do
+    -- TODO: This is definitely a race condition.
+    [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+    let (pEnv, mapping, instantiatedPattern) = instantiatePattern (maybe 0 succ lastPointerId) env msg
+    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilder) pEnv))
+    return (mapping, instantiatedPattern)
 
 insertCommand :: Connection -> WorkspaceId -> Command -> IO ()
 insertCommand conn workspaceId cmd = do

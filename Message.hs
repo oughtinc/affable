@@ -5,7 +5,7 @@ module Message (
     Message(..), Pointer, Address,
     pointerParser, addressParser, messageParser, parseMessageUnsafe, pointerToBuilder, addressToBuilder, messageToBuilder,
     PointerEnvironment, PointerRemapping, expandPointers, normalizeMessage, generalizeMessage, renumberMessage, renumberAcc,
-    matchMessage, collectPointers )
+    instantiatePattern, matchMessage, collectPointers )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
@@ -111,13 +111,14 @@ normalizeMessage start = go True M.empty
 -- Creates a message where all pointers are distinct. The output is a mapping
 -- from fresh pointers to the old pointers.
 -- Replaces all pointers with distinct pointers.
+{-
 generalizeMessage :: Int -> Message -> (PointerRemapping, Message)
 generalizeMessage fresh msg = go M.empty msg
     where go mapping (Structured ms) = second Structured $ mapAccumL go mapping ms
           go mapping m@(Reference old) = (M.insert new old mapping, Reference new)
             where !new = M.size mapping + fresh
           go s m = (s, m)
-{-
+-}
 -- Only makes pointers for duplicates. Reuses the old pointers.
 generalizeMessage :: Int -> Message -> (PointerRemapping, Message)
 generalizeMessage fresh msg = case go (S.empty, M.empty, fresh) msg of ((_, mapping, _), m) -> (mapping, m)
@@ -126,7 +127,14 @@ generalizeMessage fresh msg = case go (S.empty, M.empty, fresh) msg of ((_, mapp
             | p `S.member` seen = ((seen, M.insert fresh p mapping, fresh+1), Reference fresh)
             | otherwise = ((S.insert p seen, mapping, fresh), m)
           go s m = (s, m)
--}
+
+-- Replace pointers in Message with new pointers that point to the Messages in the PointerEnvironment.
+instantiatePattern :: Int -> PointerEnvironment -> Message -> (PointerEnvironment, PointerRemapping, Message)
+instantiatePattern fresh env msg = case go (M.empty, M.empty) msg of ((env', mapping), msg) -> (env', mapping, msg)
+    where go s (Structured ms) = second Structured $ mapAccumL go s ms
+          go (env', mapping) m@(Reference old) = ((M.insert new (case M.lookup old env of Just m -> m) env', M.insert new old mapping), Reference new)
+            where !new = M.size mapping + fresh
+          go s m = (s, m)
 
 -- Partial if the PointerRemapping doesn't include every pointer in the Message.
 renumberMessage :: PointerRemapping -> Message -> Maybe Message
