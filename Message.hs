@@ -133,14 +133,14 @@ expandPointers env t = t
 -- from those pointers to the Structured sub-Messages.
 normalizeMessage :: Int -> Message -> (PointerEnvironment, Message)
 normalizeMessage start = go True M.empty
-    where go True env (Structured ms) = second Structured $ mapAccumL (go False) env ms
+    where go True env (Structured ms) = second Structured $ mapAccumL (go False) env ms -- TODO: Make this labeled too? XXX
           go True env (LabeledStructured p ms) = second (LabeledStructured p) $ mapAccumL (go False) env ms
           go _ env (Structured ms)
             = let p = M.size env + start
                   env' = M.insert p (LabeledStructured p ms') env
                   (env'', ms') = mapAccumL (go False) env' ms -- A bit of knot typing occurring here.
               in (env'', Reference p)
-          go _ env m@(LabeledStructured p ms) = (M.insert p m env, Reference p)
+          go _ env m@(LabeledStructured p ms) = (env, Reference p) -- (M.insert p m env, Reference p) -- No need to insert.
           {-
           go _ env (LabeledStructured p ms) -- TODO: Or do I want to just leave this after processing the body?
             = let env' = M.insert p (LabeledStructured p ms') env
