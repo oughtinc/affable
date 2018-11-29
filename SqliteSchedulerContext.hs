@@ -3,12 +3,12 @@ module SqliteSchedulerContext ( makeSqliteSchedulerContext ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Data.Text ( Text ) -- text
-import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, query_, executeMany, executeNamed, lastInsertRowId ) -- sqlite-simple
+import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, query_, execute, executeMany, executeNamed, lastInsertRowId ) -- sqlite-simple
 
 import Command ( Command(..), commandToBuilder )
 import DataModel ( LogicalTime )
-import Message ( Message, Pointer, PointerEnvironment, PointerRemapping, singleLayer,
-                 normalizeMessage, generalizeMessage, instantiatePattern, messageToBuilder, parseMessageUnsafe, parseMessageUnsafe' )
+import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, singleLayer,
+                 normalizeMessage, generalizeMessage, instantiatePattern, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe' )
 import Scheduler ( SchedulerContext(..) )
 import Time ( Time(..) )
 import Util ( toText )
@@ -24,6 +24,7 @@ makeSqliteSchedulerContext conn = return $
         expandPointer = expandPointerSqlite conn,
         getWorkspace = getWorkspaceSqlite conn,
         getNextWorkspace = getNextWorkspaceSqlite conn,
+        labelMessage = labelMessageSqlite conn,
         normalize = insertMessagePointers conn,
         generalize = insertGeneralizedMessagePointers conn,
         instantiate = insertInstantiatedPatternPointers conn,
@@ -32,6 +33,7 @@ makeSqliteSchedulerContext conn = return $
         extraContent = conn
     }
 
+-- TODO: Bulkify this.
 dereferenceSqlite :: Connection -> Pointer -> IO Message
 dereferenceSqlite conn ptr = do
     [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
@@ -43,7 +45,7 @@ insertMessagePointers conn msg = do
     -- TODO: This is definitely a race condition.
     [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
     let (pEnv, normalizedMsg) = normalizeMessage (maybe 0 succ lastPointerId) msg
-    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilder) pEnv))
+    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
     return normalizedMsg
 
 insertGeneralizedMessagePointers :: Connection -> Message -> IO Message
@@ -59,15 +61,25 @@ insertInstantiatedPatternPointers conn env msg = do
     -- TODO: This is definitely a race condition.
     [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
     let (pEnv, mapping, instantiatedPattern) = instantiatePattern (maybe 0 succ lastPointerId) env msg
-    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilder) pEnv))
+    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
     return (mapping, instantiatedPattern)
+
+labelMessageSqlite :: Connection -> Message -> IO Message
+labelMessageSqlite conn msg@(Structured ms) = do
+    execute conn "INSERT INTO Pointers (content) VALUES (?)" [toText (messageToBuilderDB msg)]
+    p <- fromIntegral <$> lastInsertRowId conn
+    return (LabeledStructured p ms)
+labelMessageSqlite conn msg = do
+    execute conn "INSERT INTO Pointers (content) VALUES (?)" [toText (messageToBuilderDB msg)]
+    p <- fromIntegral <$> lastInsertRowId conn
+    return (LabeledStructured p [msg])
 
 singleLayerMatchSqlite :: Connection -> Message -> IO (PointerEnvironment, Message)
 singleLayerMatchSqlite conn msg = do
     -- TODO: This is definitely a race condition.
     [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
     let (pEnv, pattern) = singleLayer (maybe 0 succ lastPointerId) msg
-    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilder) pEnv))
+    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
     -- pattern <- insertGeneralizedMessagePointers conn pattern -- TODO: Do this?
     return (pEnv, pattern)
 
@@ -95,7 +107,7 @@ createWorkspaceSqlite conn doNormalize ws msg = do
     executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, question) VALUES (:time, :parent, :question)" [
                         ":time" := (0 :: LogicalTime), -- TODO
                         ":parent" := Just workspaceId,
-                        ":question" := toText (messageToBuilder msg')]
+                        ":question" := toText (messageToBuilderDB msg')]
     newWorkspaceId <- lastInsertRowId conn
     insertCommand conn workspaceId (Ask msg)
     return newWorkspaceId
@@ -107,7 +119,7 @@ sendAnswerSqlite conn doNormalize ws msg = do
     executeNamed conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (:workspace, :time, :answer)" [
                         ":workspace" := workspaceId,
                         ":time" := (0 :: LogicalTime), -- TODO
-                        ":answer" := toText (messageToBuilder msg')]
+                        ":answer" := toText (messageToBuilderDB msg')]
     insertCommand conn workspaceId (Reply msg)
 
 sendMessageSqlite :: Connection -> Bool -> Workspace -> WorkspaceId -> Message -> IO ()
@@ -118,13 +130,14 @@ sendMessageSqlite conn doNormalize ws tgtId msg = do
                         ":source" := srcId,
                         ":target" := tgtId,
                         ":time" := (0 :: LogicalTime), -- TODO
-                        ":content" := toText (messageToBuilder msg')]
+                        ":content" := toText (messageToBuilderDB msg')]
     insertCommand conn srcId (Send (fromIntegral tgtId) msg)
 
+-- TODO: Bulkify this.
 expandPointerSqlite :: Connection -> Workspace -> Pointer -> IO ()
 expandPointerSqlite conn ws ptr = do
     let workspaceId = identity ws
-    executeNamed conn "INSERT INTO ExpandedPointers (workspaceId, pointerId, logicalTimeExpanded) VALUES (:workspace, :pointer, :time)" [
+    executeNamed conn "INSERT OR IGNORE INTO ExpandedPointers (workspaceId, pointerId, logicalTimeExpanded) VALUES (:workspace, :pointer, :time)" [
                         ":workspace" := workspaceId,
                         ":pointer" := ptr,
                         ":time" := (0 :: LogicalTime)] -- TODO

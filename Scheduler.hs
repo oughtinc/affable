@@ -24,6 +24,7 @@ data SchedulerContext extra = SchedulerContext {
     expandPointer :: Workspace -> Pointer -> IO (),
     getWorkspace :: WorkspaceId -> IO Workspace,
     getNextWorkspace :: IO (Maybe WorkspaceId),
+    labelMessage :: Message -> IO Message,
     normalize :: Message -> IO Message,
     generalize :: Message -> IO Message,
     instantiate :: PointerEnvironment -> Message -> IO (PointerRemapping, Message),
