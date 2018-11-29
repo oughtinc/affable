@@ -8,7 +8,8 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, que
 import Command ( Command(..), commandToBuilder )
 import DataModel ( LogicalTime )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, singleLayer,
-                 normalizeMessage, generalizeMessage, instantiatePattern, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe' )
+                 normalizeMessage, generalizeMessage, instantiatePattern,
+                 messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe' )
 import Scheduler ( SchedulerContext(..) )
 import Time ( Time(..) )
 import Util ( toText )
@@ -110,7 +111,7 @@ createWorkspaceSqlite conn doNormalize ws msg = do
     executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, question) VALUES (:time, :parent, :question)" [
                         ":time" := (0 :: LogicalTime), -- TODO
                         ":parent" := Just workspaceId,
-                        ":question" := toText (messageToBuilderDB msg')]
+                        ":question" := toText (messageToBuilder msg')]
     newWorkspaceId <- lastInsertRowId conn
     insertCommand conn workspaceId (Ask msg)
     return newWorkspaceId
@@ -122,7 +123,7 @@ sendAnswerSqlite conn doNormalize ws msg = do
     executeNamed conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (:workspace, :time, :answer)" [
                         ":workspace" := workspaceId,
                         ":time" := (0 :: LogicalTime), -- TODO
-                        ":answer" := toText (messageToBuilderDB msg')]
+                        ":answer" := toText (messageToBuilder msg')]
     insertCommand conn workspaceId (Reply msg)
 
 sendMessageSqlite :: Connection -> Bool -> Workspace -> WorkspaceId -> Message -> IO ()
@@ -133,7 +134,7 @@ sendMessageSqlite conn doNormalize ws tgtId msg = do
                         ":source" := srcId,
                         ":target" := tgtId,
                         ":time" := (0 :: LogicalTime), -- TODO
-                        ":content" := toText (messageToBuilderDB msg')]
+                        ":content" := toText (messageToBuilder msg')]
     insertCommand conn srcId (Send (fromIntegral tgtId) msg)
 
 -- TODO: Bulkify this.
