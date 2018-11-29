@@ -3,9 +3,9 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Message (
-    Message(..), Pointer, Address,
-    pointerParser, addressParser, messageParser, parseMessageUnsafe, parseMessageUnsafe', pointerToBuilder, addressToBuilder, messageToBuilder,
-    PointerEnvironment, PointerRemapping, expandPointers, normalizeMessage, generalizeMessage, renumberMessage, renumberAcc,
+    Message(..), Pointer, Address, PointerEnvironment, PointerRemapping,
+    pointerParser, addressParser, messageParser, messageParser', parseMessageUnsafe, parseMessageUnsafe',
+    pointerToBuilder, addressToBuilder, messageToBuilder, expandPointers, normalizeMessage, generalizeMessage, renumberMessage, renumberAcc,
     singleLayer, instantiatePattern, matchMessage, collectPointers )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
@@ -65,8 +65,18 @@ addressParser =  (char '@' *> decimal) <?> "address"
 addressToBuilder :: Address -> Builder
 addressToBuilder a = singleton '@' <> T.decimal a
 
+-- Doesn't parse LabeledStructures, so we can keep users for entering them.
 messageParser :: Parsec Void Text Message
 messageParser = do
+    body <- some mParser <?> "message"
+    return $ Structured body
+  where mParser = (Reference <$> pointerParser)
+              <|> (Location <$> addressParser)
+              <|> (Structured <$> (char '[' *> some mParser <* char ']') <?> "submessage")
+              <|> (Text <$> takeWhile1P Nothing (\c -> c `notElem` ("[]$@" :: String)) <?> "text")
+
+messageParser' :: Parsec Void Text Message
+messageParser' = do
     body <- some mParser <?> "message"
     return $ Structured body
   where mParser = (Reference <$> pointerParser)
@@ -78,10 +88,10 @@ messageParser = do
         structuredTail m = (Structured . (m:) <$> many mParser) <* char ']'
 
 parseMessageUnsafe :: Text -> Message
-parseMessageUnsafe t = case parse messageParser "" t of Right msg -> msg
+parseMessageUnsafe t = case parse messageParser' "" t of Right msg -> msg
 
 parseMessageUnsafe' :: Pointer -> Text -> Message
-parseMessageUnsafe' p t = case parse messageParser "" t of Right (Structured ms) -> LabeledStructured p ms
+parseMessageUnsafe' p t = case parse messageParser' "" t of Right (Structured ms) -> LabeledStructured p ms
 
 messageToBuilder :: Message -> Builder
 messageToBuilder = go True
