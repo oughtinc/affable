@@ -18,15 +18,16 @@ type SchedulerFn = UserId -> Workspace -> Event -> IO (Maybe Workspace)
 
 data SchedulerContext extra = SchedulerContext {
     createInitialWorkspace :: IO WorkspaceId,
-    createWorkspace :: Workspace -> Message -> IO WorkspaceId,
-    sendAnswer :: Workspace -> Message -> IO (),
-    sendMessage :: Workspace -> WorkspaceId -> Message -> IO (),
+    createWorkspace :: Bool -> Workspace -> Message -> IO WorkspaceId,
+    sendAnswer :: Bool -> Workspace -> Message -> IO (),
+    sendMessage :: Bool -> Workspace -> WorkspaceId -> Message -> IO (),
     expandPointer :: Workspace -> Pointer -> IO (),
     getWorkspace :: WorkspaceId -> IO Workspace,
     getNextWorkspace :: IO (Maybe WorkspaceId),
     normalize :: Message -> IO Message,
     generalize :: Message -> IO Message,
     instantiate :: PointerEnvironment -> Message -> IO (PointerRemapping, Message),
+    singleLayerMatch :: Message -> IO (PointerEnvironment, Message), -- TODO: This may obviate normalize/generalize or could be made to do so.
     dereference :: Pointer -> IO Message,
     extraContent :: extra -- This is to support making schedulers that can (e.g.) access SQLite directly.
   }
@@ -34,18 +35,18 @@ data SchedulerContext extra = SchedulerContext {
 makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeSingleUserScheduler ctxt = do
     let scheduler user workspace (Create msg) = do -- TODO: Generalize the Message so every pointer is distinct.
-            newWorkspaceId <- createWorkspace ctxt workspace msg
+            newWorkspaceId <- createWorkspace ctxt True workspace msg
             Just <$> getWorkspace ctxt newWorkspaceId
 
         scheduler user workspace (Answer msg) = do
-            sendAnswer ctxt workspace msg
+            sendAnswer ctxt True workspace msg
             mNewWorkspaceId <- getNextWorkspace ctxt
             case mNewWorkspaceId of
                 Just newWorkspaceId -> Just <$> getWorkspace ctxt newWorkspaceId
                 Nothing -> return Nothing
 
         scheduler user workspace (Send ws msg) = do
-            sendMessage ctxt workspace ws msg
+            sendMessage ctxt True workspace ws msg
             Just <$> getWorkspace ctxt (identity workspace)
 
         scheduler user workspace (Expand ptr) = do

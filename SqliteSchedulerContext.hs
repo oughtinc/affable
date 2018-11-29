@@ -7,8 +7,8 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, que
 
 import Command ( Command(..), commandToBuilder )
 import DataModel ( LogicalTime )
-import Message ( Message, Pointer, PointerEnvironment, PointerRemapping,
-                 normalizeMessage, generalizeMessage, instantiatePattern, messageToBuilder, parseMessageUnsafe )
+import Message ( Message, Pointer, PointerEnvironment, PointerRemapping, singleLayer,
+                 normalizeMessage, generalizeMessage, instantiatePattern, messageToBuilder, parseMessageUnsafe, parseMessageUnsafe' )
 import Scheduler ( SchedulerContext(..) )
 import Time ( Time(..) )
 import Util ( toText )
@@ -27,6 +27,7 @@ makeSqliteSchedulerContext conn = return $
         normalize = insertMessagePointers conn,
         generalize = insertGeneralizedMessagePointers conn,
         instantiate = insertInstantiatedPatternPointers conn,
+        singleLayerMatch = singleLayerMatchSqlite conn,
         dereference = dereferenceSqlite conn,
         extraContent = conn
     }
@@ -61,6 +62,15 @@ insertInstantiatedPatternPointers conn env msg = do
     executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilder) pEnv))
     return (mapping, instantiatedPattern)
 
+singleLayerMatchSqlite :: Connection -> Message -> IO (PointerEnvironment, Message)
+singleLayerMatchSqlite conn msg = do
+    -- TODO: This is definitely a race condition.
+    [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+    let (pEnv, pattern) = singleLayer (maybe 0 succ lastPointerId) msg
+    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilder) pEnv))
+    -- pattern <- insertGeneralizedMessagePointers conn pattern -- TODO: Do this?
+    return (pEnv, pattern)
+
 insertCommand :: Connection -> WorkspaceId -> Command -> IO ()
 insertCommand conn workspaceId cmd = do
     mt <- query conn "SELECT localTime FROM Commands WHERE workspaceId = ? ORDER BY localTime DESC LIMIT 1" (Only workspaceId)
@@ -78,10 +88,10 @@ createInitialWorkspaceSqlite conn = do
                         ":question" := ("What is your question?" :: Text)]
     lastInsertRowId conn
 
-createWorkspaceSqlite :: Connection -> Workspace -> Message -> IO WorkspaceId
-createWorkspaceSqlite conn ws msg = do
+createWorkspaceSqlite :: Connection -> Bool -> Workspace -> Message -> IO WorkspaceId
+createWorkspaceSqlite conn doNormalize ws msg = do
     let workspaceId = identity ws
-    msg' <- insertMessagePointers conn msg
+    msg' <- if doNormalize then insertMessagePointers conn msg else return msg
     executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, question) VALUES (:time, :parent, :question)" [
                         ":time" := (0 :: LogicalTime), -- TODO
                         ":parent" := Just workspaceId,
@@ -90,20 +100,20 @@ createWorkspaceSqlite conn ws msg = do
     insertCommand conn workspaceId (Ask msg)
     return newWorkspaceId
 
-sendAnswerSqlite :: Connection -> Workspace -> Message -> IO ()
-sendAnswerSqlite conn ws msg = do
+sendAnswerSqlite :: Connection -> Bool -> Workspace -> Message -> IO ()
+sendAnswerSqlite conn doNormalize ws msg = do
     let workspaceId = identity ws
-    msg' <- insertMessagePointers conn msg
+    msg' <- if doNormalize then insertMessagePointers conn msg else return msg
     executeNamed conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (:workspace, :time, :answer)" [
                         ":workspace" := workspaceId,
                         ":time" := (0 :: LogicalTime), -- TODO
                         ":answer" := toText (messageToBuilder msg')]
     insertCommand conn workspaceId (Reply msg)
 
-sendMessageSqlite :: Connection -> Workspace -> WorkspaceId -> Message -> IO ()
-sendMessageSqlite conn ws tgtId msg = do
+sendMessageSqlite :: Connection -> Bool -> Workspace -> WorkspaceId -> Message -> IO ()
+sendMessageSqlite conn doNormalize ws tgtId msg = do
     let srcId = identity ws
-    msg' <- insertMessagePointers conn msg
+    msg' <- if doNormalize then insertMessagePointers conn msg else return msg
     executeNamed conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (:source, :target, :time, :content)" [
                         ":source" := srcId,
                         ":target" := tgtId,
@@ -139,7 +149,7 @@ getWorkspaceSqlite conn workspaceId = do
         question = parseMessageUnsafe q,
         subQuestions = map (\(q, ma) -> (parseMessageUnsafe q, fmap parseMessageUnsafe ma)) subquestions,
         messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
-        expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe m)) expanded,
+        expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
         time = Time t }
 
 getNextWorkspaceSqlite :: Connection -> IO (Maybe WorkspaceId)

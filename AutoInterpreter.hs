@@ -12,6 +12,7 @@ import qualified Data.Text as T -- text
 import qualified Data.Text.IO as T -- text
 import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
 import Data.Text.Lazy.Builder.Int ( decimal ) -- text
+import Data.Traversable ( traverse ) -- base
 
 import Message ( Message(..), Pointer, messageToBuilder, matchMessage, expandPointers )
 import Scheduler ( Event(..), SchedulerContext(..), SchedulerFn )
@@ -139,13 +140,15 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                        -- or when any subquestions are marked. This would allow "garbage collecting" workspaces
                                        -- with answers that are not "human-influenced", i.e. were created entirely through automation.
                 Just alts -> do
+                    m <- normalize ctxt m
                     let !mMatch = asum $ map (\(p, e) -> fmap (\bindings -> (p, M.union varEnv bindings, e)) $ matchMessage p m) alts
                     case mMatch of
                         Just (pattern, varEnv', e) -> do
+                            varEnv' <- traverse (\m -> case m of Reference p -> dereference ctxt p; _ -> return m) varEnv'
                             (mapping, workspace) <- case f of
                                                         ANSWER -> do
                                                             (mapping, pattern) <- instantiate ctxt varEnv' pattern
-                                                            newWorkspaceId <- createWorkspace ctxt workspace pattern
+                                                            newWorkspaceId <- createWorkspace ctxt False workspace pattern
                                                             fmap ((,) mapping) $ getWorkspace ctxt newWorkspaceId
                                                         _ -> return (M.empty, workspace)
                             let !workspaceId = identity workspace
@@ -157,22 +160,25 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                             -- this will create a new workspace that will lead to the creation (via functional updating) of new workspace
                             -- as the change percolates back up the tree of questions.
                             case e of
-                                LetFun _ (Call _ (Call ANSWER (Value _))) -> do -- ask case
+                                LetFun _ (Call _ (Call ANSWER (Value msg))) -> do -- ask case
                                     return ((globalToLocal', workspaceId), varEnv', e)
                                 LetFun _ (Call _ (Var ptr)) -> do -- expand case
                                     expandPointer ctxt workspace $! maybe ptr id $ M.lookup ptr invMapping
                                     return ((globalToLocal', workspaceId), varEnv', e)
                                 Value msg -> do -- reply case
-                                    sendAnswer ctxt workspace $! expandPointers varEnv' msg -- TODO: This right?
+                                    sendAnswer ctxt False workspace msg -- $! expandPointers varEnv' msg -- TODO: This right?
                                     return ((globalToLocal', workspaceId), varEnv', e)
                                 -- Just _ -> return ((globalToLocal', workspaceId), varEnv', e) -- Intentionally missing this case.
                         Nothing -> matchFailed workspace
                 Nothing -> matchFailed workspace
             where matchFailed workspace = do
-                    pattern <- generalize ctxt =<< normalize ctxt m
+                    m' <- normalize ctxt m
+                    pattern <- generalize ctxt m'
+                    let !(Just bindings) = matchMessage pattern m -- This shouldn't fail.
+                    bindings <- traverse (\m -> case m of Reference p -> dereference ctxt p; _ -> return m) bindings
                     workspace <- case f of
                                     ANSWER -> do
-                                        newWorkspaceId <- createWorkspace ctxt workspace pattern
+                                        newWorkspaceId <- createWorkspace ctxt False workspace pattern
                                         getWorkspace ctxt newWorkspaceId
                                     _ -> return workspace
                     let !workspaceId = identity workspace
@@ -187,13 +193,13 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                 g <- genSym
                                 return $ LetFun g (Call g (Var ptr'))
                             Answer msg -> do
-                                sendAnswer ctxt workspace $! expandPointers varEnv msg
+                                -- TODO: Do some kind of normalization here and record it somehow.
+                                sendAnswer ctxt False workspace msg -- $! expandPointers varEnv msg
                                 return $ Value msg
                             -- Send ws msg -> Intentional.
                     modifyIORef' alternativesRef (M.insertWith (++) f [(pattern, e)])
                     debugCode
-                    let !(Just bindings) = matchMessage pattern m -- This shouldn't fail.
-                    let varEnv' = M.union varEnv bindings
+                    let !varEnv' = M.union varEnv bindings
                     return ((globalToLocal, workspaceId), varEnv', e)
 
         scheduler _ workspace (Send ws msg) = do
