@@ -37,7 +37,10 @@ makeSqliteSchedulerContext conn = return $
 dereferenceSqlite :: Connection -> Pointer -> IO Message
 dereferenceSqlite conn ptr = do
     [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
-    return $! parseMessageUnsafe t
+    return $! parseMessageUnsafe' ptr t
+
+-- TODO: Can probably add a cache (using the MessageTrie) to avoid creating pointers unnecessarily,
+-- for most of the operations that insert into Pointers, though some should not use the cache regardless.
 
 -- Normalize the Message, write the new pointers to the database, then return the normalized message.
 insertMessagePointers :: Connection -> Message -> IO Message
