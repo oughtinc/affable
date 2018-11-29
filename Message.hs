@@ -206,8 +206,8 @@ renumberMessage mapping msg = Just msg
 
 renumberAcc :: PointerRemapping -> Message -> PointerRemapping
 renumberAcc mapping (Structured ms) = foldl' renumberAcc mapping ms
-renumberAcc mapping (LabeledStructured p ms) = if p `M.member` mapping' then mapping' else M.insert p (M.size mapping') mapping'
-    where !mapping' = foldl' renumberAcc mapping ms
+renumberAcc mapping (LabeledStructured p ms) = foldl' renumberAcc mapping' ms 
+    where !mapping' = if p `M.member` mapping then mapping else M.insert p (M.size mapping) mapping
 renumberAcc mapping (Reference p) = if p `M.member` mapping then mapping else M.insert p (M.size mapping) mapping
 renumberAcc mapping msg = mapping
 
