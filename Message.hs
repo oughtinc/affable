@@ -5,7 +5,8 @@
 module Message (
     Message(..), Pointer, Address, PointerEnvironment, PointerRemapping,
     pointerParser, addressParser, messageParser, messageParser', parseMessageUnsafe, parseMessageUnsafe',
-    pointerToBuilder, addressToBuilder, messageToBuilder, expandPointers, normalizeMessage, generalizeMessage, renumberMessage, renumberAcc,
+    pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB,
+    expandPointers, normalizeMessage, generalizeMessage, renumberMessage, renumberAcc,
     singleLayer, instantiatePattern, matchMessage, collectPointers )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
@@ -96,7 +97,17 @@ parseMessageUnsafe' p t = case parse messageParser' "" t of Right (Structured ms
 messageToBuilder :: Message -> Builder
 messageToBuilder = go True
     where go  True (Structured ms) = foldMap (go False) ms
-          go  True (LabeledStructured p ms) = foldMap (go False) ms -- TODO: Do something different?
+          -- go  True (LabeledStructured p ms) = foldMap (go False) ms -- TODO: Do something different?
+          go False (Structured ms) = singleton '[' <> foldMap (go False) ms <> singleton ']'
+          go     _ (LabeledStructured p ms) = singleton '[' <> pointerToBuilder p <> singleton '|' <> foldMap (go False) ms <> singleton ']'
+          go     _ (Text t) = fromText t
+          go     _ (Reference p) = pointerToBuilder p
+          go     _ (Location a) = addressToBuilder a
+
+messageToBuilderDB :: Message -> Builder
+messageToBuilderDB = go True
+    where go  True (Structured ms) = foldMap (go False) ms
+          go  True (LabeledStructured p ms) = foldMap (go False) ms
           go False (Structured ms) = singleton '[' <> foldMap (go False) ms <> singleton ']'
           go     _ (LabeledStructured p ms) = singleton '[' <> pointerToBuilder p <> singleton '|' <> foldMap (go False) ms <> singleton ']'
           go     _ (Text t) = fromText t
@@ -205,6 +216,7 @@ matchMessage :: Message -> Message -> Maybe PointerEnvironment
 matchMessage (Text pt) (Text t) | pt == t = Just M.empty
 matchMessage (Location pa) (Location a) | pa == a = Just M.empty
 matchMessage (Structured pms) (Structured ms) = M.unions <$> sequenceA (zipWith matchMessage pms ms)
+matchMessage (LabeledStructured p pms) m@(Structured ms) = (M.insert p m . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
 matchMessage (LabeledStructured p pms) m@(LabeledStructured _ ms) = (M.insert p m . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
 matchMessage (Reference p) m@(Reference _) = Just (M.singleton p m)
 matchMessage (Reference p) m@(Structured _) = Just (M.singleton p m)
