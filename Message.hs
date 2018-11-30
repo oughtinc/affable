@@ -6,7 +6,7 @@ module Message (
     Message(..), Pointer, Address, PointerEnvironment, PointerRemapping,
     pointerParser, addressParser, messageParser, messageParser', parseMessageUnsafe, parseMessageUnsafe',
     pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB,
-    expandPointers, normalizeMessage, generalizeMessage, renumberMessage, renumberAcc,
+    expandPointers, substitute, normalizeMessage, generalizeMessage, renumberMessage, renumberAcc,
     singleLayer, instantiatePattern, matchMessage, collectPointers )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
@@ -120,7 +120,10 @@ type PointerEnvironment = M.Map Pointer Message
 -- TODO: Use strict map.
 type PointerRemapping = M.Map Pointer Pointer
 
--- Expand the pointers in the pointer environment that occur in the message.
+-- Expand the pointers in the pointer environment that occur in the message. See substitute.
+-- The idea is that a Message with pointers or with those pointers expanded are "equivalent".
+-- We want to maintain the invariant that for LabeledStructure p msg, msg is "equivalent" to
+-- whatever "p" points at (in the actual database).
 expandPointers :: PointerEnvironment -> Message -> Message
 expandPointers env (Reference p) = case M.lookup p env of
                                         Nothing -> Reference p
@@ -128,6 +131,20 @@ expandPointers env (Reference p) = case M.lookup p env of
 expandPointers env (Structured blocks) = Structured (map (expandPointers env) blocks)
 expandPointers env (LabeledStructured p blocks) = LabeledStructured p (map (expandPointers env) blocks)
 expandPointers env t = t
+
+-- substitute is like expandPointers only the PointerEnvironment may not reflect the actual state of the
+-- pointers in the database. The upshot of this is that when we substitute under a LabeledStructure p, the
+-- result may no longer be "equivalent" to what the pointer p points to, so, to maintain the invariant
+-- we turn those into plain Structures.
+substitute :: PointerEnvironment -> Message -> Message
+substitute env (Reference p) = case M.lookup p env of
+                                        Nothing -> Reference p
+                                        Just m -> substitute env m
+substitute env (Structured blocks) = Structured (map (substitute env) blocks)
+substitute env (LabeledStructured p blocks) = Structured (map (substitute env) blocks) -- TODO: Could probably keep LabeledStructured p if we don't
+                                                                                       -- actually substitute into any subMessages. We could percolate
+                                                                                       -- up a Bool to indicate whether any substitutions were made.
+substitute env t = t
 
 -- Given a Message, replace all Structured sub-Messages with pointers and output a mapping
 -- from those pointers to the Structured sub-Messages.
@@ -140,7 +157,7 @@ normalizeMessage start = go True M.empty
                   env' = M.insert p (LabeledStructured p ms') env
                   (env'', ms') = mapAccumL (go False) env' ms -- A bit of knot typing occurring here.
               in (env'', Reference p)
-          go _ env m@(LabeledStructured p ms) = (env, Reference p) -- (M.insert p m env, Reference p) -- No need to insert.
+          go _ env m@(LabeledStructured p ms) = (env, Reference p)
           {-
           go _ env (LabeledStructured p ms) -- TODO: Or do I want to just leave this after processing the body?
             = let env' = M.insert p (LabeledStructured p ms') env
@@ -159,7 +176,7 @@ singleLayer start = go True M.empty
                   !env' = M.insert p (LabeledStructured p ms) env
               in (env', Reference p)
           go _ env (LabeledStructured p ms) -- TODO: Or just leave it?
-            = let !env' = M.insert p (Structured ms) env
+            = let !env' = M.insert p (LabeledStructured p ms) env
               in (env', Reference p)
           go _ env m = (env, m)
 
@@ -192,12 +209,15 @@ generalizeMessage fresh msg = case go (S.empty, M.empty, fresh) msg of ((_, mapp
 instantiatePattern :: Int -> PointerEnvironment -> Message -> (PointerEnvironment, PointerRemapping, Message)
 instantiatePattern fresh env msg = case go (M.empty, M.empty) msg of ((env', mapping), msg) -> (env', mapping, msg)
     where go s (Structured ms) = second Structured $ mapAccumL go s ms
-          go s (LabeledStructured p ms) = second (LabeledStructured p) $ mapAccumL go s ms
+          -- go s (LabeledStructured p ms) = second (LabeledStructured p) $ mapAccumL go s ms -- TODO: Keep this label if the contents no longer match?
+          go s (LabeledStructured p ms) = second Structured $ mapAccumL go s ms
           go (env', mapping) m@(Reference old) = ((M.insert new (case M.lookup old env of Just m -> m) env', M.insert new old mapping), Reference new)
             where !new = M.size mapping + fresh
           go s m = (s, m)
 
 -- Partial if the PointerRemapping doesn't include every pointer in the Message.
+-- This violates the invariant with respect to LabeledStructures, but should maintain it modulo the PointerRemapping.
+-- For what renumberMessage is used for, this is okay.
 renumberMessage :: PointerRemapping -> Message -> Maybe Message
 renumberMessage mapping (Structured ms) = Structured <$> traverse (renumberMessage mapping) ms
 renumberMessage mapping (LabeledStructured p ms) = LabeledStructured <$> M.lookup p mapping <*> traverse (renumberMessage mapping) ms
@@ -206,21 +226,26 @@ renumberMessage mapping msg = Just msg
 
 renumberAcc :: PointerRemapping -> Message -> PointerRemapping
 renumberAcc mapping (Structured ms) = foldl' renumberAcc mapping ms
-renumberAcc mapping (LabeledStructured p ms) = foldl' renumberAcc mapping' ms 
+renumberAcc mapping (LabeledStructured p ms) = foldl' renumberAcc mapping' ms
     where !mapping' = if p `M.member` mapping then mapping else M.insert p (M.size mapping) mapping
 renumberAcc mapping (Reference p) = if p `M.member` mapping then mapping else M.insert p (M.size mapping) mapping
 renumberAcc mapping msg = mapping
 
+-- TODO: The relabeling is almost certainly going to cause subtle bugs. XXX
 -- This assumes `pattern` has no duplicated pointers.
 matchMessage :: Message -> Message -> Maybe PointerEnvironment
 matchMessage (Text pt) (Text t) | pt == t = Just M.empty
 matchMessage (Location pa) (Location a) | pa == a = Just M.empty
 matchMessage (Structured pms) (Structured ms) = M.unions <$> sequenceA (zipWith matchMessage pms ms)
+-- matchMessage (LabeledStructured p pms) (Structured ms) = (M.insert p (LabeledStructured p ms) . M.unions) <$> sequenceA (zipWith matchMessage pms ms) -- TODO: Do this relabeling?
+-- matchMessage (LabeledStructured p pms) m@(LabeledStructured _ ms) = (M.insert p m . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
 matchMessage (LabeledStructured p pms) m@(Structured ms) = (M.insert p m . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
-matchMessage (LabeledStructured p pms) m@(LabeledStructured _ ms) = (M.insert p m . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
+matchMessage (LabeledStructured p pms) (LabeledStructured _ ms) = (M.insert p (Structured ms) . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
 matchMessage (Reference p) m@(Reference _) = Just (M.singleton p m)
-matchMessage (Reference p) m@(Structured _) = Just (M.singleton p m)
-matchMessage (Reference p) m@(LabeledStructured _ _) = Just (M.singleton p m)
+-- matchMessage (Reference p) (Structured ms) = Just (M.singleton p (LabeledStructured p ms)) -- TODO: Do this relabeling? These are abusive since p doesn't point at the matched Message.
+-- matchMessage (Reference p) (LabeledStructured _ ms) = Just (M.singleton p (LabeledStructured p ms)) -- TODO: Do this relabeling?
+matchMessage (Reference p) (Structured ms) = Just (M.singleton p (Structured ms))
+matchMessage (Reference p) (LabeledStructured _ ms) = Just (M.singleton p (Structured ms))
 matchMessage _ _ = Nothing
 
 collectPointers :: Message -> [Pointer]
