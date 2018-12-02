@@ -14,12 +14,13 @@ import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
 import Data.Text.Lazy.Builder.Int ( decimal ) -- text
 import Data.Traversable ( traverse ) -- base
 
-import Message ( Message(..), Pointer, messageToBuilder, matchMessage, expandPointers )
+import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage, expandPointers, substitute, renumberMessage' )
 import Scheduler ( Event(..), SchedulerContext(..), SchedulerFn )
 import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 import Util ( toText, invertMap )
 
 type Value = Message
+type Pattern = Message
 
 -- TODO: Make data model and figure out how to serialize to database.
 -- NOTE: Currently only ever use LetFun f (Call f _) pattern which is essentially, unsurprisingly,
@@ -34,7 +35,7 @@ data Exp f v
                                     --     f(p1) = e3
                                     -- in e4
 
-expToBuilder' :: (f -> Builder) -> (v -> Builder) -> (f -> [(Message, Exp f v)]) -> Exp f v -> Builder
+expToBuilder' :: (f -> Builder) -> (v -> Builder) -> (f -> [(Pattern, Exp f v)]) -> Exp f v -> Builder
 expToBuilder' fBuilder vBuilder alternativesFor = go 0
     where go indent (Var x) = vBuilder x
           go indent (Value v) = valueToBuilder v
@@ -56,7 +57,7 @@ expToBuilder' fBuilder vBuilder alternativesFor = go 0
                   f' p = indentBuilder <> fromText "  " <> fBuilder f <> singleton '(' <> valueToBuilder p <> singleton ')'
           valueToBuilder = messageToBuilder -- TODO: Or use show or something else?
 
-expToBuilder :: (Name -> [(Message, Exp Name Var)]) -> Exp Name Var -> Builder
+expToBuilder :: (Name -> [(Pattern, Exp Name Var)]) -> Exp Name Var -> Builder
 expToBuilder = expToBuilder' nameToBuilder (\v -> singleton '$' <> decimal v)
 
 type VarEnv v = M.Map v Value
@@ -65,7 +66,7 @@ type FunEnv s m f = M.Map f (s -> Value -> m Value)
 
 -- NOTE: We could do a "parallel" evaluator that might allow multiple workspaces to be scheduled.
 evaluateExp :: (Ord f, Ord v, Monad m)
-            => (s -> VarEnv v -> f -> Message -> m (s, VarEnv v, Exp f v))
+            => (s -> VarEnv v -> f -> Value -> m (s, VarEnv v, Exp f v))
             -> (VarEnv v -> Value -> Value)
             -> s
             -> Exp f v
@@ -73,7 +74,7 @@ evaluateExp :: (Ord f, Ord v, Monad m)
 evaluateExp match subst = evaluateExp' match subst M.empty M.empty
 
 evaluateExp' :: (Ord f, Ord v, Monad m)
-             => (s -> VarEnv v -> f -> Message -> m (s, VarEnv v, Exp f v))
+             => (s -> VarEnv v -> f -> Value -> m (s, VarEnv v, Exp f v))
              -> (VarEnv v -> Value -> Value)
              -> VarEnv v
              -> FunEnv s m f
@@ -104,23 +105,40 @@ type Var = Pointer
 
 type Exp' = Exp Name Var
 
+relabelMessage ctxt (LabeledStructured _ ms) = labelMessage ctxt (Structured ms)
+relabelMessage ctxt msg = labelMessage ctxt msg
+
 -- NOTE: Instead of using forkIO and co, we could use a monad other than IO for
 -- expression evaluation that supports suspending a computation or implements cooperative
 -- concurrency.
 makeInterpreterScheduler :: SchedulerContext extra -> WorkspaceId -> IO SchedulerFn
 makeInterpreterScheduler ctxt initWorkspaceId = do
-    let answerFn = ANSWER
-    alternativesRef <- newIORef (M.empty :: M.Map Name [(Message, Exp')]) -- TODO: Load from database.
-    idRef <- newIORef (0 :: Int)
+    alternativesRef <- newIORef (M.empty :: M.Map Name [(Pattern, Exp')]) -- TODO: Load from database.
+
+    workspaceVariablesRef <- newIORef (M.empty :: M.Map WorkspaceId PointerRemapping) -- TODO: Store in database(?) Maybe not?
+
+    -- Hacky? Holds pointers to the answers to the latest pending questions for workspaces, if any.
+    -- This strongly suggests a sequential workflow, which isn't wrong, but isn't desirable either.
+    -- For a more parallel workflow, we could identify subquestions and have a mapping from workspaces to subquestions.
+    answersRef <- newIORef (M.empty :: M.Map WorkspaceId Pointer) -- Probably doesn't need to be in database.
+
+    idRef <- newIORef (0 :: Int) -- When the alternatives are in the database, this will effectively become a database ID.
 
     requestMVar <- newEmptyMVar :: IO (MVar (Maybe WorkspaceId))
     responseMVar <- newEmptyMVar :: IO (MVar Event)
 
     let genSym = atomicModifyIORef' idRef (\n -> (n+1, LOCAL n))
 
+        link workspaceId new old = linkVars workspaceId (M.singleton new old)
+        linkVars workspaceId mapping = modifyIORef' workspaceVariablesRef $ M.insertWith M.union workspaceId mapping
+        links workspaceId = (maybe M.empty id . M.lookup workspaceId) <$> readIORef workspaceVariablesRef
+
+        giveAnswer workspaceId p = modifyIORef' answersRef $ M.insert workspaceId p
+        retrieveAnswer workspaceId = atomicModifyIORef' answersRef ((\(x,y) -> (y,x)) . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
+
         debugCode = do
             altMap <- readIORef alternativesRef
-            T.putStrLn (toText (expToBuilder (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun answerFn (Value (Text "dummy")))))
+            T.putStrLn (toText (expToBuilder (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
 
         blockOnUser !mWorkspace = do
             putMVar requestMVar mWorkspace
@@ -130,10 +148,10 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
             putMVar responseMVar e
             takeMVar requestMVar
 
-        match s varEnv f (Reference p) = do -- TODO: This is what is desired?
+        match s varEnv f (Reference p) = do
             m <- dereference ctxt p
-            match s varEnv f m -- TODO: Wrap the result in a Structured?
-        match (globalToLocal, workspaceId) varEnv f m = do
+            match s varEnv f m
+        match workspaceId varEnv f m = do
             workspace <- getWorkspace ctxt workspaceId
             altsMap <- readIORef alternativesRef
             case M.lookup f altsMap of -- TODO: Could mark workspaces as "human-influenced" when a pattern match failure is hit
@@ -145,15 +163,25 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                     case mMatch of
                         Just (pattern, varEnv', e) -> do
                             varEnv' <- traverse (\m -> case m of Reference p -> dereference ctxt p; _ -> return m) varEnv'
-                            (mapping, workspace) <- case f of
+                            -- This is to make it so occurrences of variables bound by as-patterns don't get substituted.
+                            -- This leads to match being called on References if we reply with the variable bound by an as-pattern.
+                            bindings <- case (pattern, m) of
+                                            (LabeledStructured asP _, LabeledStructured l _) -> return $ M.insert asP (Reference l) varEnv'
+                                            _ -> return varEnv'
+
+                            (mapping, child) <- case f of
                                                         ANSWER -> do
-                                                            (mapping, pattern) <- instantiate ctxt varEnv' pattern
+                                                            (mapping, pattern) <- instantiate ctxt bindings pattern
+                                                            -- TODO: Have a separate "as asked" and "as answered" question field
+                                                            -- for workspaces? Otherwise, if you ask "foo $1 $1", the question you'll
+                                                            -- seen, once answered, is "foo $2 $3" because that's the question that
+                                                            -- was answered.
                                                             newWorkspaceId <- createWorkspace ctxt False workspace pattern
                                                             fmap ((,) mapping) $ getWorkspace ctxt newWorkspaceId
                                                         _ -> return (M.empty, workspace)
-                            let !workspaceId = identity workspace
+                            let !childId = identity child
                             let !invMapping = invertMap mapping
-                            let !globalToLocal' = M.union mapping globalToLocal
+                            linkVars childId mapping
                             -- This is a bit hacky. If this approach is the way to go, make these patterns individual constructors.
                             -- I'd also prefer a design that only created workspace when necessary. I envision something that executes
                             -- the automation creating nothing if there are no pattern match failures. If there is a pattern match failure,
@@ -161,46 +189,58 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                             -- as the change percolates back up the tree of questions.
                             case e of
                                 LetFun _ (Call _ (Call ANSWER (Value msg))) -> do -- ask case
-                                    return ((globalToLocal', workspaceId), varEnv', e)
+                                    return (childId, varEnv', e)
                                 LetFun _ (Call _ (Var ptr)) -> do -- expand case
-                                    expandPointer ctxt workspace $! maybe ptr id $ M.lookup ptr invMapping
-                                    return ((globalToLocal', workspaceId), varEnv', e)
+                                    expandPointer ctxt child $! maybe ptr id $ M.lookup ptr invMapping
+                                    return (childId, varEnv', e)
                                 Value msg -> do -- reply case
-                                    sendAnswer ctxt False workspace msg -- $! expandPointers varEnv' msg -- TODO: This right?
-                                    return ((globalToLocal', workspaceId), varEnv', e)
-                                -- Just _ -> return ((globalToLocal', workspaceId), varEnv', e) -- Intentionally missing this case.
+                                    let varEnv'' = varEnv'
+                                    let !msg' = substitute bindings msg
+                                    msg@(LabeledStructured new _) <- relabelMessage ctxt msg'
+                                    sendAnswer ctxt False child msg
+                                    case parentId workspace of Just pId -> giveAnswer pId new; _ -> return ()
+                                    return (childId, varEnv'', e)
+                                -- Just _ -> return (workspaceId, varEnv', e) -- Intentionally missing this case.
                         Nothing -> matchFailed workspace
                 Nothing -> matchFailed workspace
             where matchFailed workspace = do
                     m' <- normalize ctxt m
-                    pattern <- generalize ctxt m'
-                    let !(Just bindings) = matchMessage pattern m -- This shouldn't fail.
+                    pattern <- generalize ctxt m' -- NOTE: If we want pointers to questions, label this pattern.
+                    pattern@(LabeledStructured asP _) <- relabelMessage ctxt pattern
+                    let !(Just bindings) = matchMessage pattern m' -- This shouldn't fail.
                     bindings <- traverse (\m -> case m of Reference p -> dereference ctxt p; _ -> return m) bindings
+
                     workspace <- case f of
                                     ANSWER -> do
                                         newWorkspaceId <- createWorkspace ctxt False workspace pattern
                                         getWorkspace ctxt newWorkspaceId
                                     _ -> return workspace
                     let !workspaceId = identity workspace
+                    let !varEnv' = M.union varEnv bindings
+                    mAnswer <- retrieveAnswer workspaceId
+                    case mAnswer of
+                        Just a -> link workspaceId a asP
+                        Nothing -> return ()
+                    globalToLocal <- links workspaceId
                     evt <- blockOnUser (Just workspaceId)
                     e <- case evt of
                             Create msg -> do
                                 g <- genSym
-                                return $ LetFun g (Call g (Call answerFn (Value msg)))
+                                return $ LetFun g (Call g (Call ANSWER (Value $ renumberMessage' globalToLocal msg)))
                             Expand ptr -> do
-                                let !ptr' = maybe ptr id $ M.lookup ptr globalToLocal
                                 expandPointer ctxt workspace ptr
                                 g <- genSym
+                                let !ptr' = maybe ptr id $ M.lookup ptr globalToLocal
                                 return $ LetFun g (Call g (Var ptr'))
                             Answer msg -> do
-                                -- TODO: Do some kind of normalization here and record it somehow.
-                                sendAnswer ctxt False workspace msg -- $! expandPointers varEnv msg
-                                return $ Value msg
+                                msg'@(LabeledStructured new _) <- labelMessage ctxt msg
+                                sendAnswer ctxt False workspace msg'
+                                case parentId workspace of Just pId -> giveAnswer pId new; _ -> return ()
+                                return $ Value $ renumberMessage' globalToLocal msg
                             -- Send ws msg -> Intentional.
                     modifyIORef' alternativesRef (M.insertWith (++) f [(pattern, e)])
                     debugCode
-                    let !varEnv' = M.union varEnv bindings
-                    return ((globalToLocal, workspaceId), varEnv', e)
+                    return (workspaceId, varEnv', e)
 
         scheduler _ workspace (Send ws msg) = do
             -- TODO: Think about this and support it if it makes sense.
@@ -215,8 +255,8 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
 
     forkIO $ do
         Create msg <- takeMVar responseMVar -- TODO: Better error handling.
-        let startExp = LetFun answerFn (Call answerFn (Value msg))
-        t <- evaluateExp' match expandPointers M.empty M.empty (M.empty, initWorkspaceId) startExp
+        let startExp = LetFun ANSWER (Call ANSWER (Value msg)) :: Exp'
+        t <- evaluateExp' match substitute M.empty M.empty initWorkspaceId startExp
         T.putStrLn (toText (messageToBuilder t))
         blockOnUser Nothing
         return ()
