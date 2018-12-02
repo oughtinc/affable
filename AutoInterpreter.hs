@@ -14,7 +14,8 @@ import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
 import Data.Text.Lazy.Builder.Int ( decimal ) -- text
 import Data.Traversable ( traverse ) -- base
 
-import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage, expandPointers, substitute, renumberMessage' )
+import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage,
+                 matchPointers, expandPointers, substitute, renumberMessage' )
 import Scheduler ( Event(..), SchedulerContext(..), SchedulerFn )
 import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 import Util ( toText, invertMap )
@@ -120,7 +121,7 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
     -- Hacky? Holds pointers to the answers to the latest pending questions for workspaces, if any.
     -- This strongly suggests a sequential workflow, which isn't wrong, but isn't desirable either.
     -- For a more parallel workflow, we could identify subquestions and have a mapping from workspaces to subquestions.
-    answersRef <- newIORef (M.empty :: M.Map WorkspaceId Pointer) -- Probably doesn't need to be in database.
+    answersRef <- newIORef (M.empty :: M.Map WorkspaceId Message) -- TODO: This is just the answer already in the database. Though this does indicate the need to look.
 
     idRef <- newIORef (0 :: Int) -- When the alternatives are in the database, this will effectively become a database ID.
 
@@ -129,7 +130,6 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
 
     let genSym = atomicModifyIORef' idRef (\n -> (n+1, LOCAL n))
 
-        link workspaceId new old = linkVars workspaceId (M.singleton new old)
         linkVars workspaceId mapping = modifyIORef' workspaceVariablesRef $ M.insertWith M.union workspaceId mapping
         links workspaceId = (maybe M.empty id . M.lookup workspaceId) <$> readIORef workspaceVariablesRef
 
@@ -191,14 +191,15 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                 LetFun _ (Call _ (Call ANSWER (Value msg))) -> do -- ask case
                                     return (childId, varEnv', e)
                                 LetFun _ (Call _ (Var ptr)) -> do -- expand case
+                                    -- TODO: Add links here too?
                                     expandPointer ctxt child $! maybe ptr id $ M.lookup ptr invMapping
                                     return (childId, varEnv', e)
                                 Value msg -> do -- reply case
                                     let varEnv'' = varEnv'
                                     let !msg' = substitute bindings msg
-                                    msg@(LabeledStructured new _) <- relabelMessage ctxt msg'
+                                    msg <- relabelMessage ctxt msg'
                                     sendAnswer ctxt False child msg
-                                    case parentId workspace of Just pId -> giveAnswer pId new; _ -> return ()
+                                    case parentId workspace of Just pId -> giveAnswer pId msg; _ -> return ()
                                     return (childId, varEnv'', e)
                                 -- Just _ -> return (workspaceId, varEnv', e) -- Intentionally missing this case.
                         Nothing -> matchFailed workspace
@@ -207,20 +208,22 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                     m' <- normalize ctxt m
                     pattern <- generalize ctxt m' -- NOTE: If we want pointers to questions, label this pattern.
                     pattern@(LabeledStructured asP _) <- relabelMessage ctxt pattern
-                    let !(Just bindings) = matchMessage pattern m' -- This shouldn't fail.
-                    bindings <- traverse (\m -> case m of Reference p -> dereference ctxt p; _ -> return m) bindings
-
                     workspace <- case f of
                                     ANSWER -> do
                                         newWorkspaceId <- createWorkspace ctxt False workspace pattern
                                         getWorkspace ctxt newWorkspaceId
                                     _ -> return workspace
                     let !workspaceId = identity workspace
+
+                    let !(Just bindings) = matchMessage pattern m' -- This shouldn't fail.
+                    bindings <- traverse (\m -> case m of Reference p -> dereference ctxt p; _ -> return m) bindings
                     let !varEnv' = M.union varEnv bindings
+
                     mAnswer <- retrieveAnswer workspaceId
                     case mAnswer of
-                        Just a -> link workspaceId a asP
+                        Just a -> linkVars workspaceId $ matchPointers pattern a
                         Nothing -> return ()
+
                     globalToLocal <- links workspaceId
                     evt <- blockOnUser (Just workspaceId)
                     e <- case evt of
@@ -228,14 +231,15 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                 g <- genSym
                                 return $ LetFun g (Call g (Call ANSWER (Value $ renumberMessage' globalToLocal msg)))
                             Expand ptr -> do
+                                -- TODO: When we expand pointers, we need to add links.
                                 expandPointer ctxt workspace ptr
                                 g <- genSym
                                 let !ptr' = maybe ptr id $ M.lookup ptr globalToLocal
                                 return $ LetFun g (Call g (Var ptr'))
                             Answer msg -> do
-                                msg'@(LabeledStructured new _) <- labelMessage ctxt msg
+                                msg' <- relabelMessage ctxt msg
                                 sendAnswer ctxt False workspace msg'
-                                case parentId workspace of Just pId -> giveAnswer pId new; _ -> return ()
+                                case parentId workspace of Just pId -> giveAnswer pId msg'; _ -> return ()
                                 return $ Value $ renumberMessage' globalToLocal msg
                             -- Send ws msg -> Intentional.
                     modifyIORef' alternativesRef (M.insertWith (++) f [(pattern, e)])
