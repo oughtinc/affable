@@ -6,7 +6,7 @@ module Message (
     Message(..), Pointer, Address, PointerEnvironment, PointerRemapping,
     pointerParser, addressParser, messageParser, messageParser', parseMessageUnsafe, parseMessageUnsafe',
     pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB,
-    expandPointers, substitute, normalizeMessage, generalizeMessage, renumberMessage, renumberAcc,
+    expandPointers, substitute, normalizeMessage, generalizeMessage, renumberMessage', renumberMessage, renumberAcc,
     singleLayer, instantiatePattern, matchMessage, collectPointers )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
@@ -138,25 +138,30 @@ expandPointers env t = t
 -- we turn those into plain Structures.
 substitute :: PointerEnvironment -> Message -> Message
 substitute env (Reference p) = case M.lookup p env of
-                                        Nothing -> Reference p
-                                        Just m -> substitute env m
+                                    Nothing -> Reference p
+                                    Just m -> substitute env m
+substitute env (Structured [p@(Reference _)]) = substitute env p
 substitute env (Structured blocks) = Structured (map (substitute env) blocks)
 substitute env (LabeledStructured p blocks) = Structured (map (substitute env) blocks) -- TODO: Could probably keep LabeledStructured p if we don't
                                                                                        -- actually substitute into any subMessages. We could percolate
                                                                                        -- up a Bool to indicate whether any substitutions were made.
-substitute env t = t
+substitute _ t = t
 
 -- Given a Message, replace all Structured sub-Messages with pointers and output a mapping
--- from those pointers to the Structured sub-Messages.
+-- from those pointers to the Structured sub-Messages. Normalized subMessages are "equivalent"
+-- so the labels don't need to change on LabeledStructures.
 normalizeMessage :: Int -> Message -> (PointerEnvironment, Message)
 normalizeMessage start = go True M.empty
-    where go True env (Structured ms) = second Structured $ mapAccumL (go False) env ms -- TODO: Make this labeled too? XXX
+    where go True env (Structured ms) = (env'', LabeledStructured p ms')
+            where !p = M.size env + start
+                  env' = M.insert p (LabeledStructured p ms') env -- Knot tying
+                  (env'', ms') = mapAccumL (go False) env' ms
+          -- go True env (Structured ms) = second Structured $ mapAccumL (go False) env ms -- TODO: Make this labeled too? XXX
           go True env (LabeledStructured p ms) = second (LabeledStructured p) $ mapAccumL (go False) env ms
-          go _ env (Structured ms)
-            = let p = M.size env + start
+          go _ env (Structured ms) = (env'', Reference p)
+            where !p = M.size env + start
                   env' = M.insert p (LabeledStructured p ms') env
                   (env'', ms') = mapAccumL (go False) env' ms -- A bit of knot typing occurring here.
-              in (env'', Reference p)
           go _ env m@(LabeledStructured p ms) = (env, Reference p)
           {-
           go _ env (LabeledStructured p ms) -- TODO: Or do I want to just leave this after processing the body?
@@ -215,6 +220,12 @@ instantiatePattern fresh env msg = case go (M.empty, M.empty) msg of ((env', map
             where !new = M.size mapping + fresh
           go s m = (s, m)
 
+renumberMessage' :: PointerRemapping -> Message -> Message
+renumberMessage' mapping (Structured ms) = Structured $ map (renumberMessage' mapping) ms
+renumberMessage' mapping (LabeledStructured p ms) = LabeledStructured (maybe p id $ M.lookup p mapping) (map (renumberMessage' mapping) ms)
+renumberMessage' mapping (Reference p) = Reference $ maybe p id $ M.lookup p mapping
+renumberMessage' mapping msg = msg
+
 -- Partial if the PointerRemapping doesn't include every pointer in the Message.
 -- This violates the invariant with respect to LabeledStructures, but should maintain it modulo the PointerRemapping.
 -- For what renumberMessage is used for, this is okay.
@@ -231,22 +242,41 @@ renumberAcc mapping (LabeledStructured p ms) = foldl' renumberAcc mapping' ms
 renumberAcc mapping (Reference p) = if p `M.member` mapping then mapping else M.insert p (M.size mapping) mapping
 renumberAcc mapping msg = mapping
 
--- TODO: The relabeling is almost certainly going to cause subtle bugs. XXX
 -- This assumes `pattern` has no duplicated pointers.
 matchMessage :: Message -> Message -> Maybe PointerEnvironment
 matchMessage (Text pt) (Text t) | pt == t = Just M.empty
 matchMessage (Location pa) (Location a) | pa == a = Just M.empty
 matchMessage (Structured pms) (Structured ms) = M.unions <$> sequenceA (zipWith matchMessage pms ms)
--- matchMessage (LabeledStructured p pms) (Structured ms) = (M.insert p (LabeledStructured p ms) . M.unions) <$> sequenceA (zipWith matchMessage pms ms) -- TODO: Do this relabeling?
--- matchMessage (LabeledStructured p pms) m@(LabeledStructured _ ms) = (M.insert p m . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
-matchMessage (LabeledStructured p pms) m@(Structured ms) = (M.insert p m . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
-matchMessage (LabeledStructured p pms) (LabeledStructured _ ms) = (M.insert p (Structured ms) . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
-matchMessage (Reference p) m@(Reference _) = Just (M.singleton p m)
--- matchMessage (Reference p) (Structured ms) = Just (M.singleton p (LabeledStructured p ms)) -- TODO: Do this relabeling? These are abusive since p doesn't point at the matched Message.
--- matchMessage (Reference p) (LabeledStructured _ ms) = Just (M.singleton p (LabeledStructured p ms)) -- TODO: Do this relabeling?
-matchMessage (Reference p) (Structured ms) = Just (M.singleton p (Structured ms))
-matchMessage (Reference p) (LabeledStructured _ ms) = Just (M.singleton p (Structured ms))
+-- matchMessage (LabeledStructured p pms) (Structured ms)
+--     = (M.insert p (LabeledStructured p ms) . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
+matchMessage (LabeledStructured p pms) m@(Structured ms)
+    = (M.insert p m . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
+-- matchMessage (LabeledStructured p pms) m@(LabeledStructured _ ms)
+--     = (M.insert p m . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
+matchMessage (LabeledStructured p pms) (LabeledStructured _ ms)
+    = (M.insert p (Structured ms) . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
+matchMessage (Reference p) m@(Reference _) = Just $ M.singleton p m
+-- matchMessage (Reference p) (Structured ms) = Just $ M.singleton p (LabeledStructured p ms)
+matchMessage (Reference p) (Structured ms) = Just $ M.singleton p (Structured ms)
+-- matchMessage (Reference p) (LabeledStructured _ ms) = Just $ M.singleton p (LabeledStructured p ms)
+matchMessage (Reference p) (LabeledStructured _ ms) = Just $ M.singleton p (Structured ms)
 matchMessage _ _ = Nothing
+{-
+matchMessage = go True
+    where go True (LabeledStructured p pms) m@(LabeledStructured l ms)
+            = (M.insert p (Reference l) . M.unions) <$> sequenceA (zipWith (go False) pms ms)
+          go _ (Text pt) (Text t) | pt == t = Just M.empty
+          go _ (Location pa) (Location a) | pa == a = Just M.empty
+          go _ (Structured pms) (Structured ms) = M.unions <$> sequenceA (zipWith (go False) pms ms)
+          go _ (LabeledStructured p pms) m@(Structured ms)
+            = (M.insert p m . M.unions) <$> sequenceA (zipWith (go False) pms ms)
+          go _ (LabeledStructured p pms) (LabeledStructured _ ms)
+            = (M.insert p (Structured ms) . M.unions) <$> sequenceA (zipWith (go False) pms ms)
+          go _ (Reference p) m@(Reference _) = Just $ M.singleton p m
+          go _ (Reference p) (Structured ms) = Just $ M.singleton p (Structured ms)
+          go _ (Reference p) (LabeledStructured _ ms) = Just $ M.singleton p (Structured ms)
+          go _ _ _ = Nothing
+-}
 
 collectPointers :: Message -> [Pointer]
 collectPointers msg = go msg []
