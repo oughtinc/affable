@@ -7,7 +7,7 @@ module Message (
     pointerParser, addressParser, messageParser, messageParser', parseMessageUnsafe, parseMessageUnsafe',
     pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB,
     expandPointers, substitute, normalizeMessage, generalizeMessage, renumberMessage', renumberMessage, renumberAcc,
-    singleLayer, instantiatePattern, matchMessage, matchPointers, collectPointers )
+    instantiatePattern, matchMessage, matchPointers, collectPointers )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
@@ -169,20 +169,6 @@ normalizeMessage start = go True M.empty
                   (env'', ms') = mapAccumL (go False) env' ms -- A bit of knot typing occurring here.
               in (env'', Reference p)
           -}
-          go _ env m = (env, m)
-
--- let (pEnv, pattern) = singleLayer n msg in expandPointers pEnv pattern == msg -- for sufficiently large n
-singleLayer :: Int -> Message -> (PointerEnvironment, Message)
-singleLayer start = go True M.empty
-    where go True env (Structured ms) = second Structured $ mapAccumL (go False) env ms
-          go True env (LabeledStructured p ms) = second (LabeledStructured p) $ mapAccumL (go False) env ms
-          go _ env (Structured ms)
-            = let !p = M.size env + start
-                  !env' = M.insert p (LabeledStructured p ms) env
-              in (env', Reference p)
-          go _ env (LabeledStructured p ms) -- TODO: Or just leave it?
-            = let !env' = M.insert p (LabeledStructured p ms) env
-              in (env', Reference p)
           go _ env m = (env, m)
 
 -- Creates a message where all pointers are distinct. The output is a mapping

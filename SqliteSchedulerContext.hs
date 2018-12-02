@@ -8,7 +8,7 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, que
 import Command ( Command(..), commandToBuilder )
 import DataModel ( LogicalTime )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
-                 singleLayer, normalizeMessage, generalizeMessage, instantiatePattern,
+                 normalizeMessage, generalizeMessage, instantiatePattern,
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe' )
 import Scheduler ( SchedulerContext(..) )
 import Time ( Time(..) )
@@ -29,7 +29,6 @@ makeSqliteSchedulerContext conn = return $
         normalize = insertMessagePointers conn,
         generalize = insertGeneralizedMessagePointers conn,
         instantiate = insertInstantiatedPatternPointers conn,
-        singleLayerMatch = singleLayerMatchSqlite conn,
         dereference = dereferenceSqlite conn,
         extraContent = conn
     }
@@ -77,15 +76,6 @@ labelMessageSqlite conn msg = do
     execute conn "INSERT INTO Pointers (content) VALUES (?)" [toText (messageToBuilderDB msg)]
     p <- fromIntegral <$> lastInsertRowId conn
     return (LabeledStructured p [msg])
-
-singleLayerMatchSqlite :: Connection -> Message -> IO (PointerEnvironment, Message)
-singleLayerMatchSqlite conn msg = do
-    -- TODO: This is definitely a race condition.
-    [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-    let (pEnv, pattern) = singleLayer (maybe 0 succ lastPointerId) msg
-    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-    -- pattern <- insertGeneralizedMessagePointers conn pattern -- TODO: Do this?
-    return (pEnv, pattern)
 
 insertCommand :: Connection -> WorkspaceId -> Command -> IO ()
 insertCommand conn workspaceId cmd = do
