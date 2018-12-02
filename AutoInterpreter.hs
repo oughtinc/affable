@@ -133,9 +133,8 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
         linkVars workspaceId mapping = modifyIORef' workspaceVariablesRef $ M.insertWith M.union workspaceId mapping
         links workspaceId = (maybe M.empty id . M.lookup workspaceId) <$> readIORef workspaceVariablesRef
 
-        -- TODO: Find better names for these.
-        giveAnswer workspaceId p = modifyIORef' answersRef $ M.insert workspaceId p
-        retrieveAnswer workspaceId = atomicModifyIORef' answersRef ((\(x,y) -> (y,x)) . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
+        giveArgument workspaceId p = modifyIORef' answersRef $ M.insert workspaceId p
+        retrieveArgument workspaceId = atomicModifyIORef' answersRef ((\(x,y) -> (y,x)) . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
 
         debugCode = do
             altMap <- readIORef alternativesRef
@@ -159,25 +158,21 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                        -- or when any subquestions are marked. This would allow "garbage collecting" workspaces
                                        -- with answers that are not "human-influenced", i.e. were created entirely through automation.
                 Just alts -> do
-                    m <- normalize ctxt m
-                    let !mMatch = asum $ map (\(p, e) -> fmap (\bindings -> (p, M.union varEnv bindings, e)) $ matchMessage p m) alts
+                    m' <- normalize ctxt m
+                    let !mMatch = asum $ map (\(p, e) -> fmap (\bindings -> (p, M.union varEnv bindings, e)) $ matchMessage p m') alts
                     case mMatch of
                         Just (pattern, varEnv', e) -> do
-                            varEnv' <- traverse (\m -> case m of Reference p -> dereference ctxt p; _ -> return m) varEnv'
+                            varEnv' <- traverse (\b -> case b of Reference p -> dereference ctxt p; _ -> return b) varEnv'
                             -- This is to make it so occurrences of variables bound by as-patterns don't get substituted.
                             -- This leads to match being called on References if we reply with the variable bound by an as-pattern.
-                            bindings <- case (pattern, m) of
+                            bindings <- case (pattern, m') of
                                             (LabeledStructured asP _, LabeledStructured l _) -> return $ M.insert asP (Reference l) varEnv'
                                             _ -> return varEnv'
 
                             (mapping, child) <- case f of
                                                         ANSWER -> do
                                                             (mapping, pattern) <- instantiate ctxt bindings pattern
-                                                            -- TODO: Have a separate "as asked" and "as answered" question field
-                                                            -- for workspaces? Otherwise, if you ask "foo $1 $1", the question you'll
-                                                            -- seen, once answered, is "foo $2 $3" because that's the question that
-                                                            -- was answered.
-                                                            newWorkspaceId <- createWorkspace ctxt False workspace pattern
+                                                            newWorkspaceId <- createWorkspace ctxt False workspace m pattern
                                                             fmap ((,) mapping) $ getWorkspace ctxt newWorkspaceId
                                                         _ -> return (M.empty, workspace)
                             let !childId = identity child
@@ -194,14 +189,14 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                 LetFun _ (Call _ (Var ptr)) -> do -- expand case
                                     let !ptr' = maybe ptr id $ M.lookup ptr invMapping
                                     expandPointer ctxt child ptr'
-                                    giveAnswer workspaceId =<< dereference ctxt ptr'
+                                    giveArgument workspaceId =<< dereference ctxt ptr'
                                     return (childId, varEnv', e)
                                 Value msg -> do -- reply case
                                     let varEnv'' = varEnv'
                                     let !msg' = substitute bindings msg
                                     msg <- relabelMessage ctxt msg'
                                     sendAnswer ctxt False child msg
-                                    case parentId workspace of Just pId -> giveAnswer pId msg; _ -> return ()
+                                    case parentId workspace of Just pId -> giveArgument pId msg; _ -> return ()
                                     return (childId, varEnv'', e)
                                 -- Just _ -> return (workspaceId, varEnv', e) -- Intentionally missing this case.
                         Nothing -> matchFailed workspace
@@ -212,16 +207,16 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                     pattern@(LabeledStructured asP _) <- relabelMessage ctxt pattern
                     workspace <- case f of
                                     ANSWER -> do
-                                        newWorkspaceId <- createWorkspace ctxt False workspace pattern
+                                        newWorkspaceId <- createWorkspace ctxt False workspace m pattern
                                         getWorkspace ctxt newWorkspaceId
                                     _ -> return workspace
                     let !workspaceId = identity workspace
 
                     let !(Just bindings) = matchMessage pattern m' -- This shouldn't fail.
-                    bindings <- traverse (\m -> case m of Reference p -> dereference ctxt p; _ -> return m) bindings
+                    bindings <- traverse (\b -> case b of Reference p -> dereference ctxt p; _ -> return b) bindings
                     let !varEnv' = M.union varEnv bindings
 
-                    mAnswer <- retrieveAnswer workspaceId
+                    mAnswer <- retrieveArgument workspaceId
                     case mAnswer of
                         Just a -> linkVars workspaceId $ matchPointers pattern a
                         Nothing -> return ()
@@ -234,14 +229,14 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                 return $ LetFun g (Call g (Call ANSWER (Value $ renumberMessage' globalToLocal msg)))
                             Expand ptr -> do
                                 expandPointer ctxt workspace ptr
-                                giveAnswer workspaceId =<< dereference ctxt ptr
+                                giveArgument workspaceId =<< dereference ctxt ptr
                                 g <- genSym
                                 let !ptr' = maybe ptr id $ M.lookup ptr globalToLocal
                                 return $ LetFun g (Call g (Var ptr'))
                             Answer msg -> do
                                 msg' <- relabelMessage ctxt msg
                                 sendAnswer ctxt False workspace msg'
-                                case parentId workspace of Just pId -> giveAnswer pId msg'; _ -> return ()
+                                case parentId workspace of Just pId -> giveArgument pId msg'; _ -> return ()
                                 return $ Value $ renumberMessage' globalToLocal msg
                             -- Send ws msg -> Intentional.
                     modifyIORef' alternativesRef (M.insertWith (++) f [(pattern, e)])

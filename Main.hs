@@ -3,9 +3,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TypeOperators #-}
--- {-# LANGUAGE MultiParamTypeClasses #-}
--- {-# LANGUAGE RankNTypes #-}
--- {-# LANGUAGE ScopedTypeVariables #-}
 module Main where
 import Database.SQLite.Simple ( Connection, withConnection, execute_ ) -- sqlite-simple
 import Network.Wai.Handler.Warp ( run ) -- warp
@@ -28,7 +25,8 @@ main = do
         ["serve"] -> do
             withConnection ":memory:" $ \conn -> do
                 initSqlite conn
-                execute_ conn "INSERT OR IGNORE INTO Workspaces (id, logicalTime, parentWorkspaceId, question) VALUES (0, 0, NULL, 'What is your question?')"
+                execute_ conn "INSERT OR IGNORE INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
+                              \VALUES (0, 0, NULL, 'What is your question?', 'What is your question?')"
                 ctxt <- makeSqliteSchedulerContext conn
                 run 8081 (overallApp ctxt)
         ["wip"] -> do
@@ -54,7 +52,8 @@ initSqlite conn = do
        \    id INTEGER PRIMARY KEY ASC,\n\
        \    logicalTime INTEGER NOT NULL,\n\
        \    parentWorkspaceId INTEGER NULL,\n\
-       \    question TEXT NOT NULL,\n\
+       \    questionAsAsked TEXT NOT NULL,\n\
+       \    questionAsAnswered TEXT NOT NULL,\n\
        \    FOREIGN KEY ( parentWorkspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
        \);"
     execute_ conn "\

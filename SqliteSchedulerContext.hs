@@ -88,22 +88,24 @@ insertCommand conn workspaceId cmd = do
 
 createInitialWorkspaceSqlite :: Connection -> IO WorkspaceId
 createInitialWorkspaceSqlite conn = do
-    executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, question) VALUES (:time, :parent, :question)" [
+    executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) VALUES (:time, :parent, :question, :question)" [
                         ":time" := (0 :: LogicalTime),
                         ":parent" := (Nothing :: Maybe WorkspaceId),
                         ":question" := ("What is your question?" :: Text)]
     lastInsertRowId conn
 
-createWorkspaceSqlite :: Connection -> Bool -> Workspace -> Message -> IO WorkspaceId
-createWorkspaceSqlite conn doNormalize ws msg = do
+createWorkspaceSqlite :: Connection -> Bool -> Workspace -> Message -> Message -> IO WorkspaceId
+createWorkspaceSqlite conn doNormalize ws qAsAsked qAsAnswered = do
     let workspaceId = identity ws
-    msg' <- if doNormalize then insertMessagePointers conn msg else return msg
-    executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, question) VALUES (:time, :parent, :question)" [
+    qAsAsked' <- if doNormalize then insertMessagePointers conn qAsAsked else return qAsAsked
+    qAsAnswered' <- if doNormalize then insertMessagePointers conn qAsAnswered else return qAsAnswered
+    executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) VALUES (:time, :parent, :asAsked, :asAnswered)" [
                         ":time" := (0 :: LogicalTime), -- TODO
                         ":parent" := Just workspaceId,
-                        ":question" := toText (messageToBuilder msg')]
+                        ":asAsked" := toText (messageToBuilder qAsAsked'),
+                        ":asAnswered" := toText (messageToBuilder qAsAnswered')]
     newWorkspaceId <- lastInsertRowId conn
-    insertCommand conn workspaceId (Ask msg)
+    insertCommand conn workspaceId (Ask qAsAsked)
     return newWorkspaceId
 
 sendAnswerSqlite :: Connection -> Bool -> Workspace -> Message -> IO ()
@@ -141,9 +143,9 @@ expandPointerSqlite conn ws ptr = do
 getWorkspaceSqlite :: Connection -> WorkspaceId -> IO Workspace
 getWorkspaceSqlite conn workspaceId = do
     -- TODO: Maybe use a transaction.
-    [(p, t, q)] <- query conn "SELECT parentWorkspaceId, logicalTime, question FROM Workspaces WHERE id = ? ORDER BY logicalTime DESC LIMIT 1" (Only workspaceId)
+    [(p, t, q)] <- query conn "SELECT parentWorkspaceId, logicalTime, questionAsAnswered FROM Workspaces WHERE id = ? ORDER BY logicalTime DESC LIMIT 1" (Only workspaceId)
     messages <- query conn "SELECT content FROM Messages WHERE targetWorkspaceId = ?" (Only workspaceId)
-    subquestions <- query conn "SELECT w.question, a.answer \
+    subquestions <- query conn "SELECT w.questionAsAsked, a.answer \
                                \FROM Workspaces w \
                                \LEFT OUTER JOIN Answers a ON w.id = a.workspaceId \
                                \WHERE w.parentWorkspaceId = ?"  (Only workspaceId)
