@@ -7,8 +7,8 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, que
 
 import Command ( Command(..), commandToBuilder )
 import DataModel ( LogicalTime )
-import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, singleLayer,
-                 normalizeMessage, generalizeMessage, instantiatePattern,
+import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
+                 singleLayer, normalizeMessage, generalizeMessage, instantiatePattern,
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe' )
 import Scheduler ( SchedulerContext(..) )
 import Time ( Time(..) )
@@ -151,7 +151,7 @@ expandPointerSqlite conn ws ptr = do
 getWorkspaceSqlite :: Connection -> WorkspaceId -> IO Workspace
 getWorkspaceSqlite conn workspaceId = do
     -- TODO: Maybe use a transaction.
-    [(t, q)] <- query conn "SELECT logicalTime, question FROM Workspaces WHERE id = ? ORDER BY logicalTime DESC LIMIT 1" (Only workspaceId)
+    [(p, t, q)] <- query conn "SELECT parentWorkspaceId, logicalTime, question FROM Workspaces WHERE id = ? ORDER BY logicalTime DESC LIMIT 1" (Only workspaceId)
     messages <- query conn "SELECT content FROM Messages WHERE targetWorkspaceId = ?" (Only workspaceId)
     subquestions <- query conn "SELECT w.question, a.answer \
                                \FROM Workspaces w \
@@ -163,6 +163,7 @@ getWorkspaceSqlite conn workspaceId = do
                            \WHERE e.workspaceId = ?" (Only workspaceId)
     return $ Workspace {
         identity = workspaceId,
+        parentId = p,
         question = parseMessageUnsafe q,
         subQuestions = map (\(q, ma) -> (parseMessageUnsafe q, fmap parseMessageUnsafe ma)) subquestions,
         messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
