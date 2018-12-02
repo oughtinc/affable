@@ -7,7 +7,7 @@ module Message (
     pointerParser, addressParser, messageParser, messageParser', parseMessageUnsafe, parseMessageUnsafe',
     pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB,
     expandPointers, substitute, normalizeMessage, generalizeMessage, renumberMessage', renumberMessage, renumberAcc,
-    singleLayer, instantiatePattern, matchMessage, collectPointers )
+    singleLayer, instantiatePattern, matchMessage, matchPointers, collectPointers )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
@@ -242,11 +242,22 @@ renumberAcc mapping (LabeledStructured p ms) = foldl' renumberAcc mapping' ms
 renumberAcc mapping (Reference p) = if p `M.member` mapping then mapping else M.insert p (M.size mapping) mapping
 renumberAcc mapping msg = mapping
 
+-- This mostly assumes that the 'pattern' fits the Message.
+matchPointers :: Message -> Message -> PointerRemapping
+matchPointers (Structured pms) (Structured ms) = M.unions $ zipWith matchPointers pms ms
+matchPointers (Structured pms) (LabeledStructured _ ms) = M.unions $ zipWith matchPointers pms ms
+matchPointers (LabeledStructured p pms) (Structured ms) = M.unions $ zipWith matchPointers pms ms
+matchPointers (LabeledStructured p pms) (LabeledStructured l ms) = (M.insert l p . M.unions) $ zipWith matchPointers pms ms
+matchPointers (Reference p) (Reference l) = M.singleton l p
+matchPointers (Reference p) (LabeledStructured l ms) = M.singleton l p
+matchPointers _ _ = M.empty
+
 -- This assumes `pattern` has no duplicated pointers.
 matchMessage :: Message -> Message -> Maybe PointerEnvironment
 matchMessage (Text pt) (Text t) | pt == t = Just M.empty
 matchMessage (Location pa) (Location a) | pa == a = Just M.empty
 matchMessage (Structured pms) (Structured ms) = M.unions <$> sequenceA (zipWith matchMessage pms ms)
+matchMessage (Structured pms) (LabeledStructured _ ms) = M.unions <$> sequenceA (zipWith matchMessage pms ms)
 -- matchMessage (LabeledStructured p pms) (Structured ms)
 --     = (M.insert p (LabeledStructured p ms) . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
 matchMessage (LabeledStructured p pms) m@(Structured ms)
