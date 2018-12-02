@@ -133,6 +133,7 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
         linkVars workspaceId mapping = modifyIORef' workspaceVariablesRef $ M.insertWith M.union workspaceId mapping
         links workspaceId = (maybe M.empty id . M.lookup workspaceId) <$> readIORef workspaceVariablesRef
 
+        -- TODO: Find better names for these.
         giveAnswer workspaceId p = modifyIORef' answersRef $ M.insert workspaceId p
         retrieveAnswer workspaceId = atomicModifyIORef' answersRef ((\(x,y) -> (y,x)) . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
 
@@ -191,8 +192,9 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                 LetFun _ (Call _ (Call ANSWER (Value msg))) -> do -- ask case
                                     return (childId, varEnv', e)
                                 LetFun _ (Call _ (Var ptr)) -> do -- expand case
-                                    -- TODO: Add links here too?
-                                    expandPointer ctxt child $! maybe ptr id $ M.lookup ptr invMapping
+                                    let !ptr' = maybe ptr id $ M.lookup ptr invMapping
+                                    expandPointer ctxt child ptr'
+                                    giveAnswer workspaceId =<< dereference ctxt ptr'
                                     return (childId, varEnv', e)
                                 Value msg -> do -- reply case
                                     let varEnv'' = varEnv'
@@ -231,8 +233,8 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                 g <- genSym
                                 return $ LetFun g (Call g (Call ANSWER (Value $ renumberMessage' globalToLocal msg)))
                             Expand ptr -> do
-                                -- TODO: When we expand pointers, we need to add links.
                                 expandPointer ctxt workspace ptr
+                                giveAnswer workspaceId =<< dereference ctxt ptr
                                 g <- genSym
                                 let !ptr' = maybe ptr id $ M.lookup ptr globalToLocal
                                 return $ LetFun g (Call g (Var ptr'))
