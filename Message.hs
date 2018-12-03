@@ -172,7 +172,6 @@ normalizeMessage start = go True M.empty
 
 -- Creates a message where all pointers are distinct. The output is a mapping
 -- from fresh pointers to the old pointers.
-{-
 -- Replaces all pointers with distinct pointers.
 generalizeMessage :: Int -> Message -> (PointerRemapping, Message)
 generalizeMessage fresh msg = go M.empty msg
@@ -182,7 +181,7 @@ generalizeMessage fresh msg = go M.empty msg
           go !mapping m@(Reference old) = (M.insert new old mapping, Reference new)
             where !new = M.size mapping + fresh
           go !s m = (s, m)
--}
+{-
 -- Only makes pointers for duplicates. Reuses the old pointers.
 generalizeMessage :: Int -> Message -> (PointerRemapping, Message)
 generalizeMessage fresh msg = case go (S.empty, M.empty, fresh) msg of ((_, mapping, _), m) -> (mapping, m)
@@ -194,6 +193,7 @@ generalizeMessage fresh msg = case go (S.empty, M.empty, fresh) msg of ((_, mapp
             | p `S.member` seen = ((seen, M.insert fresh p mapping, fresh+1), Reference fresh)
             | otherwise = ((S.insert p seen, mapping, fresh), m)
           go s m = (s, m)
+-}
 
 -- Replace pointers in Message with new pointers that point to the Messages in the PointerEnvironment.
 instantiatePattern :: Int -> PointerEnvironment -> Message -> (PointerEnvironment, PointerRemapping, Message)

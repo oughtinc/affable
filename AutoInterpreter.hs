@@ -159,7 +159,7 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                        -- or when any subquestions are marked. This would allow "garbage collecting" workspaces
                                        -- with answers that are not "human-influenced", i.e. were created entirely through automation.
                 Just alts -> do
-                    m' <- normalize ctxt m
+                    m' <- normalize ctxt =<< generalize ctxt m
                     let !mMatch = asum $ map (\(p, e) -> fmap (\bindings -> (p, M.union bindings varEnv, e)) $ matchMessage p m') alts
                     case mMatch of
                         Just (pattern, varEnv', e) -> do
@@ -187,6 +187,13 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                                             fmap ((,) invMapping) $ getWorkspace ctxt newWorkspaceId
                                                         _ -> return (M.empty, workspace)
                             let !childId = identity child
+
+                            mAnswer <- retrieveArgument workspaceId
+                            case mAnswer of
+                                Just a -> do
+                                    linkVars childId $ matchPointers pattern a
+                                Nothing -> return ()
+
                             invMapping <- links childId
                             -- This is a bit hacky. If this approach is the way to go, make these patterns individual constructors.
                             -- I'd also prefer a design that only created workspace when necessary. I envision something that executes
@@ -198,11 +205,11 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                     return (childId, varEnv', e)
                                 LetFun _ (Call _ (Var ptr)) -> do -- expand case
                                     let !ptr' = maybe ptr id $ M.lookup ptr invMapping
-                                    expandPointer ctxt child ptr'
                                     -- TODO: This is somewhat duplicated in the ANSWER branch above.
                                     let !(Just (Reference p)) = M.lookup ptr bindings -- TODO: Will fail if already expanded.
                                     arg <- dereference ctxt p
-                                    giveArgument workspaceId arg
+                                    expandPointer ctxt child p -- ptr'
+                                    giveArgument childId arg
                                     return (childId, M.insert ptr arg varEnv', e)
                                 Value msg -> do -- reply case
                                     let varEnv'' = varEnv'
@@ -215,7 +222,7 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                         Nothing -> matchFailed workspace
                 Nothing -> matchFailed workspace
             where matchFailed workspace = do
-                    m' <- normalize ctxt m
+                    m' <- normalize ctxt =<< generalize ctxt m
                     pattern <- generalize ctxt m' -- NOTE: If we want pointers to questions, label this pattern.
                     pattern@(LabeledStructured asP _) <- relabelMessage ctxt pattern
                     workspace <- case f of
@@ -225,7 +232,7 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                     _ -> return workspace
                     let !workspaceId = identity workspace
 
-                    let !(Just bindings) = M.filterWithKey (\p b -> case b of Reference p' | p == p' -> False; _ -> True ) <$> matchMessage pattern m' -- This shouldn't fail.
+                    let !(Just bindings) = matchMessage pattern m' -- This shouldn't fail.
                     let !varEnv' = M.union bindings varEnv
 
                     mAnswer <- retrieveArgument workspaceId
