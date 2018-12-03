@@ -97,7 +97,6 @@ parseMessageUnsafe' p t = case parse messageParser' "" t of Right (Structured ms
 messageToBuilder :: Message -> Builder
 messageToBuilder = go True
     where go  True (Structured ms) = foldMap (go False) ms
-          -- go  True (LabeledStructured p ms) = foldMap (go False) ms -- TODO: Do something different?
           go False (Structured ms) = singleton '[' <> foldMap (go False) ms <> singleton ']'
           go     _ (LabeledStructured p ms) = singleton '[' <> pointerToBuilder p <> singleton '|' <> foldMap (go False) ms <> singleton ']'
           go     _ (Text t) = fromText t
@@ -202,8 +201,10 @@ instantiatePattern fresh env msg = case go (M.empty, M.empty) msg of ((env', map
     where go s (Structured ms) = second Structured $ mapAccumL go s ms
           -- go s (LabeledStructured p ms) = second (LabeledStructured p) $ mapAccumL go s ms -- TODO: Keep this label if the contents no longer match?
           go s (LabeledStructured p ms) = second Structured $ mapAccumL go s ms
-          go (env', mapping) m@(Reference old) = ((M.insert new (case M.lookup old env of Just m -> m) env', M.insert new old mapping), Reference new)
-            where !new = M.size mapping + fresh
+          go (env', mapping) (Reference old) = case M.lookup old env of
+                                                    Just m@(Reference new) -> ((env', M.insert new old mapping), m)
+                                                    Just m -> let !new = M.size mapping + fresh
+                                                              in ((M.insert new m env', M.insert new old mapping), Reference new)
           go s m = (s, m)
 
 renumberMessage' :: PointerRemapping -> Message -> Message
