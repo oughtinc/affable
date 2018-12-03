@@ -245,6 +245,11 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                             g <- genSym
                             let !ptr' = maybe ptr id $ M.lookup ptr globalToLocal
                             return (M.singleton ptr' arg, LetFun g (Call g (Var ptr')))
+                        processEvent (Answer msg@(Structured [Reference p])) = do -- dereference pointers -- TODO: Do this?
+                            msg' <- dereference ctxt p
+                            sendAnswer ctxt False workspace msg'
+                            case parentId workspace of Just pId -> giveArgument pId msg'; _ -> return ()
+                            return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         processEvent (Answer msg) = do
                             msg' <- relabelMessage ctxt msg
                             sendAnswer ctxt False workspace msg'
