@@ -114,16 +114,17 @@ relabelMessage ctxt msg = labelMessage ctxt msg
 -- concurrency.
 makeInterpreterScheduler :: SchedulerContext extra -> WorkspaceId -> IO SchedulerFn
 makeInterpreterScheduler ctxt initWorkspaceId = do
+    -- Branches of the pattern matches.
     alternativesRef <- newIORef (M.empty :: M.Map Name [(Pattern, Exp')]) -- TODO: Load from database.
+    idRef <- newIORef (0 :: Int) -- When the alternatives are in the database, this will effectively become a database ID.
 
+    -- Mapping of pointers from replay workspace to original workspace.
     workspaceVariablesRef <- newIORef (M.empty :: M.Map WorkspaceId PointerRemapping) -- TODO: Store in database(?) Maybe not?
 
     -- Hacky? Holds pointers to the answers to the latest pending questions for workspaces, if any.
     -- This strongly suggests a sequential workflow, which isn't wrong, but isn't desirable either.
     -- For a more parallel workflow, we could identify subquestions and have a mapping from workspaces to subquestions.
     answersRef <- newIORef (M.empty :: M.Map WorkspaceId Message) -- TODO: This is just the answer already in the database. Though this does indicate the need to look.
-
-    idRef <- newIORef (0 :: Int) -- When the alternatives are in the database, this will effectively become a database ID.
 
     requestMVar <- newEmptyMVar :: IO (MVar (Maybe WorkspaceId))
     responseMVar <- newEmptyMVar :: IO (MVar Event)
@@ -148,7 +149,7 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
             putMVar responseMVar e
             takeMVar requestMVar
 
-        match s varEnv f (Reference p) = do
+        match s varEnv f m@(Reference p) = do
             m <- dereference ctxt p
             match s varEnv f m
         match workspaceId varEnv f m = do
@@ -159,25 +160,34 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                        -- with answers that are not "human-influenced", i.e. were created entirely through automation.
                 Just alts -> do
                     m' <- normalize ctxt m
-                    let !mMatch = asum $ map (\(p, e) -> fmap (\bindings -> (p, M.union varEnv bindings, e)) $ matchMessage p m') alts
+                    let !mMatch = asum $ map (\(p, e) -> fmap (\bindings -> (p, M.union bindings varEnv, e)) $ matchMessage p m') alts
                     case mMatch of
                         Just (pattern, varEnv', e) -> do
-                            varEnv' <- traverse (\b -> case b of Reference p -> dereference ctxt p; _ -> return b) varEnv'
                             -- This is to make it so occurrences of variables bound by as-patterns don't get substituted.
                             -- This leads to match being called on References if we reply with the variable bound by an as-pattern.
                             bindings <- case (pattern, m') of
                                             (LabeledStructured asP _, LabeledStructured l _) -> return $ M.insert asP (Reference l) varEnv'
                                             _ -> return varEnv'
 
-                            (mapping, child) <- case f of
+                            (invMapping, child) <- case f of
                                                         ANSWER -> do
                                                             (mapping, pattern) <- instantiate ctxt bindings pattern
+                                                            let !invMapping = invertMap mapping
+                                                            -- To make sure the pattern in createWorkspace is appropriately expanded.
+                                                            -- TODO: There's probably a better way to do this.
+                                                            pattern <- case e of
+                                                                            LetFun _ (Call _ (Var ptr)) -> do
+                                                                                let !(Just p') = M.lookup ptr invMapping
+                                                                                let !(Just (Reference p)) = M.lookup ptr bindings -- TODO: Will fail if already expanded.
+                                                                                arg <- dereference ctxt p
+                                                                                return $! expandPointers (M.singleton p' arg) pattern
+                                                                            _ -> return pattern
                                                             newWorkspaceId <- createWorkspace ctxt False workspace m pattern
-                                                            fmap ((,) mapping) $ getWorkspace ctxt newWorkspaceId
+                                                            linkVars newWorkspaceId mapping
+                                                            fmap ((,) invMapping) $ getWorkspace ctxt newWorkspaceId
                                                         _ -> return (M.empty, workspace)
                             let !childId = identity child
-                            let !invMapping = invertMap mapping
-                            linkVars childId mapping
+                            invMapping <- links childId
                             -- This is a bit hacky. If this approach is the way to go, make these patterns individual constructors.
                             -- I'd also prefer a design that only created workspace when necessary. I envision something that executes
                             -- the automation creating nothing if there are no pattern match failures. If there is a pattern match failure,
@@ -189,8 +199,11 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                 LetFun _ (Call _ (Var ptr)) -> do -- expand case
                                     let !ptr' = maybe ptr id $ M.lookup ptr invMapping
                                     expandPointer ctxt child ptr'
-                                    giveArgument workspaceId =<< dereference ctxt ptr'
-                                    return (childId, varEnv', e)
+                                    -- TODO: This is somewhat duplicated in the ANSWER branch above.
+                                    let !(Just (Reference p)) = M.lookup ptr bindings -- TODO: Will fail if already expanded.
+                                    arg <- dereference ctxt p
+                                    giveArgument workspaceId arg
+                                    return (childId, M.insert ptr arg varEnv', e)
                                 Value msg -> do -- reply case
                                     let varEnv'' = varEnv'
                                     let !msg' = substitute bindings msg
@@ -212,9 +225,8 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                     _ -> return workspace
                     let !workspaceId = identity workspace
 
-                    let !(Just bindings) = matchMessage pattern m' -- This shouldn't fail.
-                    bindings <- traverse (\b -> case b of Reference p -> dereference ctxt p; _ -> return b) bindings
-                    let !varEnv' = M.union varEnv bindings
+                    let !(Just bindings) = M.filterWithKey (\p b -> case b of Reference p' | p == p' -> False; _ -> True ) <$> matchMessage pattern m' -- This shouldn't fail.
+                    let !varEnv' = M.union bindings varEnv
 
                     mAnswer <- retrieveArgument workspaceId
                     case mAnswer of
@@ -223,25 +235,26 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
 
                     globalToLocal <- links workspaceId
                     evt <- blockOnUser (Just workspaceId)
-                    e <- case evt of
-                            Create msg -> do
-                                g <- genSym
-                                return $ LetFun g (Call g (Call ANSWER (Value $ renumberMessage' globalToLocal msg)))
-                            Expand ptr -> do
-                                expandPointer ctxt workspace ptr
-                                giveArgument workspaceId =<< dereference ctxt ptr
-                                g <- genSym
-                                let !ptr' = maybe ptr id $ M.lookup ptr globalToLocal
-                                return $ LetFun g (Call g (Var ptr'))
-                            Answer msg -> do
-                                msg' <- relabelMessage ctxt msg
-                                sendAnswer ctxt False workspace msg'
-                                case parentId workspace of Just pId -> giveArgument pId msg'; _ -> return ()
-                                return $ Value $ renumberMessage' globalToLocal msg
-                            -- Send ws msg -> Intentional.
+                    let processEvent (Create msg) = do
+                            g <- genSym
+                            return (M.empty, LetFun g (Call g (Call ANSWER (Value $ renumberMessage' globalToLocal msg))))
+                        processEvent (Expand ptr) = do
+                            expandPointer ctxt workspace ptr
+                            arg <- dereference ctxt ptr
+                            giveArgument workspaceId arg
+                            g <- genSym
+                            let !ptr' = maybe ptr id $ M.lookup ptr globalToLocal
+                            return (M.singleton ptr' arg, LetFun g (Call g (Var ptr')))
+                        processEvent (Answer msg) = do
+                            msg' <- relabelMessage ctxt msg
+                            sendAnswer ctxt False workspace msg'
+                            case parentId workspace of Just pId -> giveArgument pId msg'; _ -> return ()
+                            return (M.empty, Value $ renumberMessage' globalToLocal msg)
+                        -- Send ws msg -> Intentional.
+                    (extraBindings, e) <- processEvent evt
                     modifyIORef' alternativesRef (M.insertWith (++) f [(pattern, e)])
                     debugCode
-                    return (workspaceId, varEnv', e)
+                    return (workspaceId, M.union extraBindings varEnv', e)
 
         scheduler _ workspace (Send ws msg) = do
             -- TODO: Think about this and support it if it makes sense.
