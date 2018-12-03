@@ -207,7 +207,7 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                 Value msg -> do -- reply case
                                     let varEnv'' = varEnv'
                                     let !msg' = substitute bindings msg
-                                    msg <- relabelMessage ctxt msg'
+                                    msg <- case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
                                     sendAnswer ctxt False child msg
                                     case parentId workspace of Just pId -> giveArgument pId msg; _ -> return ()
                                     return (childId, varEnv'', e)
