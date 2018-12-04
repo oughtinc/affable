@@ -29,19 +29,19 @@ main = do
                               \VALUES (0, 0, NULL, 'What is your question?', 'What is your question?')"
                 ctxt <- makeSqliteSchedulerContext conn
                 run 8081 (overallApp ctxt)
-        ["wip"] -> do
-            withConnection ":memory:" $ \conn -> do
-                initSqlite conn
-                ctxt <- makeSqliteSchedulerContext conn
-                initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
-                scheduler <- makeInterpreterScheduler ctxt $! identity initWorkspace
-                commandLineInteraction initWorkspace scheduler
-        _ -> do
+        ["old"] -> do
             withConnection ":memory:" $ \conn -> do -- TODO: For now. I do want this to be persistent in the long run.
                 initSqlite conn
                 ctxt <- makeSqliteSchedulerContext conn
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
                 scheduler <- makeSingleUserScheduler ctxt
+                commandLineInteraction initWorkspace scheduler
+        _ -> do
+            withConnection ":memory:" $ \conn -> do
+                initSqlite conn
+                ctxt <- makeSqliteSchedulerContext conn
+                initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
+                scheduler <- makeInterpreterScheduler ctxt $! identity initWorkspace
                 commandLineInteraction initWorkspace scheduler
 
 -- TODO: Move this elsewhere at some point.
