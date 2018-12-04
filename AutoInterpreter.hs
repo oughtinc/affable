@@ -106,8 +106,15 @@ type Var = Pointer
 
 type Exp' = Exp Name Var
 
+relabelMessage :: SchedulerContext extra -> Message -> IO Message
 relabelMessage ctxt (LabeledStructured _ ms) = labelMessage ctxt (Structured ms)
 relabelMessage ctxt msg = labelMessage ctxt msg
+
+fullyExpand :: SchedulerContext extra -> Message -> IO Message
+fullyExpand ctxt (Reference p) = fullyExpand ctxt =<< dereference ctxt p
+fullyExpand ctxt (Structured ms) = Structured <$> mapM (fullyExpand ctxt) ms
+fullyExpand ctxt (LabeledStructured _ ms) = Structured <$> mapM (fullyExpand ctxt) ms
+fullyExpand ctxt m = return m
 
 -- NOTE: Instead of using forkIO and co, we could use a monad other than IO for
 -- expression evaluation that supports suspending a computation or implements cooperative
@@ -283,6 +290,7 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
         Create msg <- takeMVar responseMVar -- TODO: Better error handling.
         let startExp = LetFun ANSWER (Call ANSWER (Value msg)) :: Exp'
         t <- evaluateExp' match substitute M.empty M.empty initWorkspaceId startExp
+        t <- fullyExpand ctxt t
         T.putStrLn (toText (messageToBuilder t))
         blockOnUser Nothing
         return ()
