@@ -1,0 +1,11 @@
+ask commit 1a57114b205d9e836e363aa1d7639e62bc21c4a5
+ask length [nil]
+view $1
+reply 0
+ask length [cons [1] [cons [2] [nil]]]
+ask length $2
+reply s $4
+reply s $4
+ask length [cons [1] [cons [2] [cons [3] [cons [4] [cons [5] [nil]]]]]]
+ask length [cons [1] [cons [2] [cons [3] [cons [4] [nil]]]]]
+reply $4

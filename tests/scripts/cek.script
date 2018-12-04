@@ -1,0 +1,26 @@
+ask commit 1a57114b205d9e836e363aa1d7639e62bc21c4a5
+ask evaluate [App [Lam [Var [Z]]] [Lam [Var [Z]]]]
+ask {$1 [Nil] [Done]}
+view $1
+ask {$2 $4 [Arg $3 $4 $5]}
+view $3
+ask {$4 $5 [Fun [Closure $1 $2] $6]}
+view $4
+ask {$5 [Cons [Closure $1 $2] $6] $7}
+ask lookup $1 $2
+view $1
+view $2
+reply $3
+ask {[Lam $6] $7 $3}
+reply Closure $1 $2
+reply $10
+reply $12
+reply $11
+reply $10
+reply $3
+ask evaluate [App [App [Lam [Lam [Var [S [Z]]]]] [Lam [Var [Z]]]] [Lam [Var [Z]]]]
+view $2
+ask lookup $1 $4
+reply $7
+ask evaluate [App [App [Lam [Lam [App [Var [Z]] [Var [S [Z]]]]]] [Lam [Lam [App [Var [S [Z]]] [App [Var [S [Z]]] [Var [Z]]]]]]] [Lam [Lam [App [Var [S [Z]]] [App [Var [S [Z]]] [App [Var [S [Z]]] [Var [Z]]]]]]]]
+reply $7
