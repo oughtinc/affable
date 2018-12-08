@@ -73,6 +73,7 @@ common deps
     Util,
     Server,
     AutoInterpreter,
+    Exp,
     SqliteSchedulerContext
 
   -- LANGUAGE extensions used by modules in this package.
