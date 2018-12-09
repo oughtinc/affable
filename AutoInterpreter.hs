@@ -14,7 +14,7 @@ import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
 import Data.Traversable ( traverse ) -- base
 
 import AutoScheduler ( AutoSchedulerContext(..) )
-import Exp ( Exp(..), Exp', Name(..), Var, Value, Pattern, evaluateExp', expToBuilder )
+import Exp ( Exp(..), Exp', Name(..), Var, Value, Pattern, evaluateExp', expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage,
                  matchPointers, expandPointers, substitute, renumberMessage' )
 import Scheduler ( Event(..), SchedulerContext(..), SchedulerFn )
@@ -49,9 +49,7 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
     requestMVar <- newEmptyMVar :: IO (MVar (Maybe WorkspaceId))
     responseMVar <- newEmptyMVar :: IO (MVar Event)
 
-    let genSym = newFunction autoCtxt
-
-        linkVars workspaceId mapping = modifyIORef' workspaceVariablesRef $ M.insertWith M.union workspaceId mapping
+    let linkVars workspaceId mapping = modifyIORef' workspaceVariablesRef $ M.insertWith M.union workspaceId mapping
         links workspaceId = (maybe M.empty id . M.lookup workspaceId) <$> readIORef workspaceVariablesRef
 
         giveArgument workspaceId p = modifyIORef' answersRef $ M.insert workspaceId p
@@ -59,6 +57,7 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
 
         debugCode = do
             altMap <- allAlternatives autoCtxt
+            -- T.putStrLn (toText (expToHaskell (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
             T.putStrLn (toText (expToBuilder (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
 
         blockOnUser !mWorkspace = do
@@ -162,13 +161,13 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                     globalToLocal <- links workspaceId
                     evt <- blockOnUser (Just workspaceId)
                     let processEvent (Create msg) = do
-                            g <- genSym
+                            g <- newFunction autoCtxt
                             return (M.empty, LetFun g (Call g (Call ANSWER (Value $ renumberMessage' globalToLocal msg))))
                         processEvent (Expand ptr) = do
                             expandPointer ctxt workspace ptr
                             arg <- dereference ctxt ptr
                             giveArgument workspaceId arg
-                            g <- genSym
+                            g <- newFunction autoCtxt
                             let !ptr' = maybe ptr id $ M.lookup ptr globalToLocal
                             return (M.singleton ptr' arg, LetFun g (Call g (Var ptr')))
                         processEvent (Answer msg@(Structured [Reference p])) = do -- dereference pointers -- TODO: Do this?
