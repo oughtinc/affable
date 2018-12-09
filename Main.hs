@@ -4,6 +4,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TypeOperators #-}
 module Main where
+import qualified Data.Map as M -- containers
+import qualified Data.Text.IO as T -- text
 import Database.SQLite.Simple ( Connection, withConnection, execute_ ) -- sqlite-simple
 import Network.Wai.Handler.Warp ( run ) -- warp
 import Servant ( Proxy(..) ) -- servant-server
@@ -11,12 +13,15 @@ import Servant.JS ( writeJSForAPI, axios, defAxiosOptions ) -- servant-js
 import System.Environment ( getArgs ) -- base
 
 import AutoInterpreter ( makeInterpreterScheduler )
-import AutoScheduler ( schedulerContext )
+import AutoScheduler ( schedulerContext, allAlternatives )
 import CommandLine ( commandLineInteraction )
+import Exp ( Exp(..), Name(..), expToHaskell )
+import Message ( messageToHaskell )
 import Scheduler ( getWorkspace, createInitialWorkspace, makeSingleUserScheduler )
 import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Server ( CommandAPI, overallApp )
+import Util ( toText )
 import Workspace ( identity )
 
 main :: IO ()
@@ -24,28 +29,45 @@ main = do
     args <- getArgs
     case args of
         ["gen-api"] -> writeJSForAPI (Proxy :: Proxy CommandAPI) (axios defAxiosOptions) "static/command-api.js"
-        ["serve"] -> do
-            withConnection ":memory:" $ \conn -> do
+        ("serve":args) -> do
+            withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn
                 execute_ conn "INSERT OR IGNORE INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
                               \VALUES (0, 0, NULL, 'What is your question?', 'What is your question?')"
                 ctxt <- makeSqliteSchedulerContext conn
                 run 8081 (overallApp ctxt)
-        ["old"] -> do
-            withConnection ":memory:" $ \conn -> do -- TODO: For now. I do want this to be persistent in the long run.
+        ("noauto":args) -> do
+            withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn
                 ctxt <- makeSqliteSchedulerContext conn
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
                 scheduler <- makeSingleUserScheduler ctxt
                 commandLineInteraction initWorkspace scheduler
+        ["export", dbFile, fIdString] -> do
+            withConnection dbFile $ \conn -> do
+                initSqlite conn
+                autoCtxt <- makeSqliteAutoSchedulerContext conn
+                alts <- fmap reverse <$> allAlternatives autoCtxt
+                let !fId = LOCAL (read fIdString)
+                    localLookup ANSWER = maybe [] id $ M.lookup fId alts
+                    localLookup f = maybe [] id $ M.lookup f alts
+                case M.lookup fId alts of
+                    Nothing -> putStrLn ("Function ID " ++ fIdString ++ " not found.")
+                    Just root@((topArg,_):_) -> do
+                        putStr "data Message = Text String | Structured [Message] deriving (Show)\n\nmain = print $ "
+                        T.putStrLn (toText (expToHaskell localLookup (LetFun ANSWER (Call ANSWER (Value topArg)))))
         _ -> do
-            withConnection ":memory:" $ \conn -> do
+            withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn
                 autoCtxt <- makeSqliteAutoSchedulerContext conn
                 let !ctxt = schedulerContext autoCtxt
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
                 scheduler <- makeInterpreterScheduler autoCtxt $! identity initWorkspace
                 commandLineInteraction initWorkspace scheduler
+
+fileOrMemory :: [String] -> String
+fileOrMemory [file] = file
+fileOrMemory _ = ":memory:"
 
 -- TODO: Move this elsewhere at some point.
 initSqlite :: Connection -> IO ()
