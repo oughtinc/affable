@@ -4,7 +4,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Message (
     Message(..), Pointer, Address, PointerEnvironment, PointerRemapping,
-    pointerParser, addressParser, messageParser, messageParser', parseMessageUnsafe, parseMessageUnsafe',
+    pointerParser, addressParser, messageParser, messageParser', parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
     pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB,
     expandPointers, substitute, normalizeMessage, generalizeMessage, renumberMessage', renumberMessage, renumberAcc,
     instantiatePattern, matchMessage, matchPointers, collectPointers )
@@ -94,6 +94,12 @@ parseMessageUnsafe t = case parse messageParser' "" t of Right msg -> msg
 parseMessageUnsafe' :: Pointer -> Text -> Message
 parseMessageUnsafe' p t = case parse messageParser' "" t of Right (Structured ms) -> LabeledStructured p ms
 
+-- TODO: All of this is pretty ugly.
+parseMessageUnsafeDB :: Text -> Message
+parseMessageUnsafeDB t = case parse messageParser' "" t of
+                            Right (Structured [msg@(LabeledStructured _ _)]) -> msg
+                            Right msg -> msg
+
 messageToBuilder :: Message -> Builder
 messageToBuilder = go True
     where go  True (Structured ms) = foldMap (go False) ms
@@ -103,6 +109,7 @@ messageToBuilder = go True
           go     _ (Reference p) = pointerToBuilder p
           go     _ (Location a) = addressToBuilder a
 
+-- Doesn't write out top-level label.
 messageToBuilderDB :: Message -> Builder
 messageToBuilderDB = go True
     where go  True (Structured ms) = foldMap (go False) ms

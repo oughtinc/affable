@@ -13,6 +13,7 @@ import qualified Data.Text.IO as T -- text
 import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
 import Data.Traversable ( traverse ) -- base
 
+import AutoScheduler ( AutoSchedulerContext(..) )
 import Exp ( Exp(..), Exp', Name(..), Var, Value, Pattern, evaluateExp', expToBuilder )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage,
                  matchPointers, expandPointers, substitute, renumberMessage' )
@@ -33,11 +34,9 @@ fullyExpand ctxt m = return m
 -- NOTE: Instead of using forkIO and co, we could use a monad other than IO for
 -- expression evaluation that supports suspending a computation or implements cooperative
 -- concurrency.
-makeInterpreterScheduler :: SchedulerContext extra -> WorkspaceId -> IO SchedulerFn
-makeInterpreterScheduler ctxt initWorkspaceId = do
-    -- Branches of the pattern matches.
-    alternativesRef <- newIORef (M.empty :: M.Map Name [(Pattern, Exp')]) -- TODO: Load from database.
-    idRef <- newIORef (0 :: Int) -- When the alternatives are in the database, this will effectively become a database ID.
+makeInterpreterScheduler :: AutoSchedulerContext extra -> WorkspaceId -> IO SchedulerFn
+makeInterpreterScheduler autoCtxt initWorkspaceId = do
+    let !ctxt = schedulerContext autoCtxt
 
     -- Mapping of pointers from replay workspace to original workspace.
     workspaceVariablesRef <- newIORef (M.empty :: M.Map WorkspaceId PointerRemapping) -- TODO: Store in database(?) Maybe not?
@@ -50,7 +49,7 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
     requestMVar <- newEmptyMVar :: IO (MVar (Maybe WorkspaceId))
     responseMVar <- newEmptyMVar :: IO (MVar Event)
 
-    let genSym = atomicModifyIORef' idRef (\n -> (n+1, LOCAL n))
+    let genSym = newFunction autoCtxt
 
         linkVars workspaceId mapping = modifyIORef' workspaceVariablesRef $ M.insertWith M.union workspaceId mapping
         links workspaceId = (maybe M.empty id . M.lookup workspaceId) <$> readIORef workspaceVariablesRef
@@ -59,7 +58,7 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
         retrieveArgument workspaceId = atomicModifyIORef' answersRef ((\(x,y) -> (y,x)) . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
 
         debugCode = do
-            altMap <- readIORef alternativesRef
+            altMap <- allAlternatives autoCtxt
             T.putStrLn (toText (expToBuilder (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
 
         blockOnUser !mWorkspace = do
@@ -75,11 +74,11 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
             match s varEnv f m
         match workspaceId varEnv f m = do
             workspace <- getWorkspace ctxt workspaceId
-            altsMap <- readIORef alternativesRef
-            case M.lookup f altsMap of -- TODO: Could mark workspaces as "human-influenced" when a pattern match failure is hit
-                                       -- or when any subquestions are marked. This would allow "garbage collecting" workspaces
-                                       -- with answers that are not "human-influenced", i.e. were created entirely through automation.
-                Just alts -> do
+            alts <- alternativesFor autoCtxt f
+            case alts of -- TODO: Could mark workspaces as "human-influenced" when a pattern match failure is hit
+                         -- or when any subquestions are marked. This would allow "garbage collecting" workspaces
+                         -- with answers that are not "human-influenced", i.e. were created entirely through automation.
+                _:_ -> do
                     m' <- normalize ctxt =<< generalize ctxt m
                     let !mMatch = asum $ map (\(p, e) -> fmap (\bindings -> (p, M.union bindings varEnv, e)) $ matchMessage p m') alts
                     case mMatch of
@@ -140,7 +139,7 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                                     return (childId, varEnv'', e)
                                 -- Just _ -> return (workspaceId, varEnv', e) -- Intentionally missing this case.
                         Nothing -> matchFailed workspace
-                Nothing -> matchFailed workspace
+                [] -> matchFailed workspace
             where matchFailed workspace = do
                     m' <- normalize ctxt =<< generalize ctxt m
                     pattern <- generalize ctxt m' -- NOTE: If we want pointers to questions, label this pattern.
@@ -184,7 +183,7 @@ makeInterpreterScheduler ctxt initWorkspaceId = do
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         -- Send ws msg -> Intentional.
                     (extraBindings, e) <- processEvent evt
-                    modifyIORef' alternativesRef (M.insertWith (++) f [(pattern, e)])
+                    addCaseFor autoCtxt f pattern e
                     debugCode
                     return (workspaceId, M.union extraBindings varEnv', e)
 

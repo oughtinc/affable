@@ -2,12 +2,17 @@
 {-# LANGUAGE BangPatterns #-}
 module Exp ( Value, Pattern, Exp(..), Exp', Var, Name(..),
              nameToBuilder, expToBuilder', expToBuilder, expToBuilderDB, expFromDB, VarEnv, VarMapping, FunEnv, evaluateExp, evaluateExp' ) where
+import Data.Functor ( (<$) ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Text as T -- text
+import Data.Void ( Void ) -- base
 import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
-import Data.Text.Lazy.Builder.Int ( decimal ) -- text
+import qualified Data.Text.Lazy.Builder.Int as T ( decimal ) -- text
+import Text.Megaparsec ( Parsec, parse, (<|>), (<?>) ) -- megaparsec
+import Text.Megaparsec.Char ( char, string ) -- megaparsec
+import Text.Megaparsec.Char.Lexer ( decimal ) -- megaparsec
 
-import Message ( Message, Pointer, messageToBuilder )
+import Message ( Message, Pointer, messageToBuilder, messageParser' )
 
 type Var = Pointer
 
@@ -18,7 +23,7 @@ data Name = ANSWER | LOCAL !Int deriving ( Eq, Ord, Show )
 
 nameToBuilder :: Name -> Builder
 nameToBuilder ANSWER = fromText "answer"
-nameToBuilder (LOCAL i) = singleton 'f' <> decimal i
+nameToBuilder (LOCAL i) = singleton 'f' <> T.decimal i
 
 -- TODO: Make data model and figure out how to serialize to database.
 -- NOTE: Currently only ever use LetFun f (Call f _) pattern which is essentially, unsurprisingly,
@@ -58,7 +63,7 @@ expToBuilder' fBuilder vBuilder alternativesFor = go 0
           valueToBuilder = messageToBuilder -- TODO: Or use show or something else?
 
 expToBuilder :: (Name -> [(Pattern, Exp Name Var)]) -> Exp Name Var -> Builder
-expToBuilder = expToBuilder' nameToBuilder (\v -> singleton '$' <> decimal v)
+expToBuilder = expToBuilder' nameToBuilder (\v -> singleton '$' <> T.decimal v)
 
 type VarEnv v = M.Map v Value
 type VarMapping v = M.Map v v
@@ -96,7 +101,19 @@ evaluateExp' match subst = go
             go varEnv funEnv' s body
 
 expFromDB :: T.Text -> Exp'
-expFromDB = undefined
+expFromDB t = case parse expParserDB "" t of Right msg -> msg; Left err -> error (show err)
+
+nameParser :: Parsec Void T.Text Name
+nameParser = (ANSWER <$ string "answer") <|> (LOCAL <$> (char 'f' *> decimal)) <?> "name"
+
+expParserDB :: Parsec Void T.Text Exp'
+expParserDB = (Var <$> (string "(Var " *> decimal <* char ')'))
+          <|> (Value <$> (char '[' *> messageParser' <* char ']'))
+          <|> (Call <$> (string "(Call " *> nameParser <* char ' ') <*> (expParserDB <* char ')'))
+          <|> (LetFun <$> (string "(LetFun " *> nameParser <* char ' ') <*> (expParserDB <* char ')'))
 
 expToBuilderDB :: Exp' -> Builder
-expToBuilderDB = undefined
+expToBuilderDB (Var v) = fromText "(Var " <> T.decimal v <> singleton ')'
+expToBuilderDB (Value msg) = singleton '[' <> messageToBuilder msg <> singleton ']'
+expToBuilderDB (Call f e) = fromText "(Call " <> nameToBuilder f <> singleton ' ' <> expToBuilderDB e <> singleton ')'
+expToBuilderDB (LetFun f body) = fromText "(LetFun " <> nameToBuilder f <> singleton ' ' <> expToBuilderDB body <> singleton ')'

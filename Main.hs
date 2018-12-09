@@ -11,8 +11,10 @@ import Servant.JS ( writeJSForAPI, axios, defAxiosOptions ) -- servant-js
 import System.Environment ( getArgs ) -- base
 
 import AutoInterpreter ( makeInterpreterScheduler )
+import AutoScheduler ( schedulerContext )
 import CommandLine ( commandLineInteraction )
 import Scheduler ( getWorkspace, createInitialWorkspace, makeSingleUserScheduler )
+import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Server ( CommandAPI, overallApp )
 import Workspace ( identity )
@@ -39,9 +41,10 @@ main = do
         _ -> do
             withConnection ":memory:" $ \conn -> do
                 initSqlite conn
-                ctxt <- makeSqliteSchedulerContext conn
+                autoCtxt <- makeSqliteAutoSchedulerContext conn
+                let !ctxt = schedulerContext autoCtxt
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
-                scheduler <- makeInterpreterScheduler ctxt $! identity initWorkspace
+                scheduler <- makeInterpreterScheduler autoCtxt $! identity initWorkspace
                 commandLineInteraction initWorkspace scheduler
 
 -- TODO: Move this elsewhere at some point.
@@ -94,4 +97,16 @@ initSqlite conn = do
        \    command TEXT NOT NULL,\n\
        \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
        \    PRIMARY KEY ( workspaceId ASC, localTime ASC )\n\
+       \);"
+    execute_ conn "\
+       \CREATE TABLE IF NOT EXISTS Functions (\n\
+       \    id INTEGER PRIMARY KEY ASC\n\
+       \);"
+    execute_ conn "\
+       \CREATE TABLE IF NOT EXISTS Alternatives (\n\
+       \    function INTEGER NOT NULL,\n\
+       \    pattern TEXT NOT NULL,\n\
+       \    body TEXT NOT NULL,\n\
+       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE\n\
+       \    PRIMARY KEY ( function ASC, pattern ASC )\n\
        \);"
