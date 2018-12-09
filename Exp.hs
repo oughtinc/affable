@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
-module Exp ( Value, Pattern, Exp(..), Exp', Var, Name(..),
-             nameToBuilder, expToBuilder', expToBuilder, expToBuilderDB, expFromDB, VarEnv, VarMapping, FunEnv, evaluateExp, evaluateExp' ) where
+module Exp ( Value, Pattern, Exp(..), Exp', Var, Name(..), VarEnv, VarMapping, FunEnv,
+             nameToBuilder, expToBuilder', expToBuilder, expToBuilderDB, expFromDB, expToHaskell, evaluateExp, evaluateExp' ) where
 import Data.Functor ( (<$) ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Text as T -- text
@@ -12,7 +12,7 @@ import Text.Megaparsec ( Parsec, parse, (<|>), (<?>) ) -- megaparsec
 import Text.Megaparsec.Char ( char, string ) -- megaparsec
 import Text.Megaparsec.Char.Lexer ( decimal ) -- megaparsec
 
-import Message ( Message, Pointer, messageToBuilder, messageParser' )
+import Message ( Message(..), Pointer, messageToBuilder, messageParser', messageToHaskell, messageToPattern )
 
 type Var = Pointer
 
@@ -117,3 +117,16 @@ expToBuilderDB (Var v) = fromText "(Var " <> T.decimal v <> singleton ')'
 expToBuilderDB (Value msg) = singleton '[' <> messageToBuilder msg <> singleton ']'
 expToBuilderDB (Call f e) = fromText "(Call " <> nameToBuilder f <> singleton ' ' <> expToBuilderDB e <> singleton ')'
 expToBuilderDB (LetFun f body) = fromText "(LetFun " <> nameToBuilder f <> singleton ' ' <> expToBuilderDB body <> singleton ')'
+
+expToHaskell :: (Name -> [(Pattern, Exp')]) -> Exp' -> Builder
+expToHaskell alternativesFor = go 0
+    where go indent (Var x) = messageToHaskell (Reference x)
+          go indent (Value v) = messageToHaskell v
+          go indent (Call f e) = nameToBuilder f <> singleton '(' <> go 0 e <> singleton ')'
+          go indent (LetFun f body) | null alts = go indent body <> fromText " where "
+                                               <> indentBuilder <> fromText "  " <> nameToBuilder f <> fromText "(_) = undefined"
+                                    | otherwise = go indent body <> fromText " where "
+                                               <> foldMap (\(p, e) -> f' p <> fromText " = " <> go (indent + 2) e) alts
+            where !indentBuilder = singleton '\n' <> fromText (T.replicate indent " ")
+                  !alts = alternativesFor f
+                  f' p = indentBuilder <> fromText "  " <> nameToBuilder f <> singleton '(' <> messageToPattern p <> singleton ')'
