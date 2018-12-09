@@ -5,7 +5,7 @@
 module Message (
     Message(..), Pointer, Address, PointerEnvironment, PointerRemapping,
     pointerParser, addressParser, messageParser, messageParser', parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
-    pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB,
+    pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB, messageToHaskell, messageToPattern,
     expandPointers, substitute, normalizeMessage, generalizeMessage, renumberMessage', renumberMessage, renumberAcc,
     instantiatePattern, matchMessage, matchPointers, collectPointers )
   where
@@ -13,7 +13,7 @@ import Control.Applicative ( (<*>), pure, (*>) ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
 import Data.Bifunctor ( second ) -- base
 import Data.Foldable ( foldl', foldMap ) -- base
-import Data.List ( mapAccumL ) -- base
+import Data.List ( intersperse, mapAccumL ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Set as S -- containers
 import Data.Traversable ( sequenceA, traverse ) -- base
@@ -99,6 +99,22 @@ parseMessageUnsafeDB :: Text -> Message
 parseMessageUnsafeDB t = case parse messageParser' "" t of
                             Right (Structured [msg@(LabeledStructured _ _)]) -> msg
                             Right msg -> msg
+
+messageToHaskell :: Message -> Builder
+messageToHaskell (Text t) = fromText "(Text " <> fromText (fromString (show t)) <> singleton ')'
+messageToHaskell (Reference p) = singleton 'p' <> T.decimal p
+messageToHaskell (Location a) = fromText "(Location " <> T.decimal a <> singleton ')'
+messageToHaskell (Structured [Reference p]) = singleton 'p' <> T.decimal p
+messageToHaskell (Structured ms) = fromText "(Structured [" <> mconcat (intersperse (singleton ',') (map messageToHaskell ms)) <> fromText "])"
+messageToHaskell (LabeledStructured _ ms) = fromText "(Structured [" <> mconcat (intersperse (singleton ',') (map messageToHaskell ms)) <> fromText "])"
+-- messageToHaskell (LabeledStructured p ms) = fromText "(LabeledStructured " <> T.decimal p <> fromText " [" <> mconcat (intersperse (singleton ',') (map messageToHaskell ms)) <> fromText "])"
+
+messageToPattern :: Message -> Builder
+messageToPattern (Text t) = fromText "(Text " <> fromText (fromString (show t)) <> singleton ')'
+messageToPattern (Reference p) = singleton 'p' <> T.decimal p
+messageToPattern (Location a) = fromText "(Location " <> T.decimal a <> singleton ')'
+messageToPattern (Structured ms) = fromText "(Structured [" <> mconcat (intersperse (singleton ',') (map messageToHaskell ms)) <> fromText "])"
+messageToPattern (LabeledStructured p ms) = singleton 'p' <> T.decimal p <> fromText "@(Structured [" <> mconcat (intersperse (singleton ',') (map messageToHaskell ms)) <> fromText "])"
 
 messageToBuilder :: Message -> Builder
 messageToBuilder = go True
