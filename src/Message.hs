@@ -147,9 +147,7 @@ type PointerRemapping = M.Map Pointer Pointer
 -- We want to maintain the invariant that for LabeledStructure p msg, msg is "equivalent" to
 -- whatever "p" points at (in the actual database).
 expandPointers :: PointerEnvironment -> Message -> Message
-expandPointers env (Reference p) = case M.lookup p env of
-                                        Nothing -> Reference p
-                                        Just m -> expandPointers env m
+expandPointers env (Reference p) = maybe (Reference p) (expandPointers env) $ M.lookup p env
 expandPointers env (Structured blocks) = Structured (map (expandPointers env) blocks)
 expandPointers env (LabeledStructured p blocks) = LabeledStructured p (map (expandPointers env) blocks)
 expandPointers env t = t
@@ -159,9 +157,7 @@ expandPointers env t = t
 -- result may no longer be "equivalent" to what the pointer p points to, so, to maintain the invariant
 -- we turn those into plain Structures.
 substitute :: PointerEnvironment -> Message -> Message
-substitute env (Reference p) = case M.lookup p env of
-                                    Nothing -> Reference p
-                                    Just m -> substitute env m
+substitute env (Reference p) = maybe (Reference p) (substitute env) $ M.lookup p env
 substitute env (Structured [p@(Reference _)]) = substitute env p
 substitute env (Structured blocks) = Structured (map (substitute env) blocks)
 substitute env (LabeledStructured p blocks) = Structured (map (substitute env) blocks) -- TODO: Could probably keep LabeledStructured p if we don't
