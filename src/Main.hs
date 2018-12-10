@@ -54,7 +54,13 @@ main = do
                 case M.lookup fId alts of
                     Nothing -> putStrLn ("Function ID " ++ fIdString ++ " not found.")
                     Just root@((topArg,_):_) -> do
-                        putStr "data Message = Text String | Structured [Message] deriving (Show)\n\nmain = print $ "
+                        putStrLn "data Message = Text String | Structured [Message]"
+                        putStrLn "instance Show Message where\n\
+                                 \    showsPrec _ (Text s) = (s++)\n\
+                                 \    showsPrec 0 (Structured ms) = foldr (.) id (map (showsPrec 1) ms)\n\
+                                 \    showsPrec _ (Structured ms) = ('[':) . foldr (.) id (map (showsPrec 1) ms) . (']':)"
+                        -- or, putStrLn "data Message = Text String | Structured [Message] deriving (Show)"
+                        putStr "\nmain = print $ "
                         T.putStrLn (toText (expToHaskell localLookup (LetFun ANSWER (Call ANSWER (Value topArg)))))
         _ -> do
             withConnection (fileOrMemory args) $ \conn -> do
@@ -122,7 +128,8 @@ initSqlite conn = do
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Functions (\n\
-       \    id INTEGER PRIMARY KEY ASC\n\
+       \    id INTEGER PRIMARY KEY ASC,\n\
+       \    isAnswer INTEGER NOT NULL DEFAULT 0\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Alternatives (\n\

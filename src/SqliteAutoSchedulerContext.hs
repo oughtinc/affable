@@ -15,7 +15,7 @@ type FunctionId = Int64
 
 makeSqliteAutoSchedulerContext' :: Connection -> SchedulerContext extra -> IO (AutoSchedulerContext extra)
 makeSqliteAutoSchedulerContext' conn ctxt = do
-    execute_ conn "INSERT INTO Functions DEFAULT VALUES"
+    execute_ conn "INSERT INTO Functions(isAnswer) VALUES(1)"
     answerId <- lastInsertRowId conn
     return $ AutoSchedulerContext {
                     alternativesFor = alternativesForSqlite conn answerId,
