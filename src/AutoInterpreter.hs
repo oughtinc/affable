@@ -64,8 +64,8 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
             putMVar requestMVar mWorkspace
             takeMVar responseMVar
 
-        replyFromUser e = do
-            putMVar responseMVar e
+        replyFromUser evt = do
+            putMVar responseMVar evt
             takeMVar requestMVar
 
         match s varEnv f m@(Reference p) = do
@@ -74,11 +74,12 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
         match workspaceId varEnv f m = do
             workspace <- getWorkspace ctxt workspaceId
             alts <- alternativesFor autoCtxt f
+            m' <- normalize ctxt =<< generalize ctxt m
             case alts of -- TODO: Could mark workspaces as "human-influenced" when a pattern match failure is hit
                          -- or when any subquestions are marked. This would allow "garbage collecting" workspaces
                          -- with answers that are not "human-influenced", i.e. were created entirely through automation.
                 _:_ -> do
-                    m' <- normalize ctxt =<< generalize ctxt m
+                    -- TODO: Error out if there is more than one match.
                     let !mMatch = asum $ map (\(p, e) -> fmap (\bindings -> (p, M.union bindings varEnv, e)) $ matchMessage p m') alts
                     case mMatch of
                         Just (pattern, varEnv', e) -> do
@@ -137,10 +138,9 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                                     case parentId workspace of Just pId -> giveArgument pId msg; _ -> return ()
                                     return (childId, varEnv'', e)
                                 -- Just _ -> return (workspaceId, varEnv', e) -- Intentionally missing this case.
-                        Nothing -> matchFailed workspace
-                [] -> matchFailed workspace
-            where matchFailed workspace = do
-                    m' <- normalize ctxt =<< generalize ctxt m
+                        Nothing -> matchFailed workspace m'
+                [] -> matchFailed workspace m'
+            where matchFailed workspace m' = do
                     pattern <- generalize ctxt m' -- NOTE: If we want pointers to questions, label this pattern.
                     pattern@(LabeledStructured asP _) <- relabelMessage ctxt pattern
                     workspace <- case f of

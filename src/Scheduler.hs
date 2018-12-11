@@ -5,10 +5,10 @@ import Message ( Message, Pointer, PointerEnvironment, PointerRemapping )
 import Workspace ( Workspace(identity), WorkspaceId )
 
 data Event
-    = Create Message
-    | Answer Message
-    | Expand Pointer
-    | Send WorkspaceId Message
+    = Create Message -- ask
+    | Answer Message -- reply
+    | Expand Pointer -- view
+    | Send WorkspaceId Message -- send
     -- | Join -- This is to support more server-y stuff, i.e. a new person joining the computation.
   deriving ( Show )
 
