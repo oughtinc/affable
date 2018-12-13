@@ -93,9 +93,8 @@ createInitialWorkspaceSqlite conn = do
                         ":question" := ("What is your question?" :: Text)]
     lastInsertRowId conn
 
-createWorkspaceSqlite :: Connection -> Bool -> Workspace -> Message -> Message -> IO WorkspaceId
-createWorkspaceSqlite conn doNormalize ws qAsAsked qAsAnswered = do
-    let workspaceId = identity ws
+createWorkspaceSqlite :: Connection -> Bool -> WorkspaceId -> Message -> Message -> IO WorkspaceId
+createWorkspaceSqlite conn doNormalize workspaceId qAsAsked qAsAnswered = do
     qAsAsked' <- if doNormalize then insertMessagePointers conn qAsAsked else return qAsAsked
     qAsAnswered' <- if doNormalize then insertMessagePointers conn qAsAnswered else return qAsAnswered
     executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) VALUES (:time, :parent, :asAsked, :asAnswered)" [
@@ -107,9 +106,8 @@ createWorkspaceSqlite conn doNormalize ws qAsAsked qAsAnswered = do
     insertCommand conn workspaceId (Ask qAsAsked)
     return newWorkspaceId
 
-sendAnswerSqlite :: Connection -> Bool -> Workspace -> Message -> IO ()
-sendAnswerSqlite conn doNormalize ws msg = do
-    let workspaceId = identity ws
+sendAnswerSqlite :: Connection -> Bool -> WorkspaceId -> Message -> IO ()
+sendAnswerSqlite conn doNormalize workspaceId msg = do
     msg' <- if doNormalize then insertMessagePointers conn msg else return msg
     executeNamed conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (:workspace, :time, :answer)" [
                         ":workspace" := workspaceId,
@@ -117,9 +115,8 @@ sendAnswerSqlite conn doNormalize ws msg = do
                         ":answer" := toText (messageToBuilder msg')]
     insertCommand conn workspaceId (Reply msg)
 
-sendMessageSqlite :: Connection -> Bool -> Workspace -> WorkspaceId -> Message -> IO ()
-sendMessageSqlite conn doNormalize ws tgtId msg = do
-    let srcId = identity ws
+sendMessageSqlite :: Connection -> Bool -> WorkspaceId -> WorkspaceId -> Message -> IO ()
+sendMessageSqlite conn doNormalize srcId tgtId msg = do
     msg' <- if doNormalize then insertMessagePointers conn msg else return msg
     executeNamed conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (:source, :target, :time, :content)" [
                         ":source" := srcId,
@@ -129,9 +126,8 @@ sendMessageSqlite conn doNormalize ws tgtId msg = do
     insertCommand conn srcId (Send (fromIntegral tgtId) msg)
 
 -- TODO: Bulkify this.
-expandPointerSqlite :: Connection -> Workspace -> Pointer -> IO ()
-expandPointerSqlite conn ws ptr = do
-    let workspaceId = identity ws
+expandPointerSqlite :: Connection -> WorkspaceId -> Pointer -> IO ()
+expandPointerSqlite conn workspaceId ptr = do
     executeNamed conn "INSERT OR IGNORE INTO ExpandedPointers (workspaceId, pointerId, logicalTimeExpanded) VALUES (:workspace, :pointer, :time)" [
                         ":workspace" := workspaceId,
                         ":pointer" := ptr,

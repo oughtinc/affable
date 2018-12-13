@@ -89,7 +89,7 @@ primitivesToHaskell :: Connection -> IO ()
 primitivesToHaskell conn = do
     prims <- query_ conn "SELECT id, pattern, body FROM Primitives" :: IO [(Int, T.Text, T.Text)]
     forM_ prims $ \(i, pattern, body) -> do
-        putStr $ "prim" ++ show i
+        putStr $ "prim" ++ show i ++ " "
         T.putStr (toText (messageToPattern (parseMessageUnsafe pattern)))
         putStr " = "
         T.putStrLn body

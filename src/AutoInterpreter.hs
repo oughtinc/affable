@@ -82,7 +82,7 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                                             (LabeledStructured asP _, LabeledStructured l _) -> return $ M.insert asP (Reference l) varEnv'
                                             _ -> return varEnv'
 
-                            (invMapping, child) <- case f of
+                            (invMapping, childId) <- case f of
                                                         ANSWER -> do
                                                             (mapping, pattern) <- instantiate ctxt bindings pattern
                                                             let !invMapping = invertMap mapping
@@ -95,11 +95,10 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                                                                                 arg <- dereference ctxt p
                                                                                 return $! expandPointers (M.singleton p' arg) pattern
                                                                             _ -> return pattern
-                                                            newWorkspaceId <- createWorkspace ctxt False workspace m pattern
+                                                            newWorkspaceId <- createWorkspace ctxt False workspaceId m pattern
                                                             linkVars newWorkspaceId mapping
-                                                            fmap ((,) invMapping) $ getWorkspace ctxt newWorkspaceId
-                                                        _ -> return (M.empty, workspace)
-                            let !childId = identity child
+                                                            return (invMapping, newWorkspaceId)
+                                                        _ -> return (M.empty, workspaceId)
 
                             mAnswer <- retrieveArgument workspaceId
                             case mAnswer of
@@ -122,13 +121,13 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                                     -- TODO: This is somewhat duplicated in the ANSWER branch above.
                                     let !(Just (Reference p)) = M.lookup ptr bindings -- TODO: Will fail if already expanded.
                                     arg <- dereference ctxt p
-                                    expandPointer ctxt child p -- ptr'
+                                    expandPointer ctxt childId p -- ptr'
                                     giveArgument childId arg
                                     return (childId, M.insert ptr arg varEnv', e)
                                 Value msg -> do -- reply case
                                     let !msg' = substitute bindings msg
                                     msg <- normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
-                                    sendAnswer ctxt False child msg
+                                    sendAnswer ctxt False childId msg
                                     case parentId workspace of Just pId -> giveArgument pId msg; _ -> return ()
                                     return (childId, varEnv', e)
                                 -- Just _ -> return (workspaceId, varEnv', e) -- Intentionally missing this case.
@@ -139,7 +138,7 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                     pattern@(LabeledStructured asP _) <- relabelMessage ctxt pattern
                     workspace <- case f of
                                     ANSWER -> do
-                                        newWorkspaceId <- createWorkspace ctxt False workspace m pattern
+                                        newWorkspaceId <- createWorkspace ctxt False workspaceId m pattern
                                         getWorkspace ctxt newWorkspaceId
                                     _ -> return workspace
                     let !workspaceId = identity workspace
@@ -160,7 +159,7 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                                 Just p -> return (M.empty, LetFun g (Call g (Prim p (Value $ renumberMessage' globalToLocal msg))))
                                 Nothing -> return (M.empty, LetFun g (Call g (Call ANSWER (Value $ renumberMessage' globalToLocal msg))))
                         processEvent (Expand ptr) = do
-                            expandPointer ctxt workspace ptr
+                            expandPointer ctxt workspaceId ptr
                             arg <- dereference ctxt ptr
                             giveArgument workspaceId arg
                             g <- newFunction autoCtxt
@@ -168,12 +167,12 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                             return (M.singleton ptr' arg, LetFun g (Call g (Var ptr')))
                         processEvent (Answer msg@(Structured [Reference p])) = do -- dereference pointers -- TODO: Do this?
                             msg' <- dereference ctxt p
-                            sendAnswer ctxt False workspace msg'
+                            sendAnswer ctxt False workspaceId msg'
                             case parentId workspace of Just pId -> giveArgument pId msg'; _ -> return ()
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         processEvent (Answer msg) = do
                             msg' <- relabelMessage ctxt =<< normalize ctxt msg
-                            sendAnswer ctxt False workspace msg'
+                            sendAnswer ctxt False workspaceId msg'
                             case parentId workspace of Just pId -> giveArgument pId msg'; _ -> return ()
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         -- Send ws msg -> Intentional.
