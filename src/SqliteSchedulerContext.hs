@@ -6,12 +6,11 @@ import Data.Text ( Text ) -- text
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, query_, execute, executeMany, executeNamed, lastInsertRowId ) -- sqlite-simple
 
 import Command ( Command(..), commandToBuilder )
-import DataModel ( LogicalTime )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
                  normalizeMessage, generalizeMessage, instantiatePattern,
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe' )
 import Scheduler ( SchedulerContext(..) )
-import Time ( Time(..) )
+import Time ( Time(..), LogicalTime )
 import Util ( toText )
 import Workspace ( Workspace(..), WorkspaceId )
 
