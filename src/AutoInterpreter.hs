@@ -17,19 +17,10 @@ import AutoScheduler ( AutoSchedulerContext(..) )
 import Exp ( Exp(..), Exp', Name(..), Var, Value, Pattern, evaluateExp', expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage,
                  matchPointers, expandPointers, substitute, renumberMessage' )
-import Scheduler ( Event(..), SchedulerContext(..), SchedulerFn )
-import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
+import Primitive ( makePrimitives )
+import Scheduler ( Event(..), SchedulerContext(..), SchedulerFn, relabelMessage, fullyExpand )
 import Util ( toText, invertMap )
-
-relabelMessage :: SchedulerContext extra -> Message -> IO Message
-relabelMessage ctxt (LabeledStructured _ ms) = labelMessage ctxt (Structured ms)
-relabelMessage ctxt msg = labelMessage ctxt msg
-
-fullyExpand :: SchedulerContext extra -> Message -> IO Message
-fullyExpand ctxt (Reference p) = fullyExpand ctxt =<< dereference ctxt p
-fullyExpand ctxt (Structured ms) = Structured <$> mapM (fullyExpand ctxt) ms
-fullyExpand ctxt (LabeledStructured _ ms) = Structured <$> mapM (fullyExpand ctxt) ms
-fullyExpand ctxt m = return m
+import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 
 -- NOTE: Instead of using forkIO and co, we could use a monad other than IO for
 -- expression evaluation that supports suspending a computation or implements cooperative
@@ -68,7 +59,9 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
             putMVar responseMVar evt
             takeMVar requestMVar
 
-        match s varEnv f m@(Reference p) = do
+    (primEnv, matchPrim) <- makePrimitives ctxt giveArgument
+
+    let match s varEnv f m@(Reference p) = do
             m <- dereference ctxt p
             match s varEnv f m
         match workspaceId varEnv f m = do
@@ -120,7 +113,9 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                             -- this will create a new workspace that will lead to the creation (via functional updating) of new workspace
                             -- as the change percolates back up the tree of questions.
                             case e of
-                                LetFun _ (Call _ (Call ANSWER (Value msg))) -> do -- ask case
+                                LetFun _ (Call _ (Call ANSWER (Value _))) -> do -- ask case
+                                    return (childId, varEnv', e)
+                                LetFun _ (Call _ (Prim _ (Value _))) -> do -- ask prim case
                                     return (childId, varEnv', e)
                                 LetFun _ (Call _ (Var ptr)) -> do -- expand case
                                     let !ptr' = maybe ptr id $ M.lookup ptr invMapping
@@ -131,12 +126,11 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                                     giveArgument childId arg
                                     return (childId, M.insert ptr arg varEnv', e)
                                 Value msg -> do -- reply case
-                                    let varEnv'' = varEnv'
                                     let !msg' = substitute bindings msg
-                                    msg <- case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
+                                    msg <- normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
                                     sendAnswer ctxt False child msg
                                     case parentId workspace of Just pId -> giveArgument pId msg; _ -> return ()
-                                    return (childId, varEnv'', e)
+                                    return (childId, varEnv', e)
                                 -- Just _ -> return (workspaceId, varEnv', e) -- Intentionally missing this case.
                         Nothing -> matchFailed workspace m'
                 [] -> matchFailed workspace m'
@@ -162,7 +156,9 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                     evt <- blockOnUser (Just workspaceId)
                     let processEvent (Create msg) = do
                             g <- newFunction autoCtxt
-                            return (M.empty, LetFun g (Call g (Call ANSWER (Value $ renumberMessage' globalToLocal msg))))
+                            case matchPrim msg of
+                                Just p -> return (M.empty, LetFun g (Call g (Prim p (Value $ renumberMessage' globalToLocal msg))))
+                                Nothing -> return (M.empty, LetFun g (Call g (Call ANSWER (Value $ renumberMessage' globalToLocal msg))))
                         processEvent (Expand ptr) = do
                             expandPointer ctxt workspace ptr
                             arg <- dereference ctxt ptr
@@ -176,7 +172,7 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                             case parentId workspace of Just pId -> giveArgument pId msg'; _ -> return ()
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         processEvent (Answer msg) = do
-                            msg' <- relabelMessage ctxt msg
+                            msg' <- relabelMessage ctxt =<< normalize ctxt msg
                             sendAnswer ctxt False workspace msg'
                             case parentId workspace of Just pId -> giveArgument pId msg'; _ -> return ()
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
@@ -200,7 +196,7 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
     forkIO $ do
         Create msg <- takeMVar responseMVar -- TODO: Better error handling.
         let startExp = LetFun ANSWER (Call ANSWER (Value msg)) :: Exp'
-        t <- evaluateExp' match substitute M.empty M.empty initWorkspaceId startExp
+        t <- evaluateExp' match substitute primEnv M.empty M.empty initWorkspaceId startExp
         t <- fullyExpand ctxt t
         T.putStrLn (toText (messageToBuilder t))
         blockOnUser Nothing

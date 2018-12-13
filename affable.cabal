@@ -73,6 +73,7 @@ common deps
     Server,
     AutoInterpreter,
     Exp,
+    Primitive,
     AutoScheduler,
     SqliteAutoSchedulerContext,
     SqliteSchedulerContext

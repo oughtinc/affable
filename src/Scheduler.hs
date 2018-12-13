@@ -1,7 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), makeSingleUserScheduler ) where
-import Message ( Message, Pointer, PointerEnvironment, PointerRemapping )
+module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), makeSingleUserScheduler, relabelMessage, fullyExpand ) where
+import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping )
 import Workspace ( Workspace(identity), WorkspaceId )
 
 data Event
@@ -31,6 +31,16 @@ data SchedulerContext extra = SchedulerContext {
     dereference :: Pointer -> IO Message,
     extraContent :: extra -- This is to support making schedulers that can (e.g.) access SQLite directly.
   }
+
+relabelMessage :: SchedulerContext extra -> Message -> IO Message
+relabelMessage ctxt (LabeledStructured _ ms) = labelMessage ctxt (Structured ms)
+relabelMessage ctxt msg = labelMessage ctxt msg
+
+fullyExpand :: SchedulerContext extra -> Message -> IO Message
+fullyExpand ctxt (Reference p) = fullyExpand ctxt =<< dereference ctxt p
+fullyExpand ctxt (Structured ms) = Structured <$> mapM (fullyExpand ctxt) ms
+fullyExpand ctxt (LabeledStructured _ ms) = Structured <$> mapM (fullyExpand ctxt) ms
+fullyExpand ctxt m = return m
 
 makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeSingleUserScheduler ctxt = do
