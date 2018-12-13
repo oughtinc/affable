@@ -40,10 +40,9 @@ makePrimitives ctxt recordAnswer = return (primEnv, matchPrim)
             recordAnswer wsId answer
             return answer
 
--- TODO: Include a way to output Haskell code.
 primitives :: [(Primitive, Pattern, T.Text, [Value] -> IO Value)]
 primitives = [
-    (1, Structured [Text "add ", Reference 0, Text " ", Reference 1], "case (p0, p1) of (Structured [Text x],Structured [Text y]) -> Structured [Text \"result \", Structured [Text (show (read x + read y))]]; _ -> Structured [Text \"Don't know\"]", addPrim)
+    (1, Structured [Text "add ", Reference 0, Text " ", Reference 1], binPrimCode "(+)", binIntPrim (+))
   ]
 
 textAsInt :: T.Text -> Maybe Int
@@ -55,6 +54,9 @@ textAsInt t = case signed decimal t of
 asResult :: (Show a) => a -> Message
 asResult x = Structured [Text "result ", Structured [Text (fromString (show x))]]
 
-addPrim :: [Value] -> IO Value
-addPrim [Structured [Text x], Structured [Text y]] = return $ maybe don'tKnow asResult $ liftA2 (+) (textAsInt x) (textAsInt y)
-addPrim _ = return don'tKnow
+binIntPrim :: (Show a) => (Int -> Int -> a) -> [Value] -> IO Value
+binIntPrim f [Structured [Text x], Structured [Text y]] = return $ maybe don'tKnow asResult $ liftA2 f (textAsInt x) (textAsInt y)
+binIntPrim _ _ = return don'tKnow
+
+binPrimCode :: T.Text -> T.Text
+binPrimCode f = mconcat ["case (p0, p1) of (Structured [Text x],Structured [Text y]) -> Structured [Text \"result \", Structured [Text (show (", f, " (read x) (read y)))]]; _ -> Structured [Text \"Don't know\"]"]
