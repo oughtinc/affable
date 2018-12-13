@@ -4,9 +4,11 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TypeOperators #-}
 module Main where
+import Data.Foldable ( forM_ ) -- base
 import qualified Data.Map as M -- containers
+import qualified Data.Text as T -- text
 import qualified Data.Text.IO as T -- text
-import Database.SQLite.Simple ( Connection, withConnection, execute_ ) -- sqlite-simple
+import Database.SQLite.Simple ( Connection, withConnection, execute_, executeMany, query_ ) -- sqlite-simple
 import Network.Wai.Handler.Warp ( run ) -- warp
 import Servant ( Proxy(..) ) -- servant-server
 import Servant.JS ( writeJSForAPI, axios, defAxiosOptions ) -- servant-js
@@ -16,7 +18,8 @@ import AutoInterpreter ( makeInterpreterScheduler )
 import AutoScheduler ( schedulerContext, allAlternatives )
 import CommandLine ( commandLineInteraction )
 import Exp ( Exp(..), Name(..), expToHaskell )
-import Message ( messageToHaskell )
+import Message ( messageToHaskell, messageToBuilderDB, messageToPattern, parseMessageUnsafe )
+import Primitive ( primitives )
 import Scheduler ( getWorkspace, createInitialWorkspace, makeSingleUserScheduler )
 import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
@@ -45,7 +48,6 @@ main = do
                 commandLineInteraction initWorkspace scheduler
         ["export", dbFile, fIdString] -> do
             withConnection dbFile $ \conn -> do
-                initSqlite conn
                 autoCtxt <- makeSqliteAutoSchedulerContext conn
                 alts <- fmap reverse <$> allAlternatives autoCtxt
                 let !fId = LOCAL (read fIdString)
@@ -54,7 +56,8 @@ main = do
                 case M.lookup fId alts of
                     Nothing -> putStrLn ("Function ID " ++ fIdString ++ " not found.")
                     Just root@((topArg,_):_) -> do
-                        putStrLn "data Message = Text String | Structured [Message]"
+                        primitivesToHaskell conn
+                        putStrLn "\ndata Message = Text String | Structured [Message]"
                         putStrLn "instance Show Message where\n\
                                  \    showsPrec _ (Text s) = (s++)\n\
                                  \    showsPrec 0 (Structured ms) = foldr (.) id (map (showsPrec 1) ms)\n\
@@ -65,6 +68,7 @@ main = do
         _ -> do
             withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn
+                initPrimitives conn
                 autoCtxt <- makeSqliteAutoSchedulerContext conn
                 let !ctxt = schedulerContext autoCtxt
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
@@ -74,6 +78,21 @@ main = do
 fileOrMemory :: [String] -> String
 fileOrMemory [file] = file
 fileOrMemory _ = ":memory:"
+
+-- TODO: Move this elsewhere.
+initPrimitives :: Connection -> IO ()
+initPrimitives conn = do
+    let prims = map (\(i, p, b, _) -> (i, toText (messageToBuilderDB p), b)) primitives
+    executeMany conn "INSERT INTO Primitives (id, pattern, body) VALUES (?, ?, ?)" prims
+
+primitivesToHaskell :: Connection -> IO ()
+primitivesToHaskell conn = do
+    prims <- query_ conn "SELECT id, pattern, body FROM Primitives" :: IO [(Int, T.Text, T.Text)]
+    forM_ prims $ \(i, pattern, body) -> do
+        putStr $ "prim" ++ show i
+        T.putStr (toText (messageToPattern (parseMessageUnsafe pattern)))
+        putStr " = "
+        T.putStrLn body
 
 -- TODO: Move this elsewhere at some point.
 initSqlite :: Connection -> IO ()
@@ -138,4 +157,10 @@ initSqlite conn = do
        \    body TEXT NOT NULL,\n\
        \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE\n\
        \    PRIMARY KEY ( function ASC, pattern ASC )\n\
+       \);"
+    execute_ conn "\
+       \CREATE TABLE IF NOT EXISTS Primitives (\n\
+       \    id INTEGER PRIMARY KEY ASC,\n\
+       \    pattern TEXT NOT NULL,\n\
+       \    body TEXT NOT NULL\n\
        \);"

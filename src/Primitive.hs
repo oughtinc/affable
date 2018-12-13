@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
-module Primitive ( makePrimitive, makePrimitives ) where
+module Primitive ( makePrimitive, makePrimitives, primitives ) where
 import Control.Applicative ( liftA2 ) -- base
 import Data.Foldable ( asum ) -- base
 import Data.Functor ( (<$) ) -- base
@@ -32,18 +32,18 @@ makePrimitive ctxt pattern body workspaceId msg = do
 
 makePrimitives :: SchedulerContext extra -> (WorkspaceId -> Value -> IO ()) -> IO (PrimEnv WorkspaceId IO Primitive, Value -> Maybe Primitive)
 makePrimitives ctxt recordAnswer = return (primEnv, matchPrim)
-    where !primEnv = M.fromList $ map (\(p, pattern, body) -> (p, postProcess (makePrimitive ctxt pattern body))) primitives
+    where !primEnv = M.fromList $ map (\(p, pattern, _, body) -> (p, postProcess (makePrimitive ctxt pattern body))) primitives
           -- TODO: This could be more efficient.
-          matchPrim msg = asum $ map (\(p, pattern, _) -> p <$ matchMessage pattern msg) primitives -- TODO: Ensure only one match.
+          matchPrim msg = asum $ map (\(p, pattern, _, _) -> p <$ matchMessage pattern msg) primitives -- TODO: Ensure only one match.
           postProcess prim wsId v = do
             answer <- prim wsId v
             recordAnswer wsId answer
             return answer
 
 -- TODO: Include a way to output Haskell code.
-primitives :: [(Primitive, Pattern, [Value] -> IO Value)]
+primitives :: [(Primitive, Pattern, T.Text, [Value] -> IO Value)]
 primitives = [
-    (1, Structured [Text "add ", Reference 0, Text " ", Reference 1], addPrim)
+    (1, Structured [Text "add ", Reference 0, Text " ", Reference 1], "case (p0, p1) of (Structured [Text x],Structured [Text y]) -> Structured [Text \"result \", Structured [Text (show (read x + read y))]]; _ -> Structured [Text \"Don't know\"]", addPrim)
   ]
 
 textAsInt :: T.Text -> Maybe Int
