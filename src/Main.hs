@@ -56,13 +56,16 @@ main = do
                 case M.lookup fId alts of
                     Nothing -> putStrLn ("Function ID " ++ fIdString ++ " not found.")
                     Just root@(([topArg], _):_) -> do
+                        putStrLn "{-# LANGUAGE OverloadedStrings #-}"
+                        putStrLn "import Data.String ( IsString(..) )"
                         primitivesToHaskell conn
-                        putStrLn "\ndata Message = Text String | Structured [Message]"
+                        putStrLn "\ndata Message = T String | S [Message]"
+                        putStrLn "instance IsString Message where fromString = T"
                         putStrLn "instance Show Message where\n\
-                                 \    showsPrec _ (Text s) = (s++)\n\
-                                 \    showsPrec 0 (Structured ms) = foldr (.) id (map (showsPrec 1) ms)\n\
-                                 \    showsPrec _ (Structured ms) = ('[':) . foldr (.) id (map (showsPrec 1) ms) . (']':)"
-                        -- or, putStrLn "data Message = Text String | Structured [Message] deriving (Show)"
+                                 \    showsPrec _ (T s) = (s++)\n\
+                                 \    showsPrec 0 (S ms) = foldr (.) id (map (showsPrec 1) ms)\n\
+                                 \    showsPrec _ (S ms) = ('[':) . foldr (.) id (map (showsPrec 1) ms) . (']':)"
+                        -- or, putStrLn "data Message = T String | S [Message] deriving (Show)"
                         putStr "\nmain = print $ "
                         T.putStrLn (toText (expToHaskell localLookup (LetFun ANSWER (Call ANSWER [Value topArg]))))
         _ -> do

@@ -50,4 +50,4 @@ binIntPrim f [Structured [Text x], Structured [Text y]] = return $ maybe don'tKn
 binIntPrim _ _ = return don'tKnow
 
 binPrimCode :: T.Text -> T.Text
-binPrimCode f = mconcat ["case (p0, p1) of (Structured [Text x],Structured [Text y]) -> Structured [Text \"result \", Structured [Text (show (", f, " (read x) (read y)))]]; _ -> Structured [Text \"Don't know\"]"]
+binPrimCode f = mconcat ["case (p0, p1) of (S [T x],S [T y]) -> S [\"result \", S [T (show (", f, " (read x) (read y)))]]; _ -> S [\"Don't know\"]"]
