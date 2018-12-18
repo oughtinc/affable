@@ -20,23 +20,16 @@ don'tKnow = Structured [Text "Don't know"]
 -- TODO: Assumes variables in pattern are in ascending order.
 makePrimitive :: SchedulerContext extra -> Pattern -> ([Value] -> IO Value) -> (WorkspaceId -> Value -> IO Value)
 makePrimitive ctxt pattern body workspaceId msg = do
-    expanded <- fullyExpand ctxt msg
-    answer <- maybe (return don'tKnow) (body . M.elems) . matchMessage pattern $ expanded
-    newWorkspaceId <- createWorkspace ctxt False workspaceId msg pattern
-    answer <- normalize ctxt answer
-    answer <- relabelMessage ctxt answer
-    sendAnswer ctxt False newWorkspaceId answer
+    answer <- maybe (return don'tKnow) (body . M.elems) . matchMessage pattern =<< fullyExpand ctxt msg
+    answer <- relabelMessage ctxt =<< normalize ctxt answer
+    sendAnswer ctxt False workspaceId answer
     return answer
 
-makePrimitives :: SchedulerContext extra -> (WorkspaceId -> Value -> IO ()) -> IO (PrimEnv WorkspaceId IO Primitive, Value -> Maybe Primitive)
-makePrimitives ctxt recordAnswer = return (primEnv, matchPrim)
-    where !primEnv = M.fromList $ map (\(p, pattern, _, body) -> (p, postProcess (makePrimitive ctxt pattern body))) primitives
+makePrimitives :: SchedulerContext extra -> IO (PrimEnv WorkspaceId IO Primitive, Value -> Maybe Primitive)
+makePrimitives ctxt = return (primEnv, matchPrim)
+    where !primEnv = M.fromList $ map (\(p, pattern, _, body) -> (p, makePrimitive ctxt pattern body)) primitives
           -- TODO: This could be more efficient.
           matchPrim msg = asum $ map (\(p, pattern, _, _) -> p <$ matchMessage pattern msg) primitives -- TODO: Ensure only one match.
-          postProcess prim wsId v = do
-            answer <- prim wsId v
-            recordAnswer wsId answer
-            return answer
 
 primitives :: [(Primitive, Pattern, T.Text, [Value] -> IO Value)]
 primitives = [

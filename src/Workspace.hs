@@ -21,7 +21,7 @@ data Workspace = Workspace {
     identity :: !WorkspaceId,
     parentId :: Maybe WorkspaceId,
     question :: Question,
-    subQuestions :: [(Question, Maybe Answer)],
+    subQuestions :: [(WorkspaceId, Question, Maybe Answer)],
     messageHistory :: [Message], -- TODO: Do we want the history to include who the message was from?
     expandedPointers :: PointerEnvironment,
     time :: Time

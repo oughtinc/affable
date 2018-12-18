@@ -55,7 +55,7 @@ main = do
                     localLookup f = maybe [] id $ M.lookup f alts
                 case M.lookup fId alts of
                     Nothing -> putStrLn ("Function ID " ++ fIdString ++ " not found.")
-                    Just root@((topArg,_):_) -> do
+                    Just root@(([topArg], _):_) -> do
                         primitivesToHaskell conn
                         putStrLn "\ndata Message = Text String | Structured [Message]"
                         putStrLn "instance Show Message where\n\
@@ -64,7 +64,7 @@ main = do
                                  \    showsPrec _ (Structured ms) = ('[':) . foldr (.) id (map (showsPrec 1) ms) . (']':)"
                         -- or, putStrLn "data Message = Text String | Structured [Message] deriving (Show)"
                         putStr "\nmain = print $ "
-                        T.putStrLn (toText (expToHaskell localLookup (LetFun ANSWER (Call ANSWER (Value topArg)))))
+                        T.putStrLn (toText (expToHaskell localLookup (LetFun ANSWER (Call ANSWER [Value topArg]))))
         _ -> do
             withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn

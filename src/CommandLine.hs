@@ -38,13 +38,13 @@ renderWorkspace w = do
     -- TODO: Avoid expanding messages twice.
     let mapping = foldl' renumberAcc M.empty $ concat [
                         [expand $ question w],
-                        concatMap (\(q, ma) -> expand q:maybe [] ((:[]) . expand) ma) (subQuestions w),
+                        concatMap (\(_, q, ma) -> expand q:maybe [] ((:[]) . expand) ma) (subQuestions w),
                         map expand $ messageHistory w
                     ]
     let expand' = maybe (error "renderWorkspace: Shouldn't happen.") id . renumberMessage mapping . expand
     putMessageLn $ expand' (question w)
     if null (subQuestions w) then return () else T.putStrLn "Subquestions:"
-    forM_ (zip [1..] $ subQuestions w) $ \(i, (q, ma)) -> do
+    forM_ (zip [1..] $ subQuestions w) $ \(i, (_, q, ma)) -> do
         putStr ("  " ++ show i ++ ". ")
         putMessageLn (expand' q)
         case ma of
@@ -94,3 +94,4 @@ commandToEvent mapping (Ask msg) = Event.Create <$> renumberMessage mapping msg
 commandToEvent mapping (Reply msg) = Event.Answer <$> renumberMessage mapping msg
 commandToEvent mapping (View p) = Event.Expand <$> M.lookup p mapping
 commandToEvent mapping (Send addr msg) = Event.Send (fromIntegral addr) <$> renumberMessage mapping msg
+commandToEvent mapping Wait = Just Event.Submit

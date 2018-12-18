@@ -9,6 +9,7 @@ data Event
     | Answer Message -- reply
     | Expand Pointer -- view
     | Send WorkspaceId Message -- send
+    | Submit -- wait
     -- | Join -- This is to support more server-y stuff, i.e. a new person joining the computation.
   deriving ( Show )
 
@@ -22,6 +23,7 @@ data SchedulerContext extra = SchedulerContext {
     sendAnswer :: Bool -> WorkspaceId -> Message -> IO (),
     sendMessage :: Bool -> WorkspaceId -> WorkspaceId -> Message -> IO (),
     expandPointer :: WorkspaceId -> Pointer -> IO (),
+    pendingQuestions :: WorkspaceId -> IO [WorkspaceId],
     getWorkspace :: WorkspaceId -> IO Workspace,
     getNextWorkspace :: IO (Maybe WorkspaceId),
     labelMessage :: Message -> IO Message,
@@ -44,7 +46,7 @@ fullyExpand ctxt m = return m
 
 makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeSingleUserScheduler ctxt = do
-    let scheduler user workspace (Create msg) = do -- TODO: Generalize the Message so every pointer is distinct.
+    let scheduler user workspace (Create msg) = do
             newWorkspaceId <- createWorkspace ctxt True (identity workspace) msg msg
             Just <$> getWorkspace ctxt newWorkspaceId
 
@@ -62,5 +64,7 @@ makeSingleUserScheduler ctxt = do
         scheduler user workspace (Expand ptr) = do
             expandPointer ctxt (identity workspace) ptr
             Just <$> getWorkspace ctxt (identity workspace)
+
+        scheduler user workspace Submit = return $ Just workspace
 
     return scheduler

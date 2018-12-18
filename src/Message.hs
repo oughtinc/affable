@@ -6,6 +6,7 @@ module Message (
     Message(..), Pointer, Address, PointerEnvironment, PointerRemapping,
     pointerParser, addressParser, messageParser, messageParser', parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
     pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB, messageToHaskell, messageToPattern,
+    patternsParser, parsePatternsUnsafe, patternsToBuilder,
     expandPointers, substitute, normalizeMessage, generalizeMessage, renumberMessage', renumberMessage, renumberAcc,
     instantiatePattern, matchMessage, matchPointers, collectPointers )
   where
@@ -88,11 +89,17 @@ messageParser' = do
                                      <|> (Structured . (m:) <$> many mParser <* char ']')
         structuredTail m = (Structured . (m:) <$> many mParser) <* char ']'
 
+patternsParser :: Parsec Void Text [Message]
+patternsParser = many (char '[' *> messageParser'  <* char ']')
+
 parseMessageUnsafe :: Text -> Message
 parseMessageUnsafe t = case parse messageParser' "" t of Right msg -> msg
 
 parseMessageUnsafe' :: Pointer -> Text -> Message
 parseMessageUnsafe' p t = case parse messageParser' "" t of Right (Structured ms) -> LabeledStructured p ms
+
+parsePatternsUnsafe :: Text -> [Message]
+parsePatternsUnsafe t = case parse patternsParser "" t of Right msg -> map (\m -> case m of Structured [m'@(LabeledStructured _ _)] -> m'; _ -> m) msg
 
 -- TODO: All of this is pretty ugly.
 parseMessageUnsafeDB :: Text -> Message
@@ -135,6 +142,10 @@ messageToBuilderDB = go True
           go     _ (Text t) = fromText t
           go     _ (Reference p) = pointerToBuilder p
           go     _ (Location a) = addressToBuilder a
+
+
+patternsToBuilder :: [Message] -> Builder
+patternsToBuilder = foldMap (\p -> singleton '[' <> messageToBuilder p <> singleton ']')
 
 -- TODO: Change this.
 type PointerEnvironment = M.Map Pointer Message

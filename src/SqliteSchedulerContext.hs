@@ -1,169 +1,205 @@
 {-# LANGUAGE OverloadedStrings #-}
 module SqliteSchedulerContext ( makeSqliteSchedulerContext ) where
+import Control.Concurrent ( MVar, newEmptyMVar, takeMVar, putMVar ) -- base
+import Control.Exception ( bracket_ ) -- base
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Data.Text ( Text ) -- text
-import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, query_, execute, executeMany, executeNamed, lastInsertRowId ) -- sqlite-simple
+import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
+                                query, query_, execute, executeMany, executeNamed, lastInsertRowId, withTransaction ) -- sqlite-simple
 
 import Command ( Command(..), commandToBuilder )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
                  normalizeMessage, generalizeMessage, instantiatePattern,
-                 messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe' )
+                 messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB )
 import Scheduler ( SchedulerContext(..) )
 import Time ( Time(..), LogicalTime )
 import Util ( toText )
 import Workspace ( Workspace(..), WorkspaceId )
 
-makeSqliteSchedulerContext :: Connection -> IO (SchedulerContext Connection)
-makeSqliteSchedulerContext conn = return $
-    SchedulerContext {
-        createInitialWorkspace = createInitialWorkspaceSqlite conn,
-        createWorkspace = createWorkspaceSqlite conn,
-        sendAnswer = sendAnswerSqlite conn,
-        sendMessage = sendMessageSqlite conn,
-        expandPointer = expandPointerSqlite conn,
-        getWorkspace = getWorkspaceSqlite conn,
-        getNextWorkspace = getNextWorkspaceSqlite conn,
-        labelMessage = labelMessageSqlite conn,
-        normalize = insertMessagePointers conn,
-        generalize = insertGeneralizedMessagePointers conn,
-        instantiate = insertInstantiatedPatternPointers conn,
-        dereference = dereferenceSqlite conn,
-        extraContent = conn
-    }
+makeSqliteSchedulerContext :: Connection -> IO (SchedulerContext (Connection, IO (), IO ()))
+makeSqliteSchedulerContext conn = do
+    lockVar <- newEmptyMVar :: IO (MVar ())
+    let lock = putMVar lockVar ()
+        unlock = takeMVar lockVar
+    return $
+        SchedulerContext {
+            createInitialWorkspace = createInitialWorkspaceSqlite lock unlock conn,
+            createWorkspace = createWorkspaceSqlite lock unlock conn,
+            sendAnswer = sendAnswerSqlite lock unlock conn,
+            sendMessage = sendMessageSqlite lock unlock conn,
+            expandPointer = expandPointerSqlite lock unlock conn,
+            pendingQuestions = pendingQuestionsSqlite lock unlock conn,
+            getWorkspace = getWorkspaceSqlite lock unlock conn,
+            getNextWorkspace = getNextWorkspaceSqlite lock unlock conn,
+            labelMessage = labelMessageSqlite lock unlock conn,
+            normalize = insertMessagePointers lock unlock conn,
+            generalize = insertGeneralizedMessagePointers lock unlock conn,
+            instantiate = insertInstantiatedPatternPointers lock unlock conn,
+            dereference = dereferenceSqlite lock unlock conn,
+            extraContent = (conn, lock, unlock)
+        }
 
 -- TODO: Bulkify this.
-dereferenceSqlite :: Connection -> Pointer -> IO Message
-dereferenceSqlite conn ptr = do
-    [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
-    return $! parseMessageUnsafe' ptr t
+dereferenceSqlite :: IO () -> IO () -> Connection -> Pointer -> IO Message
+dereferenceSqlite lock unlock conn ptr = do
+    bracket_ lock unlock $ do
+        [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
+        return $! parseMessageUnsafe' ptr t
 
 -- TODO: Can probably add a cache (using the MessageTrie) to avoid creating pointers unnecessarily,
 -- for most of the operations that insert into Pointers, though some should not use the cache regardless.
 
 -- Normalize the Message, write the new pointers to the database, then return the normalized message.
-insertMessagePointers :: Connection -> Message -> IO Message
-insertMessagePointers conn msg = do
-    -- TODO: This is definitely a race condition.
-    [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-    let (pEnv, normalizedMsg) = normalizeMessage (maybe 0 succ lastPointerId) msg
-    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-    return normalizedMsg
+insertMessagePointers :: IO () -> IO () -> Connection -> Message -> IO Message
+insertMessagePointers lock unlock conn msg = do
+    bracket_ lock unlock $ do
+        withTransaction conn $ do -- TODO: Need stronger transaction?
+            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+            let (pEnv, normalizedMsg) = normalizeMessage (maybe 0 succ lastPointerId) msg
+            executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
+            return normalizedMsg
 
-insertGeneralizedMessagePointers :: Connection -> Message -> IO Message
-insertGeneralizedMessagePointers conn msg = do
-    -- TODO: This is definitely a race condition.
-    [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-    let (mapping, generalizedMsg) = generalizeMessage (maybe 0 succ lastPointerId) msg
-    executeMany conn "INSERT INTO Pointers (id, content) SELECT ?, o.content FROM Pointers o WHERE o.id = ?" (M.assocs mapping)
-    return generalizedMsg
+insertGeneralizedMessagePointers :: IO () -> IO () -> Connection -> Message -> IO Message
+insertGeneralizedMessagePointers lock unlock conn msg = do
+    bracket_ lock unlock $ do
+        withTransaction conn $ do -- TODO: Need stronger transaction?
+            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+            let (mapping, generalizedMsg) = generalizeMessage (maybe 0 succ lastPointerId) msg
+            executeMany conn "INSERT INTO Pointers (id, content) SELECT ?, o.content FROM Pointers o WHERE o.id = ?" (M.assocs mapping)
+            return generalizedMsg
 
-insertInstantiatedPatternPointers :: Connection -> PointerEnvironment -> Message -> IO (PointerRemapping, Message)
-insertInstantiatedPatternPointers conn env msg = do
-    -- TODO: This is definitely a race condition.
-    [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-    let (pEnv, mapping, instantiatedPattern) = instantiatePattern (maybe 0 succ lastPointerId) env msg
-    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-    return (mapping, instantiatedPattern)
+insertInstantiatedPatternPointers :: IO () -> IO () -> Connection -> PointerEnvironment -> Message -> IO (PointerRemapping, Message)
+insertInstantiatedPatternPointers lock unlock conn env msg = do
+    bracket_ lock unlock $ do
+        withTransaction conn $ do -- TODO: Need stronger transaction?
+            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+            let (pEnv, mapping, instantiatedPattern) = instantiatePattern (maybe 0 succ lastPointerId) env msg
+            executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
+            return (mapping, instantiatedPattern)
 
-labelMessageSqlite :: Connection -> Message -> IO Message
-labelMessageSqlite conn msg@(Structured ms) = do
-    execute conn "INSERT INTO Pointers (content) VALUES (?)" [toText (messageToBuilderDB msg)]
-    p <- fromIntegral <$> lastInsertRowId conn
-    return (LabeledStructured p ms)
-labelMessageSqlite conn msg = do
-    execute conn "INSERT INTO Pointers (content) VALUES (?)" [toText (messageToBuilderDB msg)]
-    p <- fromIntegral <$> lastInsertRowId conn
-    return (LabeledStructured p [msg])
+labelMessageSqlite :: IO () -> IO () -> Connection -> Message -> IO Message
+labelMessageSqlite lock unlock conn msg@(Structured ms) = do
+    bracket_ lock unlock $ do
+        execute conn "INSERT INTO Pointers (content) VALUES (?)" [toText (messageToBuilderDB msg)]
+        p <- fromIntegral <$> lastInsertRowId conn
+        return (LabeledStructured p ms)
+labelMessageSqlite lock unlock conn msg = do
+    bracket_ lock unlock $ do
+        execute conn "INSERT INTO Pointers (content) VALUES (?)" [toText (messageToBuilderDB msg)]
+        p <- fromIntegral <$> lastInsertRowId conn
+        return (LabeledStructured p [msg])
 
-insertCommand :: Connection -> WorkspaceId -> Command -> IO ()
-insertCommand conn workspaceId cmd = do
-    mt <- query conn "SELECT localTime FROM Commands WHERE workspaceId = ? ORDER BY localTime DESC LIMIT 1" (Only workspaceId)
-    let t = case mt of [] -> 0; [Only t'] -> t'+1
-    executeNamed conn "INSERT INTO Commands (workspaceId, localTime, command) VALUES (:workspace, :time, :cmd)" [
-                        ":workspace" := workspaceId,
-                        ":time" := (t :: Int64),
-                        ":cmd" := toText (commandToBuilder cmd)] -- TODO: Use normalized Messages here too?
+insertCommand :: IO () -> IO () -> Connection -> WorkspaceId -> Command -> IO ()
+insertCommand lock unlock conn workspaceId cmd = do
+    bracket_ lock unlock $ do
+        mt <- query conn "SELECT localTime FROM Commands WHERE workspaceId = ? ORDER BY localTime DESC LIMIT 1" (Only workspaceId)
+        let t = case mt of [] -> 0; [Only t'] -> t'+1
+        executeNamed conn "INSERT INTO Commands (workspaceId, localTime, command) VALUES (:workspace, :time, :cmd)" [
+                            ":workspace" := workspaceId,
+                            ":time" := (t :: Int64),
+                            ":cmd" := toText (commandToBuilder cmd)] -- TODO: Use normalized Messages here too?
 
-createInitialWorkspaceSqlite :: Connection -> IO WorkspaceId
-createInitialWorkspaceSqlite conn = do
-    executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) VALUES (:time, :parent, :question, :question)" [
-                        ":time" := (0 :: LogicalTime),
-                        ":parent" := (Nothing :: Maybe WorkspaceId),
-                        ":question" := ("What is your question?" :: Text)]
-    lastInsertRowId conn
+createInitialWorkspaceSqlite :: IO () -> IO () -> Connection -> IO WorkspaceId
+createInitialWorkspaceSqlite lock unlock conn = do
+    bracket_ lock unlock $ do
+        executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) VALUES (:time, :parent, :question, :question)" [
+                            ":time" := (0 :: LogicalTime),
+                            ":parent" := (Nothing :: Maybe WorkspaceId),
+                            ":question" := ("What is your question?" :: Text)]
+        lastInsertRowId conn
 
-createWorkspaceSqlite :: Connection -> Bool -> WorkspaceId -> Message -> Message -> IO WorkspaceId
-createWorkspaceSqlite conn doNormalize workspaceId qAsAsked qAsAnswered = do
-    qAsAsked' <- if doNormalize then insertMessagePointers conn qAsAsked else return qAsAsked
-    qAsAnswered' <- if doNormalize then insertMessagePointers conn qAsAnswered else return qAsAnswered
-    executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) VALUES (:time, :parent, :asAsked, :asAnswered)" [
-                        ":time" := (0 :: LogicalTime), -- TODO
-                        ":parent" := Just workspaceId,
-                        ":asAsked" := toText (messageToBuilder qAsAsked'),
-                        ":asAnswered" := toText (messageToBuilder qAsAnswered')]
-    newWorkspaceId <- lastInsertRowId conn
-    insertCommand conn workspaceId (Ask qAsAsked)
+createWorkspaceSqlite :: IO () -> IO () -> Connection -> Bool -> WorkspaceId -> Message -> Message -> IO WorkspaceId
+createWorkspaceSqlite lock unlock conn doNormalize workspaceId qAsAsked qAsAnswered = do
+    qAsAsked' <- if doNormalize then insertMessagePointers lock unlock conn qAsAsked else return qAsAsked
+    qAsAnswered' <- if doNormalize then insertMessagePointers lock unlock conn qAsAnswered else return qAsAnswered
+    newWorkspaceId <- bracket_ lock unlock $ do
+        executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) VALUES (:time, :parent, :asAsked, :asAnswered)" [
+                            ":time" := (0 :: LogicalTime), -- TODO
+                            ":parent" := Just workspaceId,
+                            ":asAsked" := toText (messageToBuilder qAsAsked'),
+                            ":asAnswered" := toText (messageToBuilder qAsAnswered')]
+        lastInsertRowId conn
+    insertCommand lock unlock conn workspaceId (Ask qAsAsked)
     return newWorkspaceId
 
-sendAnswerSqlite :: Connection -> Bool -> WorkspaceId -> Message -> IO ()
-sendAnswerSqlite conn doNormalize workspaceId msg = do
-    msg' <- if doNormalize then insertMessagePointers conn msg else return msg
-    executeNamed conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (:workspace, :time, :answer)" [
-                        ":workspace" := workspaceId,
-                        ":time" := (0 :: LogicalTime), -- TODO
-                        ":answer" := toText (messageToBuilder msg')]
-    insertCommand conn workspaceId (Reply msg)
+sendAnswerSqlite :: IO () -> IO () -> Connection -> Bool -> WorkspaceId -> Message -> IO ()
+sendAnswerSqlite lock unlock conn doNormalize workspaceId msg = do
+    msg' <- if doNormalize then insertMessagePointers lock unlock conn msg else return msg
+    bracket_ lock unlock $ do
+        executeNamed conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (:workspace, :time, :answer)" [
+                            ":workspace" := workspaceId,
+                            ":time" := (0 :: LogicalTime), -- TODO
+                            ":answer" := toText (messageToBuilder msg')]
+    insertCommand lock unlock conn workspaceId (Reply msg)
 
-sendMessageSqlite :: Connection -> Bool -> WorkspaceId -> WorkspaceId -> Message -> IO ()
-sendMessageSqlite conn doNormalize srcId tgtId msg = do
-    msg' <- if doNormalize then insertMessagePointers conn msg else return msg
-    executeNamed conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (:source, :target, :time, :content)" [
-                        ":source" := srcId,
-                        ":target" := tgtId,
-                        ":time" := (0 :: LogicalTime), -- TODO
-                        ":content" := toText (messageToBuilder msg')]
-    insertCommand conn srcId (Send (fromIntegral tgtId) msg)
+sendMessageSqlite :: IO () -> IO () -> Connection -> Bool -> WorkspaceId -> WorkspaceId -> Message -> IO ()
+sendMessageSqlite lock unlock conn doNormalize srcId tgtId msg = do
+    msg' <- if doNormalize then insertMessagePointers lock unlock conn msg else return msg
+    bracket_ lock unlock $ do
+        executeNamed conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (:source, :target, :time, :content)" [
+                            ":source" := srcId,
+                            ":target" := tgtId,
+                            ":time" := (0 :: LogicalTime), -- TODO
+                            ":content" := toText (messageToBuilder msg')]
+    insertCommand lock unlock conn srcId (Send (fromIntegral tgtId) msg)
 
 -- TODO: Bulkify this.
-expandPointerSqlite :: Connection -> WorkspaceId -> Pointer -> IO ()
-expandPointerSqlite conn workspaceId ptr = do
-    executeNamed conn "INSERT OR IGNORE INTO ExpandedPointers (workspaceId, pointerId, logicalTimeExpanded) VALUES (:workspace, :pointer, :time)" [
-                        ":workspace" := workspaceId,
-                        ":pointer" := ptr,
-                        ":time" := (0 :: LogicalTime)] -- TODO
-    insertCommand conn workspaceId (View ptr)
+expandPointerSqlite :: IO () -> IO () -> Connection -> WorkspaceId -> Pointer -> IO ()
+expandPointerSqlite lock unlock conn workspaceId ptr = do
+    bracket_ lock unlock $ do
+        executeNamed conn "INSERT OR IGNORE INTO ExpandedPointers (workspaceId, pointerId, logicalTimeExpanded) VALUES (:workspace, :pointer, :time)" [
+                            ":workspace" := workspaceId,
+                            ":pointer" := ptr,
+                            ":time" := (0 :: LogicalTime)] -- TODO
+    insertCommand lock unlock conn workspaceId (View ptr)
+
+pendingQuestionsSqlite :: IO () -> IO () -> Connection -> WorkspaceId -> IO [WorkspaceId]
+pendingQuestionsSqlite lock unlock conn workspaceId = do
+    bracket_ lock unlock $ do
+        subquestions <- query conn "SELECT w.id \
+                                   \FROM Workspaces w \
+                                   \LEFT OUTER JOIN Answers a ON a.workspaceId = w.id \
+                                   \WHERE w.parentWorkspaceId = ? \
+                                   \  AND a.answer IS NULL ORDER BY id ASC" (Only workspaceId)
+        return $ map (\(Only qId) -> qId) subquestions
 
 -- TODO: Maybe maintain a cache of workspaces.
-getWorkspaceSqlite :: Connection -> WorkspaceId -> IO Workspace
-getWorkspaceSqlite conn workspaceId = do
-    -- TODO: Maybe use a transaction.
-    [(p, t, q)] <- query conn "SELECT parentWorkspaceId, logicalTime, questionAsAnswered FROM Workspaces WHERE id = ? ORDER BY logicalTime DESC LIMIT 1" (Only workspaceId)
-    messages <- query conn "SELECT content FROM Messages WHERE targetWorkspaceId = ?" (Only workspaceId)
-    subquestions <- query conn "SELECT w.questionAsAsked, a.answer \
-                               \FROM Workspaces w \
-                               \LEFT OUTER JOIN Answers a ON w.id = a.workspaceId \
-                               \WHERE w.parentWorkspaceId = ?"  (Only workspaceId)
-    expanded <- query conn "SELECT pointerId, content \
-                           \FROM ExpandedPointers e \
-                           \INNER JOIN Pointers p ON e.pointerId = p.id \
-                           \WHERE e.workspaceId = ?" (Only workspaceId)
-    return $ Workspace {
-        identity = workspaceId,
-        parentId = p,
-        question = parseMessageUnsafe q,
-        subQuestions = map (\(q, ma) -> (parseMessageUnsafe q, fmap parseMessageUnsafe ma)) subquestions,
-        messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
-        expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
-        time = Time t }
+getWorkspaceSqlite :: IO () -> IO () -> Connection -> WorkspaceId -> IO Workspace
+getWorkspaceSqlite lock unlock conn workspaceId = do
+    bracket_ lock unlock $ do
+        withTransaction conn $ do
+            [(p, t, q)] <- query conn "SELECT parentWorkspaceId, logicalTime, questionAsAnswered \
+                                      \FROM Workspaces \
+                                      \WHERE id = ? \
+                                      \ORDER BY logicalTime DESC LIMIT 1" (Only workspaceId)
+            messages <- query conn "SELECT content FROM Messages WHERE targetWorkspaceId = ?" (Only workspaceId) -- TODO: ORDER
+            subquestions <- query conn "SELECT w.id, w.questionAsAsked, a.answer \
+                                       \FROM Workspaces w \
+                                       \LEFT OUTER JOIN Answers a ON w.id = a.workspaceId \
+                                       \WHERE w.parentWorkspaceId = ? \
+                                       \ORDER BY w.Id ASC"  (Only workspaceId)
+            expanded <- query conn "SELECT pointerId, content \
+                                   \FROM ExpandedPointers e \
+                                   \INNER JOIN Pointers p ON e.pointerId = p.id \
+                                   \WHERE e.workspaceId = ?" (Only workspaceId)
+            return $ Workspace {
+                identity = workspaceId,
+                parentId = p,
+                question = parseMessageUnsafeDB q,
+                subQuestions = map (\(qId, q, ma) -> (qId, parseMessageUnsafe q, fmap parseMessageUnsafe ma)) subquestions,
+                messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
+                expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
+                time = Time t }
 
-getNextWorkspaceSqlite :: Connection -> IO (Maybe WorkspaceId)
-getNextWorkspaceSqlite conn = do
-    -- TODO: How we order determines what workspace we're going to schedule next.
-    -- This gets a workspace that doesn't currently have an answer. TODO: For now, want the deepest (which is the newest) one...
-    result <- query conn "SELECT w.id \
-                         \FROM Workspaces w \
-                         \WHERE NOT EXISTS(SELECT * FROM Answers a WHERE a.workspaceId = w.id) ORDER BY w.id DESC LIMIT 1" ()
-    case result of
-        [] -> return Nothing
-        [Only wId] -> return (Just wId)
+getNextWorkspaceSqlite :: IO () -> IO () -> Connection -> IO (Maybe WorkspaceId)
+getNextWorkspaceSqlite lock unlock conn = do
+    bracket_ lock unlock $ do
+        -- TODO: How we order determines what workspace we're going to schedule next.
+        -- This gets a workspace that doesn't currently have an answer. TODO: For now, want the deepest (which is the newest) one...
+        result <- query conn "SELECT w.id \
+                             \FROM Workspaces w \
+                             \WHERE NOT EXISTS(SELECT * FROM Answers a WHERE a.workspaceId = w.id) ORDER BY w.id DESC LIMIT 1" ()
+        case result of
+            [] -> return Nothing
+            [Only wId] -> return (Just wId)
