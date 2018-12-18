@@ -37,7 +37,8 @@ packages:
 # Dependency packages to be pulled from upstream that are not in the resolver
 # using the same syntax as the packages field.
 # (e.g., acme-missiles-0.3)
-# extra-deps: []
+extra-deps:
+    - async-pool-0.9.0.2@sha256:76d249074508c4e6d497dc60f30cbb98051f9c26aab97b2e8ca93667171d7470
 
 # Override default flag values for local packages and extra-deps
 # flags: {}
