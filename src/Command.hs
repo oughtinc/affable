@@ -19,6 +19,7 @@ data Command
     | Reply Message
     | View Pointer
     | Send Address Message
+    | Wait
   deriving ( Eq, Ord, Show, Generic ) -- TODO: Implement custom Show.
 
 instance FromJSON Command
@@ -30,16 +31,19 @@ Cmd ::= "ask" WS Msg
       | "reply" WS Msg
       | "view" WS Pointer
       | "send" WS Address WS Msg
+      | "wait"
 -}
 
 commandParser :: Parsec Void Text Command
 commandParser = (Ask <$> (string' "ask" *> space1 *> messageParser))
             <|> (Reply <$> (string' "reply" *> space1 *> messageParser))
             <|> (View <$> (string' "view" *> space1 *> pointerParser))
-            <|> (Send <$> (string' "send" *> space1 *> addressParser) <*> (space1 *> messageParser)) <?> "command"
+            <|> (Send <$> (string' "send" *> space1 *> addressParser) <*> (space1 *> messageParser))
+            <|> (Wait <$ string' "wait") <?> "command"
 
 commandToBuilder :: Command -> Builder
 commandToBuilder (Ask msg) = fromText "ask " <> messageToBuilder msg
 commandToBuilder (Reply msg) = fromText "reply " <> messageToBuilder msg
 commandToBuilder (Send a msg) = fromText "send " <> addressToBuilder a <> messageToBuilder msg
 commandToBuilder (View p) = fromText "view " <> pointerToBuilder p
+commandToBuilder Wait = fromText "wait"
