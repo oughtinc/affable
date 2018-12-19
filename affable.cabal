@@ -87,6 +87,7 @@ common deps
     FlexibleInstances,
     DataKinds,
     TypeOperators,
+    LambdaCase,
     BangPatterns
 
 executable affable

@@ -220,7 +220,8 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
 
     forkIO $ do
         Create msg <- takeMVar initResponseMVar -- TODO: Better error handling.
-        firstWorkspaceId <- createWorkspace ctxt False initWorkspaceId msg msg
+        pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
+        firstWorkspaceId <- createWorkspace ctxt False initWorkspaceId msg pattern
         let startExp = LetFun ANSWER (Call ANSWER [Value msg]) :: Exp'
         t <- withTaskGroup 1000 {- TODO: number of threads in pool -} $ \g -> do
                 let execMany workspaceId args = do
@@ -234,6 +235,5 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
         t <- fullyExpand ctxt t
         T.putStrLn (toText (messageToBuilder t))
         writeChan requestChan Nothing
-        return ()
 
     return scheduler
