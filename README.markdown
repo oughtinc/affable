@@ -25,12 +25,15 @@ empty database. Querying the database with `SELECT id FROM Functions WHERE isAns
 
 ## Interactions
 
-There are three commands that are accepted in the interactive mode:
+These are the commands that are accepted in the interactive mode:
 
   - `ask <message>` - This schedules a new question to be asked.
   - `view <pointer>` - This expands a pointer revealing what it points at.
   - `reply <message>` - This answers the current question.
   - `wait` - This waits for the answers to unanswered questions.
+  - `exit` - Exits the program.
+
+Tab completion should work for these commands except for `exit`.
 
 Currently, you need to `ask` a question as the first thing otherwise the program will crash.
 
