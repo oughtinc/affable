@@ -1,26 +1,36 @@
-ask commit 1a57114b205d9e836e363aa1d7639e62bc21c4a5
+ask commit f79dc98f2a5b95e0e17c0c294e275ba5ed3962b6
 ask evaluate [App [Lam [Var [Z]]] [Lam [Var [Z]]]]
+wait
 ask {$1 [Nil] [Done]}
+wait
 view $1
 ask {$2 $4 [Arg $3 $4 $5]}
-view $3
-ask {$4 $5 [Fun [Closure $1 $2] $6]}
+wait
 view $4
-ask {$5 [Cons [Closure $1 $2] $6] $7}
-ask lookup $1 $2
+ask {$5 $6 [Fun [Closure $2 $3] $7]}
+wait
+view $5
+ask {$6 [Cons [Closure $2 $3] $7] $8}
+wait
+ask lookup $2 $3
+wait
 view $1
 view $2
 reply $3
-ask {[Lam $6] $7 $3}
-reply Closure $1 $2
-reply $10
-reply $12
-reply $11
-reply $10
-reply $3
+ask {[Lam $6] $7 $4}
+wait
+reply Closure $2 $3
+reply $8
+reply $9
+reply $8
+reply $6
+reply $2
 ask evaluate [App [App [Lam [Lam [Var [S [Z]]]]] [Lam [Var [Z]]]] [Lam [Var [Z]]]]
-view $2
-ask lookup $1 $4
-reply $7
+wait
+view $3
+ask lookup $2 $5
+wait
+reply $6
 ask evaluate [App [App [Lam [Lam [App [Var [Z]] [Var [S [Z]]]]]] [Lam [Lam [App [Var [S [Z]]] [App [Var [S [Z]]] [Var [Z]]]]]]] [Lam [Lam [App [Var [S [Z]]] [App [Var [S [Z]]] [App [Var [S [Z]]] [Var [Z]]]]]]]]
-reply $7
+wait
+reply $6
