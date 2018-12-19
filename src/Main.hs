@@ -86,7 +86,7 @@ fileOrMemory _ = ":memory:"
 initPrimitives :: Connection -> IO ()
 initPrimitives conn = do
     let prims = map (\(i, p, b, _) -> (i, toText (messageToBuilderDB p), b)) primitives
-    executeMany conn "INSERT INTO Primitives (id, pattern, body) VALUES (?, ?, ?)" prims
+    executeMany conn "INSERT OR REPLACE INTO Primitives (id, pattern, body) VALUES (?, ?, ?)" prims
 
 primitivesToHaskell :: Connection -> IO ()
 primitivesToHaskell conn = do

@@ -27,7 +27,6 @@ nameToBuilder :: Name -> Builder
 nameToBuilder ANSWER = fromText "answer"
 nameToBuilder (LOCAL i) = singleton 'f' <> T.decimal i
 
--- TODO: Make data model and figure out how to serialize to database.
 -- NOTE: Currently only ever use LetFun f (Call f _) pattern which is essentially, unsurprisingly,
 -- equivalent to doing a case analysis on _. It's possible having Call be separate could be useful
 -- for "tail calls".
@@ -49,14 +48,6 @@ expToBuilder' pBuilder fBuilder vBuilder alternativesFor = go 0
           go indent (Value v) = messageToBuilder v
           go indent (Prim p e) = pBuilder p <> singleton '(' <> go 0 e <> singleton ')'
           go indent (Call f es) = fBuilder f <> singleton '(' <> mconcat (intersperse (singleton ',') (map (go 0) es)) <> singleton ')'
-          {-
-          go indent (LetFun f body) | null alts = fromText "let "
-                                               <> indentBuilder <> fromText "  " <> fBuilder f <> fromText "(_) = undefined"
-                                               <> indentBuilder <> fromText "in " <> go indent body
-                                    | otherwise = fromText "let"
-                                               <> foldMap (\(p, e) -> f' p <> fromText " = " <> go (indent + 4) e) alts
-                                               <> indentBuilder <> fromText "in " <> go indent body
-          -}
           go indent (LetFun f body) | null alts = go indent body <> fromText " where "
                                                <> indentBuilder <> fromText "  " <> fBuilder f <> fromText "(_) = undefined"
                                     | otherwise = go indent body <> fromText " where "
@@ -73,7 +64,6 @@ type VarMapping v = M.Map v v
 type FunEnv s m f = M.Map f (s -> [Value] -> m Value)
 type PrimEnv s m p = M.Map p (s -> Value -> m Value)
 
--- NOTE: We could do a "parallel" evaluator that might allow multiple workspaces to be scheduled.
 evaluateExp :: (Ord p, Ord f, Ord v, Monad m)
             => (s -> [s -> m Value] -> m [Value])
             -> (s -> VarEnv v -> f -> [Value] -> m (s, VarEnv v, Exp p f v))
