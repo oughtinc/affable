@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 module AutoInterpreter where
@@ -19,7 +20,7 @@ import Data.Traversable ( traverse ) -- base
 import Data.Tuple ( swap ) -- base
 
 import AutoScheduler ( AutoSchedulerContext(..) )
-import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, evaluateExp', expToBuilder, expToHaskell )
+import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, evaluateExp, expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage,
                  matchPointers, expandPointers, substitute, renumberMessage' )
 import Primitive ( makePrimitives )
@@ -79,10 +80,10 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
             T.putStrLn (toText (expToBuilder (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
 
     -- When we receive the Commit event, we look at the unanswered questions of the current workspace for the parameters.
-    -- Primitives need some thought.
     -- Expand doesn't get batched, so we only have batches of questions, i.e. multi-argument function calls are always
     -- of the form `f(answer(...), prim1(...), ...)`.
     let match s varEnv f [Reference p] = do
+            error "Do we get here"
             m <- dereference ctxt p
             match s varEnv f [m]
         match workspaceId varEnv f ms = do
@@ -97,6 +98,8 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     let !mMatch = asum $ map (\(ps, e) -> fmap (\bindings -> (ps, M.union (M.unions bindings) varEnv, e)) $ zipWithM matchMessage ps ms') alts
                     case mMatch of
                         Just (patterns, varEnv', e) -> do
+                            varEnv' <- traverse (\case Reference p -> dereference ctxt p; x -> return x) varEnv'
+
                             -- This is to make it so occurrences of variables bound by as-patterns don't get substituted.
                             -- This leads to match being called on References if we reply with the variable bound by an as-pattern.
                             let bindings = M.union (M.unions $
@@ -105,28 +108,21 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                                                             _ -> M.empty)
                                                               patterns ms') varEnv'
 
-                            (mappings, patterns) <- unzip <$> mapM (instantiate ctxt bindings) patterns
-                            mapM_ (linkVars workspaceId) mappings
-
                             linkPointers f workspace patterns
                             globalToLocal <- links workspaceId
 
+
                             -- This is a bit hacky. If this approach is the way to go, make these patterns individual constructors.
-                            -- I'd also prefer a design that only created workspaces when necessary. I envision something that executes
-                            -- the automation creating nothing if there are no pattern match failures. If there is a pattern match failure,
-                            -- this will create a new workspace that will lead to the creation (via functional updating) of new workspace
-                            -- as the change percolates back up the tree of questions.
                             case e of
                                 LetFun _ (Call _ [Var ptr]) -> do -- expand case
-                                    let !ptr' = maybe ptr id $ M.lookup ptr globalToLocal
-                                    let !(Just (Reference p)) = M.lookup ptr bindings -- TODO: Will fail if already expanded.
+                                    let !p = maybe ptr id $ M.lookup ptr $ invertMap globalToLocal
                                     arg <- dereference ctxt p
                                     expandPointer ctxt workspaceId p
                                     giveArgument workspaceId arg
                                     return (workspaceId, M.insert ptr arg varEnv', e)
                                 LetFun _ (Call _ args) -> do -- ask cases
                                     forM_ args $ \argExp -> do
-                                        let !arg = case argExp of Call ANSWER [Value m] -> m; Prim _ (Value m) -> m
+                                        let !arg = substitute bindings $! case argExp of Call ANSWER [Value m] -> m; Prim _ (Value m) -> m
                                         pattern <- relabelMessage ctxt {-=<< generalize ctxt-} =<< normalize ctxt =<< generalize ctxt arg
                                         createWorkspace ctxt False workspaceId arg pattern
                                     return (workspaceId, varEnv', e)
@@ -142,6 +138,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     let !workspaceId = identity workspace
                     patterns <- mapM (\m -> relabelMessage ctxt {-=<< generalize ctxt-} m) ms'
                     let !(Just bindings) = M.unions <$> zipWithM matchMessage patterns ms' -- This shouldn't fail.
+                    bindings <- traverse (\case Reference p -> dereference ctxt p; x -> return x) bindings
                     let !varEnv' = M.union bindings varEnv
 
                     linkPointers f workspace patterns
@@ -242,9 +239,9 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
                         if null qIds then do -- Then either Var case or no arguments case, either way we can reuse the current workspaceId.
                             mapM ($ workspaceId) args
                           else do -- we have precreated workspaces for the Call ANSWER or Prim case.
-                            -- sequenceA $ zipWith ($) args qIds -- sequential
-                            mapConcurrently g id $ zipWith ($) args qIds -- parallel
-                evaluateExp' execMany match substitute primEnv M.empty M.empty firstWorkspaceId startExp -- parallel
+                            sequenceA $ zipWith ($) args qIds -- sequential
+                            -- mapConcurrently g id $ zipWith ($) args qIds -- parallel
+                evaluateExp execMany match substitute primEnv firstWorkspaceId startExp
         t <- fullyExpand ctxt t
         T.putStrLn (toText (messageToBuilder t))
         writeChan requestChan Nothing
