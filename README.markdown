@@ -11,6 +11,7 @@ that's required to build the code. `stack run` or `stack exec affable` will then
   - `serve [<dbfile>]` - Start a web server optionally storing state in the Sqlite database `dbfile`. (Currently useless.)
   - `noauto [<dbfile>]` - Create an interaction with no automation optionally storing state in the Sqlite database `dbfile`.
   - `export <dbfile> <id>` - Print the automation as Haskell code for the function with ID `id` stored in the Sqlite database `dbfile`.
+  - `concurrent [<dbfile>]` - Same as next option but schedule questions concurrently.
   - `[<dbfile>]` - Create an interaction with automation optionally storing state in the Sqlite database `dbfile`.
 
 For example, `stack run foo.db` (or `stack exec affable foo.db`) will start a session supporting automation and storing
@@ -26,13 +27,14 @@ empty database. Querying the database with `SELECT id FROM Functions WHERE isAns
 
 There are three commands that are accepted in the interactive mode:
 
-  - `ask <message>` - This asks a new question.
+  - `ask <message>` - This schedules a new question to be asked.
   - `view <pointer>` - This expands a pointer revealing what it points at.
   - `reply <message>` - This answers the current question.
+  - `wait` - This waits for the answers to unanswered questions.
 
 Currently, you need to `ask` a question as the first thing otherwise the program will crash.
 
-A `pointer` looks like `$n` where `n` is a number, e.g. `$3`.
+A `pointer` looks like `$n` where `n` is a number, e.g. `$37`.
 
 A `message` is an arbitrary string that may contain `pointer`s except that it must have balanced square brackets, `[`, `]`. A
 square bracketed part of the string becomes a sub-`message` that will be hidden behind a pointer.
