@@ -97,13 +97,12 @@ createInitialWorkspaceSqlite lock unlock conn = do
 
 createWorkspaceSqlite :: IO () -> IO () -> Connection -> Bool -> WorkspaceId -> Message -> Message -> IO WorkspaceId
 createWorkspaceSqlite lock unlock conn doNormalize workspaceId qAsAsked qAsAnswered = do
-    qAsAsked' <- if doNormalize then insertMessagePointers lock unlock conn qAsAsked else return qAsAsked
     qAsAnswered' <- if doNormalize then insertMessagePointers lock unlock conn qAsAnswered else return qAsAnswered
     newWorkspaceId <- bracket_ lock unlock $ do
         executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) VALUES (:time, :parent, :asAsked, :asAnswered)" [
                             ":time" := (0 :: LogicalTime), -- TODO
                             ":parent" := Just workspaceId,
-                            ":asAsked" := toText (messageToBuilder qAsAsked'),
+                            ":asAsked" := toText (messageToBuilder qAsAsked),
                             ":asAnswered" := toText (messageToBuilder qAsAnswered')]
         lastInsertRowId conn
     insertCommand lock unlock conn workspaceId (Ask qAsAsked)
