@@ -68,6 +68,15 @@ main = do
                         -- or, putStrLn "data Message = T String | S [Message] deriving (Show)"
                         putStr "\nmain = print $ "
                         T.putStrLn (toText (expToHaskell localLookup (LetFun ANSWER (Call ANSWER [Value topArg]))))
+        ("concurrent":args) -> do
+            withConnection (fileOrMemory args) $ \conn -> do
+                initSqlite conn
+                initPrimitives conn
+                autoCtxt <- makeSqliteAutoSchedulerContext conn
+                let !ctxt = schedulerContext autoCtxt
+                initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
+                scheduler <- makeInterpreterScheduler False autoCtxt $! identity initWorkspace
+                commandLineInteraction initWorkspace scheduler
         _ -> do
             withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn
@@ -75,7 +84,7 @@ main = do
                 autoCtxt <- makeSqliteAutoSchedulerContext conn
                 let !ctxt = schedulerContext autoCtxt
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
-                scheduler <- makeInterpreterScheduler autoCtxt $! identity initWorkspace
+                scheduler <- makeInterpreterScheduler True autoCtxt $! identity initWorkspace
                 commandLineInteraction initWorkspace scheduler
 
 fileOrMemory :: [String] -> String

@@ -123,7 +123,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                 LetFun _ (Call _ args) -> do -- ask cases
                                     forM_ args $ \argExp -> do
                                         let !arg = substitute bindings $! case argExp of Call ANSWER [Value m] -> m; Prim _ (Value m) -> m
-                                        pattern <- relabelMessage ctxt {-=<< generalize ctxt-} =<< normalize ctxt =<< generalize ctxt arg
+                                        pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt arg
                                         createWorkspace ctxt False workspaceId arg pattern
                                     return (workspaceId, varEnv', e)
                                 Value msg -> do -- reply case
@@ -135,8 +135,10 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                         Nothing -> matchFailed workspace ms'
                 [] -> matchFailed workspace ms'
             where matchFailed workspace ms' = do
+                    -- TODO: Need to make a lock on f so multiple workspaces don't attempt to extend the same function
+                    -- at the same time. XXX
                     let !workspaceId = identity workspace
-                    patterns <- mapM (\m -> relabelMessage ctxt {-=<< generalize ctxt-} m) ms'
+                    patterns <- mapM (relabelMessage ctxt) ms'
                     let !(Just bindings) = M.unions <$> zipWithM matchMessage patterns ms' -- This shouldn't fail.
                     bindings <- traverse (\case Reference p -> dereference ctxt p; x -> return x) bindings
                     let !varEnv' = M.union bindings varEnv
@@ -151,7 +153,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                             -- we Expand they'll still be around. If we Answer then, I guess we'll just discard
                             -- them as answers for them are clearly irrelevant.
                             -- Wait can get the pending questions from the database.
-                            pattern <- relabelMessage ctxt {-=<< generalize ctxt-} =<< normalize ctxt =<< generalize ctxt msg
+                            pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
                             createWorkspace ctxt False workspaceId msg pattern
                             loop
                         processEvent (Expand ptr) = do
@@ -186,8 +188,8 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     return (workspaceId, M.union extraBindings varEnv', e)
     return match
 
-makeInterpreterScheduler :: AutoSchedulerContext extra -> WorkspaceId -> IO SchedulerFn
-makeInterpreterScheduler autoCtxt initWorkspaceId = do
+makeInterpreterScheduler :: Bool -> AutoSchedulerContext extra -> WorkspaceId -> IO SchedulerFn
+makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     let !ctxt = schedulerContext autoCtxt
 
     requestChan <- newChan :: IO (Chan (Maybe WorkspaceId))
@@ -233,14 +235,14 @@ makeInterpreterScheduler autoCtxt initWorkspaceId = do
         Create msg <- takeMVar initResponseMVar -- TODO: Better error handling.
         firstWorkspaceId <- createWorkspace ctxt False initWorkspaceId msg msg
         let startExp = LetFun ANSWER (Call ANSWER [Value msg]) :: Exp'
-        t <- withTaskGroup 10 {- TODO: number of threads in pool -} $ \g -> do
+        t <- withTaskGroup 1000 {- TODO: number of threads in pool -} $ \g -> do
                 let execMany workspaceId args = do
                         qIds <- pendingQuestions ctxt workspaceId
                         if null qIds then do -- Then either Var case or no arguments case, either way we can reuse the current workspaceId.
                             mapM ($ workspaceId) args
                           else do -- we have precreated workspaces for the Call ANSWER or Prim case.
-                            sequenceA $ zipWith ($) args qIds -- sequential
-                            -- mapConcurrently g id $ zipWith ($) args qIds -- parallel
+                            -- TODO: Need to fallback to sequential execution if we run out of threads.
+                            (if isSequential then sequenceA else mapConcurrently g id) $ zipWith ($) args qIds
                 evaluateExp execMany match substitute primEnv firstWorkspaceId startExp
         t <- fullyExpand ctxt t
         T.putStrLn (toText (messageToBuilder t))
