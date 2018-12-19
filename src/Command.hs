@@ -20,7 +20,7 @@ data Command
     | View Pointer
     | Send Address Message
     | Wait
-  deriving ( Eq, Ord, Show, Generic ) -- TODO: Implement custom Show.
+  deriving ( Eq, Ord, Show, Generic )
 
 instance FromJSON Command
 instance ToJSON Command

@@ -9,8 +9,7 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
                                 query, query_, execute, executeMany, executeNamed, lastInsertRowId, withTransaction ) -- sqlite-simple
 
 import Command ( Command(..), commandToBuilder )
-import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
-                 normalizeMessage, generalizeMessage, instantiatePattern,
+import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB )
 import Scheduler ( SchedulerContext(..) )
 import Time ( Time(..), LogicalTime )
@@ -35,7 +34,6 @@ makeSqliteSchedulerContext conn = do
             labelMessage = labelMessageSqlite lock unlock conn,
             normalize = insertMessagePointers lock unlock conn,
             generalize = insertGeneralizedMessagePointers lock unlock conn,
-            instantiate = insertInstantiatedPatternPointers lock unlock conn,
             dereference = dereferenceSqlite lock unlock conn,
             extraContent = (conn, lock, unlock)
         }
@@ -46,9 +44,6 @@ dereferenceSqlite lock unlock conn ptr = do
     bracket_ lock unlock $ do
         [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
         return $! parseMessageUnsafe' ptr t
-
--- TODO: Can probably add a cache (using the MessageTrie) to avoid creating pointers unnecessarily,
--- for most of the operations that insert into Pointers, though some should not use the cache regardless.
 
 -- Normalize the Message, write the new pointers to the database, then return the normalized message.
 insertMessagePointers :: IO () -> IO () -> Connection -> Message -> IO Message
@@ -68,15 +63,6 @@ insertGeneralizedMessagePointers lock unlock conn msg = do
             let (mapping, generalizedMsg) = generalizeMessage (maybe 0 succ lastPointerId) msg
             executeMany conn "INSERT INTO Pointers (id, content) SELECT ?, o.content FROM Pointers o WHERE o.id = ?" (M.assocs mapping)
             return generalizedMsg
-
-insertInstantiatedPatternPointers :: IO () -> IO () -> Connection -> PointerEnvironment -> Message -> IO (PointerRemapping, Message)
-insertInstantiatedPatternPointers lock unlock conn env msg = do
-    bracket_ lock unlock $ do
-        withTransaction conn $ do -- TODO: Need stronger transaction?
-            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-            let (pEnv, mapping, instantiatedPattern) = instantiatePattern (maybe 0 succ lastPointerId) env msg
-            executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-            return (mapping, instantiatedPattern)
 
 labelMessageSqlite :: IO () -> IO () -> Connection -> Message -> IO Message
 labelMessageSqlite lock unlock conn msg@(Structured ms) = do
@@ -98,7 +84,7 @@ insertCommand lock unlock conn workspaceId cmd = do
         executeNamed conn "INSERT INTO Commands (workspaceId, localTime, command) VALUES (:workspace, :time, :cmd)" [
                             ":workspace" := workspaceId,
                             ":time" := (t :: Int64),
-                            ":cmd" := toText (commandToBuilder cmd)] -- TODO: Use normalized Messages here too?
+                            ":cmd" := toText (commandToBuilder cmd)]
 
 createInitialWorkspaceSqlite :: IO () -> IO () -> Connection -> IO WorkspaceId
 createInitialWorkspaceSqlite lock unlock conn = do
@@ -195,8 +181,7 @@ getWorkspaceSqlite lock unlock conn workspaceId = do
 getNextWorkspaceSqlite :: IO () -> IO () -> Connection -> IO (Maybe WorkspaceId)
 getNextWorkspaceSqlite lock unlock conn = do
     bracket_ lock unlock $ do
-        -- TODO: How we order determines what workspace we're going to schedule next.
-        -- This gets a workspace that doesn't currently have an answer. TODO: For now, want the deepest (which is the newest) one...
+        -- This gets a workspace that doesn't currently have an answer.
         result <- query conn "SELECT w.id \
                              \FROM Workspaces w \
                              \WHERE NOT EXISTS(SELECT * FROM Answers a WHERE a.workspaceId = w.id) ORDER BY w.id DESC LIMIT 1" ()

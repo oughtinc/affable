@@ -79,7 +79,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
             -- T.putStrLn (toText (expToHaskell (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
             T.putStrLn (toText (expToBuilder (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
 
-    -- When we receive the Commit event, we look at the unanswered questions of the current workspace for the parameters.
+    -- When we receive the Submit event, we look at the unanswered questions of the current workspace for the parameters.
     -- Expand doesn't get batched, so we only have batches of questions, i.e. multi-argument function calls are always
     -- of the form `f(answer(...), prim1(...), ...)`.
     let match s varEnv f [Reference p] = do
@@ -101,7 +101,6 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                             varEnv' <- traverse (\case Reference p -> dereference ctxt p; x -> return x) varEnv'
 
                             -- This is to make it so occurrences of variables bound by as-patterns don't get substituted.
-                            -- This leads to match being called on References if we reply with the variable bound by an as-pattern.
                             let bindings = M.union (M.unions $
                                                         zipWith (\p m -> case (p, m) of
                                                                             (LabeledStructured asP _, LabeledStructured l _) -> M.singleton asP (Reference l)
@@ -110,7 +109,6 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
 
                             linkPointers f workspace patterns
                             globalToLocal <- links workspaceId
-
 
                             -- This is a bit hacky. If this approach is the way to go, make these patterns individual constructors.
                             case e of
@@ -148,11 +146,6 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
 
                     let loop = blockOnUser workspaceId >>= processEvent
                         processEvent (Create msg) = do
-                            -- TODO: Loop collecting msgs until a Wait where we'll flush them out all at once.
-                            -- The msgs will need to be stored in a mutable variable per workspace so that if
-                            -- we Expand they'll still be around. If we Answer then, I guess we'll just discard
-                            -- them as answers for them are clearly irrelevant.
-                            -- Wait can get the pending questions from the database.
                             pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
                             createWorkspace ctxt False workspaceId msg pattern
                             loop
@@ -193,14 +186,8 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     let !ctxt = schedulerContext autoCtxt
 
     requestChan <- newChan :: IO (Chan (Maybe WorkspaceId))
-
-    -- Hacky? Holds pointers to the answers to the latest pending questions for workspaces, if any.
-    -- This strongly suggests a sequential workflow, which isn't wrong, but isn't desirable either.
-    -- For a more parallel workflow, we could identify subquestions and have a mapping from workspaces to subquestions.
-    answersRef <- newIORef (M.empty :: M.Map WorkspaceId Message) -- TODO: This is just the answer already in the database. Though this does indicate the need to look.
-
+    answersRef <- newIORef (M.empty :: M.Map WorkspaceId Message) -- TODO: Rename this.
     initResponseMVar <- newEmptyMVar :: IO (MVar Event) -- This gets leaked but who cares.
-
     responseMVarsRef <- newIORef (M.singleton initWorkspaceId initResponseMVar)
 
     let blockOnUser !workspaceId = do

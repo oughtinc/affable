@@ -25,7 +25,6 @@ data Workspace = Workspace {
     messageHistory :: [Message], -- TODO: Do we want the history to include who the message was from?
     expandedPointers :: PointerEnvironment,
     time :: Time
-    -- ... TODO
   } deriving ( Eq, Show, Generic )
 
 instance FromJSON Workspace

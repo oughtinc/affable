@@ -8,7 +8,7 @@ module Message (
     pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB, messageToHaskell, messageToPattern,
     patternsParser, parsePatternsUnsafe, patternsToBuilder,
     expandPointers, substitute, normalizeMessage, generalizeMessage, renumberMessage', renumberMessage, renumberAcc,
-    instantiatePattern, matchMessage, matchPointers, collectPointers )
+    matchMessage, matchPointers, collectPointers )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
@@ -38,7 +38,7 @@ data Message
     | Location !Address
     | Structured [Message]
     | LabeledStructured !Pointer [Message]
-  deriving ( Eq, Ord, Read, Show, Generic ) -- TODO: Implement custom Show.
+  deriving ( Eq, Ord, Read, Show, Generic )
 
 instance FromJSON Message
 instance ToJSON Message
@@ -114,7 +114,6 @@ messageToHaskell (Location a) = fromText "(Location " <> T.decimal a <> singleto
 messageToHaskell (Structured [Reference p]) = singleton 'p' <> T.decimal p
 messageToHaskell (Structured ms) = fromText "S [" <> mconcat (intersperse (singleton ',') (map messageToHaskell ms)) <> fromText "]"
 messageToHaskell (LabeledStructured _ ms) = fromText "S [" <> mconcat (intersperse (singleton ',') (map messageToHaskell ms)) <> fromText "]"
--- messageToHaskell (LabeledStructured p ms) = fromText "(LabeledStructured " <> T.decimal p <> fromText " [" <> mconcat (intersperse (singleton ',') (map messageToHaskell ms)) <> fromText "])"
 
 messageToPattern :: Message -> Builder
 messageToPattern = go True
@@ -189,19 +188,12 @@ normalizeMessage start = go True M.empty
             where !p = M.size env + start
                   env' = M.insert p (LabeledStructured p ms') env -- Knot tying
                   (env'', ms') = mapAccumL (go False) env' ms
-          -- go True env (Structured ms) = second Structured $ mapAccumL (go False) env ms -- TODO: Make this labeled too? XXX
           go True env (LabeledStructured p ms) = second (LabeledStructured p) $ mapAccumL (go False) env ms
           go _ env (Structured ms) = (env'', Reference p)
             where !p = M.size env + start
                   env' = M.insert p (LabeledStructured p ms') env
                   (env'', ms') = mapAccumL (go False) env' ms -- A bit of knot typing occurring here.
           go _ env m@(LabeledStructured p ms) = (env, Reference p)
-          {-
-          go _ env (LabeledStructured p ms) -- TODO: Or do I want to just leave this after processing the body?
-            = let env' = M.insert p (LabeledStructured p ms') env
-                  (env'', ms') = mapAccumL (go False) env' ms -- A bit of knot typing occurring here.
-              in (env'', Reference p)
-          -}
           go _ env m = (env, m)
 
 -- Creates a message where all pointers are distinct. The output is a mapping
@@ -228,18 +220,6 @@ generalizeMessage fresh msg = case go (S.empty, M.empty, fresh) msg of ((_, mapp
             | otherwise = ((S.insert p seen, mapping, fresh), m)
           go s m = (s, m)
 -}
-
--- Replace pointers in Message with new pointers that point to the Messages in the PointerEnvironment.
-instantiatePattern :: Int -> PointerEnvironment -> Message -> (PointerEnvironment, PointerRemapping, Message)
-instantiatePattern fresh env msg = case go (M.empty, M.empty) msg of ((env', mapping), msg) -> (env', mapping, msg)
-    where go s (Structured ms) = second Structured $ mapAccumL go s ms
-          -- go s (LabeledStructured p ms) = second (LabeledStructured p) $ mapAccumL go s ms -- TODO: Keep this label if the contents no longer match?
-          go s (LabeledStructured p ms) = second Structured $ mapAccumL go s ms
-          go (env', mapping) (Reference old) = case M.lookup old env of
-                                                    Just m@(Reference new) -> ((env', M.insert new old mapping), m)
-                                                    Just m -> let !new = M.size mapping + fresh
-                                                              in ((M.insert new m env', M.insert new old mapping), Reference new)
-          go s m = (s, m)
 
 renumberMessage' :: PointerRemapping -> Message -> Message
 renumberMessage' mapping (Structured ms) = Structured $ map (renumberMessage' mapping) ms
@@ -279,40 +259,18 @@ matchMessage (Text pt) (Text t) | pt == t = Just M.empty
 matchMessage (Location pa) (Location a) | pa == a = Just M.empty
 matchMessage (Structured pms) (Structured ms) = M.unions <$> sequenceA (zipWith matchMessage pms ms)
 matchMessage (Structured pms) (LabeledStructured _ ms) = M.unions <$> sequenceA (zipWith matchMessage pms ms)
--- matchMessage (LabeledStructured p pms) (Structured ms)
---     = (M.insert p (LabeledStructured p ms) . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
 matchMessage (LabeledStructured p pms) m@(Structured ms)
     = (M.insert p m . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
--- matchMessage (LabeledStructured p pms) m@(LabeledStructured _ ms)
---     = (M.insert p m . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
 matchMessage (LabeledStructured p pms) (LabeledStructured _ ms)
     = (M.insert p (Structured ms) . M.unions) <$> sequenceA (zipWith matchMessage pms ms)
 matchMessage (Reference p) m@(Reference _) = Just $ M.singleton p m
--- matchMessage (Reference p) (Structured ms) = Just $ M.singleton p (LabeledStructured p ms)
 matchMessage (Reference p) (Structured ms) = Just $ M.singleton p (Structured ms)
--- matchMessage (Reference p) (LabeledStructured _ ms) = Just $ M.singleton p (LabeledStructured p ms)
 matchMessage (Reference p) (LabeledStructured _ ms) = Just $ M.singleton p (Structured ms)
 matchMessage _ _ = Nothing
-{-
-matchMessage = go True
-    where go True (LabeledStructured p pms) m@(LabeledStructured l ms)
-            = (M.insert p (Reference l) . M.unions) <$> sequenceA (zipWith (go False) pms ms)
-          go _ (Text pt) (Text t) | pt == t = Just M.empty
-          go _ (Location pa) (Location a) | pa == a = Just M.empty
-          go _ (Structured pms) (Structured ms) = M.unions <$> sequenceA (zipWith (go False) pms ms)
-          go _ (LabeledStructured p pms) m@(Structured ms)
-            = (M.insert p m . M.unions) <$> sequenceA (zipWith (go False) pms ms)
-          go _ (LabeledStructured p pms) (LabeledStructured _ ms)
-            = (M.insert p (Structured ms) . M.unions) <$> sequenceA (zipWith (go False) pms ms)
-          go _ (Reference p) m@(Reference _) = Just $ M.singleton p m
-          go _ (Reference p) (Structured ms) = Just $ M.singleton p (Structured ms)
-          go _ (Reference p) (LabeledStructured _ ms) = Just $ M.singleton p (Structured ms)
-          go _ _ _ = Nothing
--}
 
 collectPointers :: Message -> [Pointer]
 collectPointers msg = go msg []
     where go (Reference p) acc = p:acc
           go (Structured ms) acc = foldr go acc ms
-          go (LabeledStructured _ ms) acc = foldr go acc ms -- TODO: Count the pointer in the LabeledStructure?
+          go (LabeledStructured _ ms) acc = foldr go acc ms
           go _ acc = acc

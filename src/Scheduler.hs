@@ -29,7 +29,6 @@ data SchedulerContext extra = SchedulerContext {
     labelMessage :: Message -> IO Message,
     normalize :: Message -> IO Message,
     generalize :: Message -> IO Message,
-    instantiate :: PointerEnvironment -> Message -> IO (PointerRemapping, Message),
     dereference :: Pointer -> IO Message,
     extraContent :: extra -- This is to support making schedulers that can (e.g.) access SQLite directly.
   }
