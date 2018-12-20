@@ -4,8 +4,9 @@
 module AutoInterpreter where
 import Control.Concurrent ( forkIO ) -- base
 import Control.Concurrent.Async.Pool ( withTaskGroup, mapConcurrently ) -- async-pool
-import Control.Concurrent.MVar ( MVar, newEmptyMVar, newMVar, putMVar, takeMVar ) -- base
+import Control.Concurrent.MVar ( MVar, newEmptyMVar, newMVar, putMVar, takeMVar, readMVar, modifyMVar_ ) -- base
 import Control.Concurrent.Chan ( Chan, newChan, readChan, writeChan ) -- base TODO: Use TChan instead?
+import Control.Exception ( bracket_ ) -- base
 import Control.Monad ( zipWithM, zipWithM_ ) -- base
 import Data.Foldable ( asum, forM_ ) -- base
 import Data.IORef ( IORef, newIORef, readIORef, writeIORef, atomicModifyIORef', modifyIORef' ) -- base
@@ -42,13 +43,14 @@ makeMatcher :: (WorkspaceId -> IO Event)
 makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
     let !ctxt = schedulerContext autoCtxt
 
+    -- TODO: This could probably be made unnecessary if we started tracking timing, i.e. using that logicalTime field.
     cutOffsRef <- newIORef (M.empty :: M.Map WorkspaceId WorkspaceId)
 
     -- Get answers that have been answered since last time the workspace was displayed.
     let getRecentlyAnswered workspace = do
             let !workspaceId = identity workspace
                 !answeredMax = case mapMaybe (\(qId, _, ma) -> qId <$ ma) $ subQuestions workspace of [] -> -1; qIds -> maximum qIds
-            currCutOff <- maybe (-1) id <$> atomicModifyIORef' cutOffsRef (swap . M.insertLookupWithKey (\_ a _ -> a) workspaceId answeredMax)
+            currCutOff <- maybe (-1) id <$> atomicModifyIORef' cutOffsRef (swap . M.insertLookupWithKey (\_ new _ -> new) workspaceId answeredMax)
             -- Answers of workspaces that have answers and are newer than the cutoff.
             return $! mapMaybe (\(qId, _, ma) -> if qId > currCutOff then ma else Nothing) $ subQuestions workspace
 
@@ -79,60 +81,97 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
             -- T.putStrLn (toText (expToHaskell (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
             T.putStrLn (toText (expToBuilder (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
 
+    -- Store matches that are being worked on. Definitely does NOT need to be in the database.
+    pendingMatchesRef <- newIORef (M.empty :: M.Map Name (MVar [([Pattern], MVar ())]))
+
     -- When we receive the Submit event, we look at the unanswered questions of the current workspace for the parameters.
     -- Expand doesn't get batched, so we only have batches of questions, i.e. multi-argument function calls are always
     -- of the form `f(answer(...), prim1(...), ...)`.
     let match s varEnv f [Reference p] = do
-            error "Do we get here"
+            error "Did you get here? If so, tell me how."
             m <- dereference ctxt p
             match s varEnv f [m]
         match workspaceId varEnv f ms = do
-            workspace <- getWorkspace ctxt workspaceId
-            alts <- alternativesFor autoCtxt f
             ms' <- mapM (\m -> normalize ctxt =<< generalize ctxt m) ms
-            case alts of -- TODO: Could mark workspaces as "human-influenced" when a pattern match failure is hit
-                         -- or when any subquestions are marked. This would allow "garbage collecting" workspaces
-                         -- with answers that are not "human-influenced", i.e. were created entirely through automation.
-                _:_ -> do
+
+            -- Atomically:
+            --  - Match against each pending pattern.
+            --  - If there is a match then return the corresponding lock. DON'T block on the lock here. Only after we finish processing the map.
+            --  - If there isn't a match, create and insert a lock for a pattern corresponding to the current message.
+            -- If we found an existing lock, then block on it and execute retryLoop when it releases.
+            -- If we made a new lock, then continue with matchFailed and release the lock after we addCaseFor or if we're killed.
+            --  - We also need to clean out the mapping in this case before we release the lock.
+            --  - We should be able to use bracket_ to do this with a trivial acquire function as the lock should be created already locked.
+            let matchPending workspace = do
+                    pendingMatchesMVar <- do
+                        fMVar <- newMVar [] -- This will get garbage collected if we don't use it, which we won't except for the first time.
+                        mMVar <- atomicModifyIORef' pendingMatchesRef $ swap . M.insertLookupWithKey (\_ _ old -> old) f fMVar
+                        return $ maybe fMVar id mMVar
+
+                    -- Begin atomic block
+                    pendingMatches <- takeMVar pendingMatchesMVar
                     -- TODO: Error out if there is more than one match.
-                    let !mMatch = asum $ map (\(ps, e) -> fmap (\bindings -> (ps, M.union (M.unions bindings) varEnv, e)) $ zipWithM matchMessage ps ms') alts
-                    case mMatch of
-                        Just (patterns, varEnv', e) -> do
-                            varEnv' <- traverse (\case Reference p -> dereference ctxt p; x -> return x) varEnv'
+                    case asum $ map (\(ps, pMVar) -> pMVar <$ zipWithM matchMessage ps ms') pendingMatches of
+                        Just pMVar -> do
+                            putMVar pendingMatchesMVar pendingMatches
+                            -- End atomic block
+                            readMVar pMVar -- block until filled
+                            retryLoop
+                        Nothing -> do
+                            pMVar <- newEmptyMVar -- locked lock
+                            putMVar pendingMatchesMVar ((ms', pMVar):pendingMatches)
+                            -- End atomic block
+                            bracket_ (return ())
+                                     (do modifyMVar_ pendingMatchesMVar (return . filter ((pMVar==) . snd)); putMVar pMVar ())
+                                     (matchFailed workspace ms')
 
-                            -- This is to make it so occurrences of variables bound by as-patterns don't get substituted.
-                            let bindings = M.union (M.unions $
-                                                        zipWith (\p m -> case (p, m) of
-                                                                            (LabeledStructured asP _, LabeledStructured l _) -> M.singleton asP (Reference l)
-                                                                            _ -> M.empty)
-                                                              patterns ms') varEnv'
+                retryLoop = do
+                    workspace <- getWorkspace ctxt workspaceId
+                    alts <- alternativesFor autoCtxt f
+                    case alts of -- TODO: Could mark workspaces as "human-influenced" when a pattern match failure is hit
+                                 -- or when any subquestions are marked. This would allow "garbage collecting" workspaces
+                                 -- with answers that are not "human-influenced", i.e. were created entirely through automation.
+                        _:_ -> do
+                            -- TODO: Error out if there is more than one match.
+                            let !mMatch = asum $ map (\(ps, e) -> fmap (\bindings -> (ps, M.union (M.unions bindings) varEnv, e)) $ zipWithM matchMessage ps ms') alts
+                            case mMatch of
+                                Just (patterns, varEnv', e) -> do
+                                    varEnv' <- traverse (\case Reference p -> dereference ctxt p; x -> return x) varEnv'
 
-                            linkPointers f workspace patterns
-                            globalToLocal <- links workspaceId
+                                    -- This is to make it so occurrences of variables bound by as-patterns don't get substituted.
+                                    let bindings = M.union (M.unions $
+                                                                zipWith (\p m -> case (p, m) of
+                                                                                    (LabeledStructured asP _, LabeledStructured l _) -> M.singleton asP (Reference l)
+                                                                                    _ -> M.empty)
+                                                                      patterns ms') varEnv'
 
-                            -- This is a bit hacky. If this approach is the way to go, make these patterns individual constructors.
-                            case e of
-                                LetFun _ (Call _ [Var ptr]) -> do -- expand case
-                                    let !p = maybe ptr id $ M.lookup ptr $ invertMap globalToLocal
-                                    arg <- dereference ctxt p
-                                    expandPointer ctxt workspaceId p
-                                    giveArgument workspaceId arg
-                                    return (workspaceId, M.insert ptr arg varEnv', e)
-                                LetFun _ (Call _ args) -> do -- ask cases
-                                    forM_ args $ \argExp -> do
-                                        let !arg = substitute bindings $! case argExp of Call ANSWER [Value m] -> m; Prim _ (Value m) -> m
-                                        pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt arg
-                                        createWorkspace ctxt False workspaceId arg pattern
-                                    return (workspaceId, varEnv', e)
-                                Value msg -> do -- reply case
-                                    let !msg' = substitute bindings msg
-                                    msg <- normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
-                                    sendAnswer ctxt False workspaceId msg
-                                    return (workspaceId, varEnv', e)
-                                -- _ -> return (workspaceId, varEnv', e) -- Intentionally missing this case.
-                        Nothing -> matchFailed workspace ms'
-                [] -> matchFailed workspace ms'
-            where matchFailed workspace ms' = do
+                                    linkPointers f workspace patterns
+                                    globalToLocal <- links workspaceId
+
+                                    -- This is a bit hacky. If this approach is the way to go, make these patterns individual constructors.
+                                    case e of
+                                        LetFun _ (Call _ [Var ptr]) -> do -- expand case
+                                            let !p = maybe ptr id $ M.lookup ptr $ invertMap globalToLocal
+                                            arg <- dereference ctxt p
+                                            expandPointer ctxt workspaceId p
+                                            giveArgument workspaceId arg
+                                            return (workspaceId, M.insert ptr arg varEnv', e)
+                                        LetFun _ (Call _ args) -> do -- ask cases
+                                            forM_ args $ \argExp -> do
+                                                let !arg = substitute bindings $! case argExp of Call ANSWER [Value m] -> m; Prim _ (Value m) -> m
+                                                pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt arg
+                                                createWorkspace ctxt False workspaceId arg pattern
+                                            return (workspaceId, varEnv', e)
+                                        Value msg -> do -- reply case
+                                            let !msg' = substitute bindings msg
+                                            msg <- normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
+                                            sendAnswer ctxt False workspaceId msg -- TODO: Can I clean out workspaceVariablesRef a bit now?
+                                            return (workspaceId, varEnv', e)
+                                        -- _ -> return (workspaceId, varEnv', e) -- Intentionally missing this case.
+                                Nothing -> matchPending workspace
+                        [] -> matchPending workspace
+            retryLoop
+          where matchFailed workspace ms' = do
                     -- TODO: Need to make a lock on f so multiple workspaces don't attempt to extend the same function
                     -- at the same time. XXX
                     let !workspaceId = identity workspace
@@ -158,11 +197,11 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                             return (M.singleton ptr' arg, LetFun g (Call g [Var ptr']))
                         processEvent (Answer msg@(Structured [Reference p])) = do -- dereference pointers -- TODO: Do this?
                             msg' <- dereference ctxt p
-                            sendAnswer ctxt False workspaceId msg'
+                            sendAnswer ctxt False workspaceId msg' -- TODO: Can I clean out workspaceVariablesRef a bit now?
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         processEvent (Answer msg) = do
                             msg' <- relabelMessage ctxt =<< normalize ctxt msg
-                            sendAnswer ctxt False workspaceId msg'
+                            sendAnswer ctxt False workspaceId msg' -- TODO: Can I clean out workspaceVariablesRef a bit now?
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         processEvent Submit = do
                             -- Get unanswered questions.
@@ -190,12 +229,18 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     initResponseMVar <- newEmptyMVar :: IO (MVar Event) -- This gets leaked but who cares.
     responseMVarsRef <- newIORef (M.singleton initWorkspaceId initResponseMVar)
 
-    let blockOnUser !workspaceId = do
+    let blockOnUser workspaceId = do
             responseMVar <- newEmptyMVar
             modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
             writeChan requestChan (Just workspaceId)
             takeMVar responseMVar
 
+        -- TODO: For a web service, we're going to want to separate reading from the channel from giving a response.
+        -- Basically, when a web request comes in, we'll attempt to read a workspace to display from the channel (using
+        -- System.Timeout.timeout to handle the case when there are no available workspaces). When the user responds,
+        -- we can use the first two lines of replyFromUser below to send the result. Some policy will be required for users
+        -- that walk away without responding. Once we've decided a user isn't going to respond, we can reschedule the workspace
+        -- to a new user and discard any late response from the old user.
         replyFromUser workspaceId evt = do
             Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
             putMVar responseMVar evt
