@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 module SqliteSchedulerContext ( makeSqliteSchedulerContext ) where
-import Control.Concurrent ( MVar, newEmptyMVar, takeMVar, putMVar ) -- base
+import Control.Concurrent ( MVar, newMVar, takeMVar, putMVar ) -- base
 import Control.Exception ( bracket_ ) -- base
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
@@ -18,9 +18,9 @@ import Workspace ( Workspace(..), WorkspaceId )
 
 makeSqliteSchedulerContext :: Connection -> IO (SchedulerContext (Connection, IO (), IO ()))
 makeSqliteSchedulerContext conn = do
-    lockVar <- newEmptyMVar :: IO (MVar ())
-    let lock = putMVar lockVar ()
-        unlock = takeMVar lockVar
+    lockVar <- newMVar () :: IO (MVar ()) -- Initially unlocked.
+    let lock = takeMVar lockVar
+        unlock = putMVar lockVar ()
     return $
         SchedulerContext {
             createInitialWorkspace = createInitialWorkspaceSqlite lock unlock conn,
