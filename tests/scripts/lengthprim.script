@@ -1,4 +1,4 @@
-ask commit f79dc98f2a5b95e0e17c0c294e275ba5ed3962b6
+ask commit cf0f596ad71dda7e4cf00338d91b6a882a11d354
 ask length [nil]
 wait
 view $1
@@ -12,4 +12,4 @@ wait
 reply $6
 ask length [cons [1] [cons [2] [cons [3] [cons [4] [cons [5] [nil]]]]]]
 wait
-reply $5
+reply $6

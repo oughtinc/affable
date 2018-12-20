@@ -1,4 +1,4 @@
-ask commit f79dc98f2a5b95e0e17c0c294e275ba5ed3962b6
+ask commit cf0f596ad71dda7e4cf00338d91b6a882a11d354
 ask evaluate [App [Lam [Var [Z]]] [Lam [Var [Z]]]]
 wait
 ask {$1 [Nil] [Done]}
@@ -33,4 +33,4 @@ wait
 reply $6
 ask evaluate [App [App [Lam [Lam [App [Var [Z]] [Var [S [Z]]]]]] [Lam [Lam [App [Var [S [Z]]] [App [Var [S [Z]]] [Var [Z]]]]]]] [Lam [Lam [App [Var [S [Z]]] [App [Var [S [Z]]] [App [Var [S [Z]]] [Var [Z]]]]]]]]
 wait
-reply $6
+reply $7
