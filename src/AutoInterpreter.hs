@@ -19,6 +19,7 @@ import qualified Data.Text.IO as T -- text
 import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
 import Data.Traversable ( traverse ) -- base
 import Data.Tuple ( swap ) -- base
+import System.IO ( stderr) -- base
 
 import AutoScheduler ( AutoSchedulerContext(..) )
 import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, evaluateExp, expToBuilder, expToHaskell )
@@ -78,8 +79,8 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
 
         debugCode = do
             altMap <- allAlternatives autoCtxt
-            -- T.putStrLn (toText (expToHaskell (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
-            T.putStrLn (toText (expToBuilder (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
+            -- T.hPutStrLn stderr (toText (expToHaskell (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
+            T.hPutStrLn stderr (toText (expToBuilder (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
 
     -- Store matches that are being worked on. Definitely does NOT need to be in the database.
     pendingMatchesRef <- newIORef (M.empty :: M.Map Name (MVar [([Pattern], MVar ())]))
