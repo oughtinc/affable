@@ -2,8 +2,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 module AutoInterpreter where
-import Control.Concurrent ( forkIO ) -- base
-import Control.Concurrent.Async.Pool ( withTaskGroup, mapConcurrently ) -- async-pool
+import Control.Concurrent ( ThreadId, forkIO ) -- base
+import Control.Concurrent.Async.Pool ( withTaskGroup, mapTasks ) -- async-pool
 import Control.Concurrent.MVar ( MVar, newEmptyMVar, newMVar, putMVar, takeMVar, readMVar, modifyMVar_ ) -- base
 import Control.Concurrent.Chan ( Chan, newChan, readChan, writeChan ) -- base TODO: Use TChan instead?
 import Control.Exception ( bracket_ ) -- base
@@ -36,7 +36,7 @@ import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 
 type MatchFn = WorkspaceId -> VarEnv Var -> Name -> [Message] -> IO (WorkspaceId, VarEnv Var, Exp')
 
-makeMatcher :: (WorkspaceId -> IO Event)
+makeMatcher :: (Bool -> WorkspaceId -> IO Event)
             -> (Value -> Maybe Primitive)
             -> (WorkspaceId -> Message -> IO())
             -> (WorkspaceId -> IO (Maybe Message))
@@ -173,8 +173,6 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                         [] -> matchPending workspace
             retryLoop
           where matchFailed workspace ms' = do
-                    -- TODO: Need to make a lock on f so multiple workspaces don't attempt to extend the same function
-                    -- at the same time. XXX
                     let !workspaceId = identity workspace
                     patterns <- mapM (relabelMessage ctxt) ms'
                     let !(Just bindings) = M.unions <$> zipWithM matchMessage patterns ms' -- This shouldn't fail.
@@ -184,12 +182,12 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     linkPointers f workspace patterns
                     globalToLocal <- links workspaceId
 
-                    let loop = blockOnUser workspaceId >>= processEvent
+                    let loop stay = blockOnUser stay workspaceId >>= processEvent
                         processEvent (Create msg) = do
                             pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
                             createWorkspace ctxt False workspaceId msg pattern
-                            loop
-                        processEvent (Expand ptr) = do
+                            loop True
+                        processEvent (Expand ptr) = do -- TODO: Make this more resilient to pointers that are not in scope.
                             expandPointer ctxt workspaceId ptr
                             arg <- dereference ctxt ptr
                             giveArgument workspaceId arg
@@ -205,17 +203,17 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                             sendAnswer ctxt False workspaceId msg' -- TODO: Can I clean out workspaceVariablesRef a bit now?
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         processEvent Submit = do
-                            -- Get unanswered questions.
                             workspace <- getWorkspace ctxt workspaceId -- Refresh workspace.
+                            -- Get unanswered questions.
                             let !qs = mapMaybe (\(_, q, ma) -> maybe (Just q) (\_ -> Nothing) ma) $ subQuestions workspace
-                            if null qs then loop else do -- If qs is empty there's nothing to wait on so just do nothing.
+                            if null qs then loop False else do -- If qs is empty there's nothing to wait on so just do nothing.
                                 g <- newFunction autoCtxt
                                 let args = map (\q -> primToCall (matchPrim q) q) qs
                                 return (M.empty, LetFun g (Call g args))
                         -- processEvent (Send ws msg) = -- Intentionally incomplete pattern match. Should never get here.
                         primToCall (Just p) q = Prim p (Value $ renumberMessage' globalToLocal q)
                         primToCall Nothing q = Call ANSWER [Value $ renumberMessage' globalToLocal q]
-                    (extraBindings, e) <- loop
+                    (extraBindings, e) <- loop False
                     addCaseFor autoCtxt f patterns e
                     debugCode
                     return (workspaceId, M.union extraBindings varEnv', e)
@@ -226,32 +224,25 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     let !ctxt = schedulerContext autoCtxt
 
     requestChan <- newChan :: IO (Chan (Maybe WorkspaceId))
-    answersRef <- newIORef (M.empty :: M.Map WorkspaceId Message) -- TODO: Rename this.
     initResponseMVar <- newEmptyMVar :: IO (MVar Event) -- This gets leaked but who cares.
     responseMVarsRef <- newIORef (M.singleton initWorkspaceId initResponseMVar)
 
-    let blockOnUser workspaceId = do
+    let blockOnUser _ workspaceId = do
             responseMVar <- newEmptyMVar
             modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
             writeChan requestChan (Just workspaceId)
             takeMVar responseMVar
-
-        -- TODO: For a web service, we're going to want to separate reading from the channel from giving a response.
-        -- Basically, when a web request comes in, we'll attempt to read a workspace to display from the channel (using
-        -- System.Timeout.timeout to handle the case when there are no available workspaces). When the user responds,
-        -- we can use the first two lines of replyFromUser below to send the result. Some policy will be required for users
-        -- that walk away without responding. Once we've decided a user isn't going to respond, we can reschedule the workspace
-        -- to a new user and discard any late response from the old user.
         replyFromUser workspaceId evt = do
             Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
             putMVar responseMVar evt
             readChan requestChan
+        begin = do
+            Create msg <- takeMVar initResponseMVar -- TODO: Better error handling.
+            pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
+            firstWorkspaceId <- createWorkspace ctxt False initWorkspaceId msg pattern
+            return (firstWorkspaceId, LetFun ANSWER (Call ANSWER [Value msg]))
 
-        giveArgument workspaceId p = modifyIORef' answersRef $ M.insert workspaceId p
-        retrieveArgument workspaceId = atomicModifyIORef' answersRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
-
-    (primEnv, matchPrim) <- makePrimitives ctxt
-    match <- makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt
+    spawnInterpreter blockOnUser begin (writeChan requestChan Nothing) isSequential autoCtxt
 
     let scheduler _ workspace (Send ws msg) = do
             -- TODO: Think about this and support it if it makes sense.
@@ -264,11 +255,27 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
                 Just workspaceId -> Just <$> getWorkspace ctxt workspaceId
                 Nothing -> return Nothing
 
+    return scheduler
+
+spawnInterpreter :: (Bool -> WorkspaceId -> IO Event)
+                 -> IO (WorkspaceId, Exp')
+                 -> IO ()
+                 -> Bool
+                 -> AutoSchedulerContext extra
+                 -> IO ThreadId
+spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
+    let !ctxt = schedulerContext autoCtxt
+
+    answersRef <- newIORef (M.empty :: M.Map WorkspaceId Message) -- TODO: Rename this.
+
+    let giveArgument workspaceId p = modifyIORef' answersRef $ M.insert workspaceId p
+        retrieveArgument workspaceId = atomicModifyIORef' answersRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
+
+    (primEnv, matchPrim) <- makePrimitives ctxt
+    match <- makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt
+
     forkIO $ do
-        Create msg <- takeMVar initResponseMVar -- TODO: Better error handling.
-        pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
-        firstWorkspaceId <- createWorkspace ctxt False initWorkspaceId msg pattern
-        let startExp = LetFun ANSWER (Call ANSWER [Value msg]) :: Exp'
+        (firstWorkspaceId, startExp) <- begin
         t <- withTaskGroup 1000 {- TODO: number of threads in pool -} $ \g -> do
                 let execMany workspaceId args = do
                         qIds <- pendingQuestions ctxt workspaceId
@@ -276,10 +283,8 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
                             mapM ($ workspaceId) args
                           else do -- we have precreated workspaces for the Call ANSWER or Prim case.
                             -- TODO: Need to fallback to sequential execution if we run out of threads.
-                            (if isSequential then sequenceA else mapConcurrently g id) $ zipWith ($) args qIds
+                            (if isSequential then sequenceA else mapTasks g) $ zipWith ($) args qIds
                 evaluateExp execMany match substitute primEnv firstWorkspaceId startExp
         t <- fullyExpand ctxt t
         T.putStrLn (toText (messageToBuilder t))
-        writeChan requestChan Nothing
-
-    return scheduler
+        end

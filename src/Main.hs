@@ -23,7 +23,7 @@ import Primitive ( primitives )
 import Scheduler ( getWorkspace, createInitialWorkspace, makeSingleUserScheduler )
 import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
-import Server ( CommandAPI, overallApp )
+import Server ( API, initServer )
 import Util ( toText )
 import Workspace ( identity )
 
@@ -31,14 +31,13 @@ main :: IO ()
 main = do
     args <- getArgs
     case args of
-        ["gen-api"] -> writeJSForAPI (Proxy :: Proxy CommandAPI) (axios defAxiosOptions) "static/command-api.js"
+        ["gen-api"] -> writeJSForAPI (Proxy :: Proxy API) (axios defAxiosOptions) "static/command-api.js"
         ("serve":args) -> do
             withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn
-                execute_ conn "INSERT OR IGNORE INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
-                              \VALUES (0, 0, NULL, 'What is your question?', 'What is your question?')"
-                ctxt <- makeSqliteSchedulerContext conn
-                run 8081 (overallApp ctxt)
+                initPrimitives conn
+                putStrLn "Started..."
+                run 8081 =<< initServer conn
         ("noauto":args) -> do
             withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn

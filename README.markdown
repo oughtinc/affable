@@ -8,7 +8,7 @@ that's required to build the code. `stack run` or `stack exec affable` will then
 ## Command Line Options
 
   - `gen-api` - Generate the client-side code for the web API into `static/command-api.js`.
-  - `serve [<dbfile>]` - Start a web server optionally storing state in the Sqlite database `dbfile`. (Currently useless.)
+  - `serve [<dbfile>]` - Start a web server optionally storing state in the Sqlite database `dbfile`.
   - `noauto [<dbfile>]` - Create an interaction with no automation optionally storing state in the Sqlite database `dbfile`.
   - `export <dbfile> <id>` - Print the automation as Haskell code for the function with ID `id` stored in the Sqlite database `dbfile`.
   - `concurrent [<dbfile>]` - Same as next option but schedule questions concurrently.
