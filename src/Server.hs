@@ -5,11 +5,11 @@
 module Server where
 import Control.Concurrent.Chan ( Chan, newChan, readChan, writeChan ) -- base
 import Control.Concurrent.MVar ( MVar, newEmptyMVar, putMVar, takeMVar ) -- base
-import Control.Monad ( join ) -- base
+import Control.Monad ( join, when ) -- base
 import Control.Monad.IO.Class ( liftIO ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
 import Data.Either ( partitionEithers ) -- base
-import Data.IORef ( IORef, newIORef, readIORef, atomicModifyIORef', modifyIORef' ) -- base
+import Data.IORef ( IORef, newIORef, readIORef, writeIORef, atomicModifyIORef', modifyIORef' ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Text as T -- text
 import Data.Tuple ( swap ) -- base
@@ -21,11 +21,11 @@ import Servant.Server ( serve, Application ) -- servant-server
 import System.Timeout ( timeout ) -- base
 
 import AutoInterpreter ( spawnInterpreter )
-import AutoScheduler ( schedulerContext )
 import Exp ( Name(..), Exp(..) )
 import Message ( Message(..), Pointer )
 import Scheduler ( SchedulerFn, UserId, Event(..), getWorkspace, createInitialWorkspace, normalize, generalize, relabelMessage, createWorkspace )
-import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext )
+import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext' )
+import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 
 data Result = OK | Error T.Text deriving ( Generic )
@@ -93,12 +93,9 @@ overallHandler userIdRef nextWorkspace lookupWorkspace reply
 -- Probably use keep-alive policy.
 initServer :: Connection -> IO Application
 initServer conn = do
-    autoCtxt <- makeSqliteAutoSchedulerContext conn
-    let !ctxt = schedulerContext autoCtxt
-    initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
-    let !initWorkspaceId = identity initWorkspace
+    ctxt <- makeSqliteSchedulerContext conn
 
-    requestChan <- newChan :: IO (Chan (Maybe WorkspaceId))
+    requestChan <- newChan :: IO (Chan WorkspaceId)
     responseMVarsRef <- newIORef (M.empty :: M.Map WorkspaceId (MVar Event))
     drainingMVarsRef <- newIORef (M.empty :: M.Map WorkspaceId (MVar Event))
 
@@ -111,7 +108,7 @@ initServer conn = do
         blockOnUser _ workspaceId = do
             responseMVar <- newEmptyMVar
             modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
-            writeChan requestChan (Just workspaceId)
+            writeChan requestChan workspaceId
             takeMVar responseMVar
 
         replyFromUser workspaceId [evt] = do
@@ -123,11 +120,17 @@ initServer conn = do
             putMVar responseMVar evt
             mapM_ (putMVar responseMVar) evts -- NOTE: This assumes that a sort of protocol between the interpreter and this and will block forever if it is not met.
 
-        begin = return (initWorkspaceId, LetFun ANSWER (Call ANSWER [Value (question initWorkspace)]))
+        begin = do
+            initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
+            return (identity initWorkspace, LetFun ANSWER (Call ANSWER [Value (question initWorkspace)]))
 
-    spawnInterpreter blockOnUser begin (writeChan requestChan Nothing) False autoCtxt
-
-    let nextWorkspace = join <$> timeout 10000000 (readChan requestChan) -- Timeout after 10 seconds.
+    doneRef <- newIORef True
+    let nextWorkspace = do
+            isDone <- atomicModifyIORef' doneRef (\d -> (False, d))
+            when isDone $ do
+                autoCtxt <- makeSqliteAutoSchedulerContext' ctxt
+                () <$ spawnInterpreter blockOnUser begin (writeIORef doneRef True) False autoCtxt
+            timeout 10000000 (readChan requestChan) -- Timeout after 10 seconds.
 
     userIdRef <- liftIO $ newIORef (0 :: UserId)
 

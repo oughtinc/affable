@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-module SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext ) where
+module SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext, makeSqliteAutoSchedulerContext' ) where
 import Control.Exception ( bracket_ ) -- base
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
@@ -17,10 +17,14 @@ type FunctionId = Int64
 makeSqliteAutoSchedulerContext :: Connection -> IO (AutoSchedulerContext (Connection, IO (), IO ()))
 makeSqliteAutoSchedulerContext conn = do
     ctxt <- makeSqliteSchedulerContext conn
-    let (_, lock, unlock) = extraContent ctxt
+    makeSqliteAutoSchedulerContext' ctxt
+
+makeSqliteAutoSchedulerContext' :: SchedulerContext (Connection, IO (), IO ()) -> IO (AutoSchedulerContext (Connection, IO (), IO ()))
+makeSqliteAutoSchedulerContext' ctxt = do
+    let (conn, lock, unlock) = extraContent ctxt
 
     answerId <- bracket_ lock unlock $ do
-        execute_ conn "INSERT INTO Functions(isAnswer) VALUES(1)"
+        execute_ conn "INSERT INTO Functions(isAnswer) VALUES (1)"
         lastInsertRowId conn
 
     return $ AutoSchedulerContext {

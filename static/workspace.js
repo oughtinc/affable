@@ -49,8 +49,8 @@ function renderWorkspace(mapping, workspace) {
     console.log(workspace);
     const expansion = workspace.expandedPointers;
     const questionText = 'Question: ' + renderMessage(mapping, expansion, workspace.question);
-    const subquestionText = workspace.subQuestions.map((q, i) => '<br/>' + (i+1) + '. ' + renderMessage(mapping, expansion, q[1]) +
-                                                                 (q[2] !== null ? '<br/>Answer: ' + renderMessage(mapping, expansion, q[2]) : '' )).join('<br/>');
+    const subquestionText = workspace.subQuestions.map((q, i) => '<br/>' + (i+1) + '. ' + renderMessage(mapping, expansion, q[1])
+                                                               + (q[2] !== null ? '<br/>Answer: ' + renderMessage(mapping, expansion, q[2]) : '' )).join('<br/>');
 
     workspaceDiv.innerHTML = questionText + '<br/>' + subquestionText + '<br/>'; // TODO: This would need escaping.
 }
@@ -61,7 +61,6 @@ class User {
         this.pending = [];
         this.workspace_ = null;
         this.mapping_ = {}; // TODO: Use this to do local renumbering.
-
     }
 
     get workspace() { return this.workspace_; } // TODO: Make this an Rx-style Observable.

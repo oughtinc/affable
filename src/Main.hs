@@ -36,7 +36,7 @@ main = do
             withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn
                 initPrimitives conn
-                putStrLn "Started..."
+                putStrLn "Listening on port 8081..."
                 run 8081 =<< initServer conn
         ("noauto":args) -> do
             withConnection (fileOrMemory args) $ \conn -> do
