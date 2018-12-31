@@ -1,0 +1,93 @@
+#!/usr/bin/expect -f
+
+# :command! -range FixExpect '<,'>s/\$\(\d\+\)/\\x24(\\d+)/eg | '<,'>s/?/\\?/& | '<,'>s/\[/\\[/& | '<,'>s/\]/\\]/& | '<,'>s/|/\\|/& | nohls
+# :command! -range FixSend s/\$\(\d\+\)/\\x24$expect_out(\1,string)/eg | s/\[/\\[/& | s/\]/\\]/& | nohls
+# Use (?:\d+) for non-capturing sub-regex. This can be important as expect only has 9 slots for captures.
+
+set timeout -1
+spawn stack exec affable
+match_max 100000
+
+expect -re {Question: What is your question\?\r
+> $}
+
+send -- "ask commit cf0f596ad71dda7e4cf00338d91b6a882a11d354\r"
+expect -re {Question: \[\x24(\d+)\|commit cf0f596ad71dda7e4cf00338d91b6a882a11d354\]\r
+> $}
+
+send -- "ask length \[cons \[1\] \[cons \[2\] \[nil\]\]\]\r"
+expect -re {Question: \[\x24(\d+)\|commit cf0f596ad71dda7e4cf00338d91b6a882a11d354\]\r
+Subquestions:\r
+  1. length \[cons \[1\] \[cons \[2\] \[nil\]\]\]\r
+> $}
+
+send -- "wait\r"
+expect -re {Question: \[\x24(\d+)\|length \x24(\d+)\]\r
+> $}
+
+send -- "view \x24$expect_out(2,string)\r"
+expect -re {Question: \[\x24(\d+)\|length \[\x24(\d+)\|cons \x24(\d+) \x24(\d+)\]\]\r
+> $}
+
+send -- "ask length \x24$expect_out(4,string)\r"
+expect -re {Question: \[\x24(\d+)\|length \[\x24(\d+)\|cons \x24(\d+) \x24(\d+)\]\]\r
+Subquestions:\r
+  1. length \x24(\d+)\r
+> $}
+
+send -- "wait\r"
+expect -re {Question: \[\x24(\d+)\|length \[\x24(\d+)\|nil\]\]\r
+> $}
+
+send -- "reply result \[0\]\r"
+expect -re {Question: \[\x24(\d+)\|length \[\x24(\d+)\|cons \x24(\d+) \x24(\d+)\]\]\r
+Subquestions:\r
+  1. length \x24(?:\d+)\r
+    Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
+> $}
+
+send -- "ask add \[1\] \x24$expect_out(6,string)\r"
+expect -re {Question: \[\x24(\d+)\|length \[\x24(\d+)\|cons \x24(\d+) \x24(\d+)\]\]\r
+Subquestions:\r
+  1. length \x24(\d+)\r
+    Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
+  2. add \[1\] \x24(\d+)\r
+> $}
+
+send -- "wait\r"
+expect -re {Question: \[\x24(\d+)\|length \[\x24(\d+)\|cons \x24(\d+) \x24(\d+)\]\]\r
+Subquestions:\r
+  1. length \x24(?:\d+)\r
+    Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
+  2. add \[1\] \x24(?:\d+)\r
+    Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
+> $}
+
+send -- "reply \x24$expect_out(7,string)\r"
+expect -re {Question: \[\x24(\d+)\|commit cf0f596ad71dda7e4cf00338d91b6a882a11d354\]\r
+Subquestions:\r
+  1. length \[cons \[1\] \[cons \[2\] \[nil\]\]\]\r
+    Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
+> $}
+
+send -- "ask length \[cons \[1\] \[cons \[2\] \[cons \[3\] \[cons \[4\] \[cons \[5\] \[nil\]\]\]\]\]\]\r"
+expect -re {Question: \[\x24(\d+)\|commit cf0f596ad71dda7e4cf00338d91b6a882a11d354\]\r
+Subquestions:\r
+  1. length \[cons \[1\] \[cons \[2\] \[nil\]\]\]\r
+    Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
+  2. length \[cons \[1\] \[cons \[2\] \[cons \[3\] \[cons \[4\] \[cons \[5\] \[nil\]\]\]\]\]\]\r
+> $}
+
+send -- "wait\r"
+expect -re {Question: \[\x24(\d+)\|commit cf0f596ad71dda7e4cf00338d91b6a882a11d354\]\r
+Subquestions:\r
+  1. length \[cons \[1\] \[cons \[2\] \[nil\]\]\]\r
+    Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
+  2. length \[cons \[1\] \[cons \[2\] \[cons \[3\] \[cons \[4\] \[cons \[5\] \[nil\]\]\]\]\]\]\r
+    Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
+> $}
+
+send -- "reply \x24$expect_out(5,string)\r"
+expect -re {5\r\n$}
+
+expect eof

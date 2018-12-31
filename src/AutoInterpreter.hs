@@ -158,13 +158,15 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                             giveArgument workspaceId arg
                                             return (workspaceId, M.insert ptr arg varEnv', e)
                                         LetFun _ (Call _ args) -> do -- ask cases
+                                            let !localToGlobal = invertMap globalToLocal
                                             forM_ args $ \argExp -> do
-                                                let !arg = substitute bindings $! case argExp of Call ANSWER [Value m] -> m; Prim _ (Value m) -> m
+                                                let !m = case argExp of Call ANSWER [Value m] -> m; Prim _ (Value m) -> m
+                                                let !arg = substitute bindings m
                                                 pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt arg
-                                                createWorkspace ctxt False workspaceId arg pattern
+                                                createWorkspace ctxt False workspaceId (renumberMessage' localToGlobal m) pattern
                                             return (workspaceId, varEnv', e)
                                         Value msg -> do -- reply case
-                                            let !msg' = substitute bindings msg
+                                            let !msg' = substitute bindings msg -- TODO: Need to do the same local-to-global renumbering as above?
                                             msg <- normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
                                             sendAnswer ctxt False workspaceId msg -- TODO: Can I clean out workspaceVariablesRef a bit now?
                                             return (workspaceId, varEnv', e)
