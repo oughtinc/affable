@@ -36,7 +36,7 @@ main = do
             withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn
                 initPrimitives conn
-                putStrLn "Listening on port 8081..."
+                putStrLn "Navigate to http://localhost:8081/static/index.html ..."
                 run 8081 =<< initServer conn
         ("noauto":args) -> do
             withConnection (fileOrMemory args) $ \conn -> do
