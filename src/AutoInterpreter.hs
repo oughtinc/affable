@@ -123,7 +123,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                             putMVar pendingMatchesMVar ((ms', pMVar):pendingMatches)
                             -- End atomic block
                             bracket_ (return ())
-                                     (do modifyMVar_ pendingMatchesMVar (return . filter ((pMVar==) . snd)); putMVar pMVar ())
+                                     (do modifyMVar_ pendingMatchesMVar (return . filter ((pMVar/=) . snd)); putMVar pMVar ())
                                      (matchFailed workspace ms')
 
                 retryLoop = do
