@@ -145,7 +145,7 @@ class User {
     }
 
     view(ptr) {
-        return postView([{userId:this.userId}, this.workspaceId, ptr]).then(r => this.postProcess(r.data));
+        return postView([{userId:this.userId}, this.workspaceId, this.pending_, ptr]).then(r => this.postProcess(r.data));
     }
 
     wait() {

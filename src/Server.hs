@@ -39,7 +39,7 @@ instance FromJSON User
 instance ToJSON User
 
 type StaticAPI = "static" :> Raw
-type CommandAPI = "view" :> ReqBody '[JSON] (User, WorkspaceId, Pointer) :> Post '[JSON] Result
+type CommandAPI = "view" :> ReqBody '[JSON] (User, WorkspaceId, [Message], Pointer) :> Post '[JSON] Result
              :<|> "reply" :> ReqBody '[JSON] (User, WorkspaceId, Message) :> Post '[JSON] Result
              :<|> "wait" :> ReqBody '[JSON] (User, WorkspaceId, [Message]) :> Post '[JSON] Result
 type NextAPI = "next" :> ReqBody '[JSON] User :> Post '[JSON] (Maybe Workspace)
@@ -70,9 +70,9 @@ nextHandler lookupWorkspace nextWorkspace (User userId) = liftIO $ do
 
 commandHandler :: (WorkspaceId -> [Event] -> IO ()) -> Server CommandAPI
 commandHandler reply = viewHandler :<|> replyHandler :<|> waitHandler
-    where viewHandler (User userId, workspaceId, ptr) = liftIO $ do
-            print ("View", userId, workspaceId, ptr) -- DELETEME
-            OK <$ reply workspaceId [Expand ptr]
+    where viewHandler (User userId, workspaceId, msgs, ptr) = liftIO $ do
+            print ("View", userId, workspaceId, msgs, ptr) -- DELETEME
+            OK <$ reply workspaceId (map Create msgs ++ [Expand ptr])
           replyHandler (User userId, workspaceId, msg) = liftIO $ do
             print ("Reply", userId, workspaceId, msg) -- DELETEME
             OK <$ reply workspaceId [Answer msg]
@@ -104,6 +104,7 @@ initServer conn = do
             resp <- takeMVar responseMVar
             case resp of
                 Submit -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return Submit
+                Expand _ -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return resp
                 _ -> return resp
         blockOnUser _ workspaceId = do
             responseMVar <- newEmptyMVar
