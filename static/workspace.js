@@ -36,8 +36,7 @@ function renderMessage(mapping, expansion, msg, isSubmessage) {
             if(p in expansion) {
                 return renderMessage(mapping, expansion, expansion[p], true);
             } else {
-                // TODO: p should *always* be in the mapping.
-                return '<span class="pointer" data-original="'+p+'">$' + (p in mapping ? mapping[p] : p) + '</span>';
+                return '<span class="pointer" data-original="'+p+'">$' + mapping[p] + '</span>';
             }
         case 'Structured': {
             const msgs = msg.contents.map(m => renderMessage(mapping, expansion, m, true));
@@ -45,8 +44,7 @@ function renderMessage(mapping, expansion, msg, isSubmessage) {
         case 'LabeledStructured': {
             const label = msg.contents[0];
             const msgs = msg.contents[1].map(m => renderMessage(mapping, expansion, m, true));
-            // TODO: label should *always* be in the mapping.
-            return '[$' + (label in mapping ? mapping[label] : label) + '|' + msgs.join('') + ']'; }
+            return '[$' + mapping[label] + '|' + msgs.join('') + ']'; }
         default:
             throw "Something's wrong";
     }
@@ -137,8 +135,9 @@ class User {
     }
 
     ask(msg) {
-        this.pending_.push(renumberMessage(this.inverseMapping_, msg));
-        this.workspace.subQuestions.push([null, msg, null]);
+        const msg2 = renumberMessage(this.inverseMapping_, msg);
+        this.pending_.push(msg2);
+        this.workspace.subQuestions.push([null, msg2, null]);
     }
 
     reply(msg) {
