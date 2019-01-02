@@ -1,7 +1,7 @@
 #!/usr/bin/expect -f
 
 # :command! -range FixExpect '<,'>s/\$\(\d\+\)/\\x24(\\d+)/eg | '<,'>s/?/\\?/& | '<,'>s/\[/\\[/& | '<,'>s/\]/\\]/& | '<,'>s/|/\\|/& | nohls
-# :command! -range FixSend s/\$\(\d\+\)/\\x24$expect_out(\1,string)/e | s/\[/\\[/& | s/\]/\\]/& | nohls
+# :command! -range FixSend s/\$\(\d\+\)/\\x24$expect_out(\1,string)/eg | s/\[/\\[/& | s/\]/\\]/& | nohls
 # Use (?:\d+) for non-capturing sub-regex. This can be important as expect only has 9 slots for captures.
 
 set timeout -1
