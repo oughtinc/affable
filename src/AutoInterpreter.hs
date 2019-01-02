@@ -268,10 +268,10 @@ spawnInterpreter :: (Bool -> WorkspaceId -> IO Event)
 spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
     let !ctxt = schedulerContext autoCtxt
 
-    answersRef <- newIORef (M.empty :: M.Map WorkspaceId Message) -- TODO: Rename this.
+    argumentsRef <- newIORef (M.empty :: M.Map WorkspaceId Message)
 
-    let giveArgument workspaceId p = modifyIORef' answersRef $ M.insert workspaceId p
-        retrieveArgument workspaceId = atomicModifyIORef' answersRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
+    let giveArgument workspaceId p = modifyIORef' argumentsRef $ M.insert workspaceId p
+        retrieveArgument workspaceId = atomicModifyIORef' argumentsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
 
     (primEnv, matchPrim) <- makePrimitives ctxt
     match <- makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt
