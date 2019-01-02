@@ -21,16 +21,22 @@ Pointer "pointer"
   = "$" digits:[0-9]+ { return {tag: 'Reference', contents: parseInt(digits.join(''), 10)}; }
 */
 
+const dummy = document.createElement('textarea');
+function escapeHTML(html) {
+    dummy.textContent = html;
+    return dummy.innerHTML;
+}
+
 function renderMessage(mapping, expansion, msg, isSubmessage) {
     switch(msg.tag) {
         case 'Text':
-            return msg.contents;
+            return escapeHTML(msg.contents);
         case 'Reference':
             const p = msg.contents;
             if(p in expansion) {
                 return renderMessage(mapping, expansion, expansion[p], true);
             } else {
-                // TODO: p should *always* be in the mapping once the mapping is populated.
+                // TODO: p should *always* be in the mapping.
                 return '<span class="pointer" data-original="'+p+'">$' + (p in mapping ? mapping[p] : p) + '</span>';
             }
         case 'Structured': {
@@ -39,7 +45,8 @@ function renderMessage(mapping, expansion, msg, isSubmessage) {
         case 'LabeledStructured': {
             const label = msg.contents[0];
             const msgs = msg.contents[1].map(m => renderMessage(mapping, expansion, m, true));
-            return '[$' + label + '|' + msgs.join('') + ']'; }
+            // TODO: label should *always* be in the mapping.
+            return '[$' + (label in mapping ? mapping[label] : label) + '|' + msgs.join('') + ']'; }
         default:
             throw "Something's wrong";
     }
@@ -52,15 +59,63 @@ function renderWorkspace(mapping, workspace) {
     const subquestionText = workspace.subQuestions.map((q, i) => '<br/>' + (i+1) + '. ' + renderMessage(mapping, expansion, q[1])
                                                                + (q[2] !== null ? '<br/>Answer: ' + renderMessage(mapping, expansion, q[2]) : '' )).join('<br/>');
 
-    workspaceDiv.innerHTML = questionText + '<br/>' + subquestionText + '<br/>'; // TODO: This would need escaping.
+    workspaceDiv.innerHTML = questionText + '<br/>' + subquestionText + '<br/>';
+}
+
+function mappingFromMessage(mapping, expansion, msg) {
+    switch(msg.tag) {
+        case 'Text':
+            return; // Nothing to do.
+        case 'Reference':
+            const p = msg.contents;
+            if(!(p in mapping)) {
+                mapping[p] = mapping.nextPointer++;
+            }
+            if(p in expansion) {
+                mappingFromMessage(mapping, expansion, expansion[p]);
+            }
+            return;
+        case 'Structured':
+            msg.contents.forEach(m => mappingFromMessage(mapping, expansion, m));
+            return;
+        case 'LabeledStructured':
+            const label = msg.contents[0];
+            if(!(label in mapping)) {
+                mapping[label] = mapping.nextPointer++;
+            }
+            msg.contents[1].forEach(m => mappingFromMessage(mapping, expansion, m));
+            return;
+        default:
+            throw "Something's wrong";
+    }
+}
+
+function mappingFromWorkspace(mapping, workspace) {
+    const expansion = workspace.expandedPointers;
+    mappingFromMessage(mapping, expansion, workspace.question);
+    workspace.subQuestions.forEach(q => { mappingFromMessage(mapping, expansion, q[1]); if(q[2] !== null) mappingFromMessage(mapping, expansion, q[2]); });
+}
+
+function renumberMessage(mapping, msg) {
+    switch(msg.tag) {
+        case 'Text':
+            return msg;
+        case 'Reference':
+            return {tag: 'Reference', contents: mapping[msg.contents]};
+        case 'Structured':
+            return {tag: 'Structured', contents: msg.contents.map(m => renumberMessage(mapping, m))};
+        default:
+            throw "Something's wrong";
+    }
 }
 
 class User {
     constructor(userId) {
         this.userId = userId;
-        this.pending = [];
+        this.pending_ = [];
         this.workspace_ = null;
-        this.mapping_ = {}; // TODO: Use this to do local renumbering.
+        this.mapping_ = {nextPointer: 0};
+        this.inverseMapping_ = {};
     }
 
     get workspace() { return this.workspace_; } // TODO: Make this an Rx-style Observable.
@@ -70,9 +125,10 @@ class User {
     postProcess(r) {
         switch(r.tag) {
             case 'OK':
-                this.pending = [];
+                this.pending_ = [];
                 this.workspace_ = null;
-                this.mapping_ = {};
+                this.mapping_ = {nextPointer: 0};
+                this.inverseMapping_ = {};
                 return r;
             case 'Error':
             default:
@@ -81,12 +137,12 @@ class User {
     }
 
     ask(msg) {
-        this.pending.push(msg);
+        this.pending_.push(renumberMessage(this.inverseMapping_, msg));
         this.workspace.subQuestions.push([null, msg, null]);
     }
 
     reply(msg) {
-        return postReply([{userId:this.userId}, this.workspaceId, msg]).then(r => this.postProcess(r.data));
+        return postReply([{userId:this.userId}, this.workspaceId, renumberMessage(this.inverseMapping_, msg)]).then(r => this.postProcess(r.data));
     }
 
     view(ptr) {
@@ -94,14 +150,18 @@ class User {
     }
 
     wait() {
-        return postWait([{userId:this.userId}, this.workspaceId, this.pending]).then(r => this.postProcess(r.data));
+        return postWait([{userId:this.userId}, this.workspaceId, this.pending_]).then(r => this.postProcess(r.data));
     }
 
     next() {
         return postNext({userId:this.userId}).then(response => {
             if(response.data === null) return null;
             this.workspace_ = response.data;
-            // TODO: Build up mapping here. this.wapping_ = ???;
+            mappingFromWorkspace(this.mapping, this.workspace);
+            for(const k in this.mapping) {
+                if(k === 'nextPointer') continue;
+                this.inverseMapping_[this.mapping[k]] = parseInt(k, 10);
+            }
             return response.data;
         });
     }
