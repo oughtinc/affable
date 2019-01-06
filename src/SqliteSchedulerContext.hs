@@ -30,6 +30,7 @@ makeSqliteSchedulerContext conn = do
             expandPointer = expandPointerSqlite lock unlock conn,
             pendingQuestions = pendingQuestionsSqlite lock unlock conn,
             getWorkspace = getWorkspaceSqlite lock unlock conn,
+            allWorkspaces = allWorkspacesSqlite lock unlock conn,
             getNextWorkspace = getNextWorkspaceSqlite lock unlock conn,
             labelMessage = labelMessageSqlite lock unlock conn,
             normalize = insertMessagePointers lock unlock conn,
@@ -163,7 +164,7 @@ getWorkspaceSqlite lock unlock conn workspaceId = do
                                        \FROM Workspaces w \
                                        \LEFT OUTER JOIN Answers a ON w.id = a.workspaceId \
                                        \WHERE w.parentWorkspaceId = ? \
-                                       \ORDER BY w.Id ASC"  (Only workspaceId)
+                                       \ORDER BY w.id ASC" (Only workspaceId)
             expanded <- query conn "SELECT pointerId, content \
                                    \FROM ExpandedPointers e \
                                    \INNER JOIN Pointers p ON e.pointerId = p.id \
@@ -176,6 +177,32 @@ getWorkspaceSqlite lock unlock conn workspaceId = do
                 messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
                 expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
                 time = Time t }
+
+allWorkspacesSqlite :: IO () -> IO () -> Connection -> IO (M.Map WorkspaceId Workspace)
+allWorkspacesSqlite lock unlock conn = do
+    bracket_ lock unlock $ do
+        withTransaction conn $ do
+            workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
+                                      \FROM Workspaces"
+            messages <- query_ conn "SELECT targetWorkspaceId, content FROM Messages" -- TODO: ORDER
+            subquestions <- query_ conn "SELECT w.id, w.questionAsAsked, a.answer \
+                                        \FROM Workspaces w \
+                                        \LEFT OUTER JOIN Answers a ON w.id = a.workspaceId \
+                                        \ORDER BY w.id ASC"
+            expanded <- query_ conn "SELECT workspaceId, pointerId, content \
+                                    \FROM ExpandedPointers e \
+                                    \INNER JOIN Pointers p ON e.pointerId = p.id"
+            let messageMap = M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
+                subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
+                expandedMap = M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
+            return $ M.fromList $ map (\(i, p, t, q) -> (i, Workspace {
+                                                                identity = i,
+                                                                parentId = p,
+                                                                question = parseMessageUnsafeDB q,
+                                                                subQuestions = maybe [] id $ M.lookup i subquestionsMap,
+                                                                messageHistory = maybe [] id $ M.lookup i messageMap,
+                                                                expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
+                                                                time = Time t })) workspaces
 
 getNextWorkspaceSqlite :: IO () -> IO () -> Connection -> IO (Maybe WorkspaceId)
 getNextWorkspaceSqlite lock unlock conn = do

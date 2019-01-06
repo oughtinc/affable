@@ -1,6 +1,8 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), makeSingleUserScheduler, relabelMessage, fullyExpand ) where
+import qualified Data.Map as M -- containers
+
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping )
 import Workspace ( Workspace(identity), WorkspaceId )
 
@@ -10,7 +12,6 @@ data Event
     | Expand Pointer -- view
     | Send WorkspaceId Message -- send
     | Submit -- wait
-    -- | Join -- This is to support more server-y stuff, i.e. a new person joining the computation.
   deriving ( Show )
 
 type UserId = Int
@@ -25,6 +26,7 @@ data SchedulerContext extra = SchedulerContext {
     expandPointer :: WorkspaceId -> Pointer -> IO (),
     pendingQuestions :: WorkspaceId -> IO [WorkspaceId],
     getWorkspace :: WorkspaceId -> IO Workspace,
+    allWorkspaces :: IO (M.Map WorkspaceId Workspace),
     getNextWorkspace :: IO (Maybe WorkspaceId),
     labelMessage :: Message -> IO Message,
     normalize :: Message -> IO Message,
