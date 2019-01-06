@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 module SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext, makeSqliteAutoSchedulerContext' ) where
-import Control.Exception ( bracket_ ) -- base
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, query_, executeNamed, execute_, lastInsertRowId ) -- sqlite-simple
@@ -10,28 +9,28 @@ import Exp ( Pattern, Exp(..), Exp', Name(..), expToBuilderDB, expFromDB )
 import Message ( messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
 import Scheduler ( SchedulerContext(..) )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
-import Util ( toText )
+import Util ( toText, Lock, withLock )
 
 type FunctionId = Int64
 
-makeSqliteAutoSchedulerContext :: Connection -> IO (AutoSchedulerContext (Connection, IO (), IO ()))
+makeSqliteAutoSchedulerContext :: Connection -> IO (AutoSchedulerContext (Connection, Lock))
 makeSqliteAutoSchedulerContext conn = do
     ctxt <- makeSqliteSchedulerContext conn
     makeSqliteAutoSchedulerContext' ctxt
 
-makeSqliteAutoSchedulerContext' :: SchedulerContext (Connection, IO (), IO ()) -> IO (AutoSchedulerContext (Connection, IO (), IO ()))
+makeSqliteAutoSchedulerContext' :: SchedulerContext (Connection, Lock) -> IO (AutoSchedulerContext (Connection, Lock))
 makeSqliteAutoSchedulerContext' ctxt = do
-    let (conn, lock, unlock) = extraContent ctxt
+    let (conn, lock) = extraContent ctxt
 
-    answerId <- bracket_ lock unlock $ do
+    answerId <- withLock lock $ do
         execute_ conn "INSERT INTO Functions(isAnswer) VALUES (1)"
         lastInsertRowId conn
 
     return $ AutoSchedulerContext {
-                    alternativesFor = alternativesForSqlite lock unlock conn answerId,
-                    allAlternatives = allAlternativesSqlite lock unlock conn answerId,
-                    addCaseFor = addCaseForSqlite lock unlock conn answerId,
-                    newFunction = newFunctionSqlite lock unlock conn,
+                    alternativesFor = alternativesForSqlite lock conn answerId,
+                    allAlternatives = allAlternativesSqlite lock conn answerId,
+                    addCaseFor = addCaseForSqlite lock conn answerId,
+                    newFunction = newFunctionSqlite lock conn,
                     schedulerContext = ctxt
                 }
 
@@ -43,28 +42,28 @@ idToName :: FunctionId -> FunctionId -> Name
 idToName answerId fId | answerId == fId = ANSWER
                       | otherwise = LOCAL (fromIntegral fId)
 
-alternativesForSqlite :: IO () -> IO () -> Connection -> FunctionId -> Name -> IO [([Pattern], Exp')]
-alternativesForSqlite lock unlock conn answerId f = do
-    bracket_ lock unlock $ do
+alternativesForSqlite :: Lock -> Connection -> FunctionId -> Name -> IO [([Pattern], Exp')]
+alternativesForSqlite lock conn answerId f = do
+    withLock lock $ do
         let !fId = nameToId answerId f
         alts <- query conn "SELECT pattern, body FROM Alternatives WHERE function = ?" (Only fId)
         return $ map (\(ps, e) -> (parsePatternsUnsafe ps, expFromDB e)) alts
 
-allAlternativesSqlite :: IO () -> IO () -> Connection -> FunctionId -> IO (M.Map Name [([Pattern], Exp')])
-allAlternativesSqlite lock unlock conn answerId = do
-    bracket_ lock unlock $ do
+allAlternativesSqlite :: Lock -> Connection -> FunctionId -> IO (M.Map Name [([Pattern], Exp')])
+allAlternativesSqlite lock conn answerId = do
+    withLock lock $ do
         alts <- query_ conn "SELECT function, pattern, body FROM Alternatives"
         return $ M.fromListWith (++) $ map (\(f, ps, e) -> (idToName answerId f, [(parsePatternsUnsafe ps, expFromDB e)])) alts
 
-newFunctionSqlite :: IO () -> IO () -> Connection -> IO Name
-newFunctionSqlite lock unlock conn = do
-    bracket_ lock unlock $ do
+newFunctionSqlite :: Lock -> Connection -> IO Name
+newFunctionSqlite lock conn = do
+    withLock lock $ do
         execute_ conn "INSERT INTO Functions DEFAULT VALUES"
         (LOCAL . fromIntegral) <$> lastInsertRowId conn
 
-addCaseForSqlite :: IO () -> IO () -> Connection -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()
-addCaseForSqlite lock unlock conn answerId f patterns e = do
-    bracket_ lock unlock $ do
+addCaseForSqlite :: Lock -> Connection -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()
+addCaseForSqlite lock conn answerId f patterns e = do
+    withLock lock $ do
         let !fId = nameToId answerId f
         executeNamed conn "INSERT INTO Alternatives (function, pattern, body) VALUES (:function, :patterns, :body)" [
                             ":function" := fId,
