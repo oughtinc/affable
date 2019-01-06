@@ -52,6 +52,12 @@ type OverallAPI = StaticAPI :<|> API
 staticHandler :: Server StaticAPI
 staticHandler = serveDirectoryWebApp "static"
 
+-- TODO: Track users that have joined and only accept requests from previously seen users.
+-- This will allow us to trivially ignore requests from users who've been falsely suspected
+-- of abandoning a workspace, and will allow a new instance to invalidate any outstanding
+-- work of a previous instance. (This is admittedly not a very seamless transition, but it's
+-- simple and should suffice for our purposes assuming it ever even becomes an issue. This
+-- would require user IDs to be unique across instances, e.g. UUIDs.)
 joinHandler :: IORef UserId -> Server JoinAPI
 joinHandler userIdRef = liftIO $ do
     putStrLn "Join" -- DELETEME
@@ -86,11 +92,10 @@ overallHandler userIdRef nextWorkspace lookupWorkspace reply
 
 -- For a web service, we're going to want to separate reading from the channel from giving a response.
 -- Basically, when a web request comes in, we'll attempt to read a workspace to display from the channel (using
--- System.Timeout.timeout to handle the case when there are no available workspaces). When the user responds,
--- we can use the first two lines of replyFromUser below to send the result. Some policy will be required for users
+-- System.Timeout.timeout to handle the case when there are no available workspaces). Some policy will be required for users
 -- that walk away without responding. Once we've decided a user isn't going to respond, we can reschedule the workspace
 -- to a new user and discard any late response from the old user.
--- Probably use keep-alive policy.
+-- Probably use a keep-alive policy.
 initServer :: Connection -> IO Application
 initServer conn = do
     ctxt <- makeSqliteSchedulerContext conn

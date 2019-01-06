@@ -3,7 +3,8 @@
 {-# LANGUAGE BangPatterns #-}
 module AutoInterpreter where
 import Control.Concurrent ( ThreadId, forkIO ) -- base
-import Control.Concurrent.Async.Pool ( withTaskGroup, mapTasks ) -- async-pool
+import Control.Concurrent.Async ( mapConcurrently ) -- async
+-- import Control.Concurrent.Async.Pool ( withTaskGroup, mapTasks ) -- async-pool
 import Control.Concurrent.MVar ( MVar, newEmptyMVar, newMVar, putMVar, takeMVar, readMVar, modifyMVar_ ) -- base
 import Control.Concurrent.Chan ( Chan, newChan, readChan, writeChan ) -- base TODO: Use TChan instead?
 import Control.Exception ( bracket_ ) -- base
@@ -278,14 +279,14 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
 
     forkIO $ do
         (firstWorkspaceId, startExp) <- begin
-        t <- withTaskGroup 1000 {- TODO: number of threads in pool -} $ \g -> do
+        t <- {-withTaskGroup 1000 {- TODO: number of threads in pool -} $ \g ->-} do
                 let execMany workspaceId args = do
                         qIds <- pendingQuestions ctxt workspaceId
                         if null qIds then do -- Then either Var case or no arguments case, either way we can reuse the current workspaceId.
                             mapM ($ workspaceId) args
                           else do -- we have precreated workspaces for the Call ANSWER or Prim case.
                             -- TODO: Need to fallback to sequential execution if we run out of threads.
-                            (if isSequential then sequenceA else mapTasks g) $ zipWith ($) args qIds
+                            (if isSequential then sequenceA else mapConcurrently id {- mapTasks g -}) $ zipWith ($) args qIds
                 evaluateExp execMany match substitute primEnv firstWorkspaceId startExp
         t <- fullyExpand ctxt t
         T.putStrLn (toText (messageToBuilder t))
