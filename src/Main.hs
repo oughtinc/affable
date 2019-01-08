@@ -16,7 +16,7 @@ import CommandLine ( commandLineInteraction )
 import Exp ( Exp(..), Name(..), expToHaskell )
 import Message ( messageToHaskell, messageToBuilderDB, messageToPattern, parseMessageUnsafe )
 import Primitive ( primitives )
-import Scheduler ( getWorkspace, createInitialWorkspace, makeSingleUserScheduler )
+import Scheduler ( getWorkspace, createInitialWorkspace, makeSingleUserScheduler, fullyExpand )
 import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Server ( API, initServer )
@@ -62,6 +62,7 @@ main = do
                                  \    showsPrec _ (S ms) = ('[':) . foldr (.) id (map (showsPrec 1) ms) . (']':)"
                         -- or, putStrLn "data Message = T String | S [Message] deriving (Show)"
                         putStr "\nmain = print $ "
+                        topArg <- fullyExpand (schedulerContext autoCtxt) topArg
                         T.putStrLn (toText (expToHaskell localLookup (LetFun ANSWER (Call ANSWER [Value topArg]))))
         ("concurrent":args) -> do
             withConnection (fileOrMemory args) $ \conn -> do
