@@ -45,7 +45,7 @@ square bracketed part of the string becomes a sub-`message` that will be hidden 
 When you `ask` a question like `What is $1 minus $1?` the question that will be presented is the more general question, `What is $1 minus $2?`
 
 Here is an animation illustrating the command-line interface in action:
-![Demonstration of command-line interface](docs/lengthprim.svg)
+![Demonstration of command-line interface](docs/lengthprim.gif)
 
 <!-- Add screen recording of web interface. -->
 
