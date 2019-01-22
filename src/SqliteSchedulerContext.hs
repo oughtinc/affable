@@ -6,7 +6,7 @@ import qualified Data.Map as M -- containers
 import Data.String ( fromString ) -- base
 import Data.Text ( Text ) -- text
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
-                                query, query_, execute, executeMany, executeNamed, lastInsertRowId, withTransaction ) -- sqlite-simple
+                                query, query_, execute, execute_, executeMany, executeNamed, lastInsertRowId, withTransaction ) -- sqlite-simple
 
 import Command ( Command(..), commandToBuilder )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
@@ -40,7 +40,41 @@ makeSqliteSchedulerContext conn = do
 
 reifyWorkspaceSqlite :: Lock -> Connection -> WorkspaceId -> IO Message
 reifyWorkspaceSqlite lock conn workspaceId = do
-    workspaces <- allWorkspacesSqlite lock conn -- TODO: This is excessive.
+    workspaces <- withLock lock $ do
+        withTransaction conn $ do
+            execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMRY KEY ASC )"
+            execute_ conn "DELETE FROM Descendants"
+            executeNamed conn "WITH RECURSIVE ds(id) AS ( \
+                              \     VALUES (:root) \
+                              \ UNION ALL \
+                              \     SELECT w.id FROM Workspaces w INNER JOIN ds ON w.parentWorkspaceId = ds.id \
+                              \) INSERT INTO Descendants ( id ) SELECT id FROM ds" [":root" := workspaceId]
+            workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
+                                      \FROM Workspaces WHERE id IN (SELECT id FROM Descendants)"
+            -- messages <- query_ conn "SELECT targetWorkspaceId, content FROM Messages WHERE targetWorkspaceId IN (SELECT id FROM Descendants)" -- TODO: ORDER
+            subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
+                                        \FROM Workspaces p \
+                                        \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
+                                        \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
+                                        \WHERE p.id IN (SELECT id FROM Descendants) \
+                                        \ORDER BY p.id ASC, q.id DESC"
+            {-
+            expanded <- query_ conn "SELECT workspaceId, pointerId, content \
+                                    \FROM ExpandedPointers e \
+                                    \INNER JOIN Pointers p ON e.pointerId = p.id \
+                                    \WHERE workspaceId IN (SELECT id FROM Descendants)"
+            -}
+            let messageMap = M.empty -- M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
+                subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
+                expandedMap = M.empty -- M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
+            return $ M.fromList $ map (\(i, p, t, q) -> (i, Workspace {
+                                                                identity = i,
+                                                                parentId = p,
+                                                                question = parseMessageUnsafeDB q,
+                                                                subQuestions = maybe [] id $ M.lookup i subquestionsMap,
+                                                                messageHistory = maybe [] id $ M.lookup i messageMap,
+                                                                expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
+                                                                time = Time t })) workspaces
     return (workspaceToMessage workspaces workspaceId)
 
 -- TODO: This could also be done in a way to better reuse existing pointers rather than make new pointers.
