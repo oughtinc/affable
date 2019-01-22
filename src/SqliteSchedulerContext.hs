@@ -41,7 +41,7 @@ makeSqliteSchedulerContext conn = do
 reifyWorkspaceSqlite :: Lock -> Connection -> WorkspaceId -> IO Message
 reifyWorkspaceSqlite lock conn workspaceId = do
     workspaces <- allWorkspacesSqlite lock conn -- TODO: This is excessive.
-    insertMessagePointers lock conn $ workspaceToMessage workspaces workspaceId
+    return (workspaceToMessage workspaces workspaceId)
 
 -- TODO: This could also be done in a way to better reuse existing pointers rather than make new pointers.
 -- TODO: Should the expanded pointers be indicated some way?
@@ -50,11 +50,13 @@ workspaceToMessage workspaces workspaceId = go (M.lookup workspaceId workspaces)
     where go (Just workspace) | null subQs = Structured [Text "Question: ", question workspace]
                               | otherwise =  Structured (Text "Question: "
                                                         : question workspace
-                                                        : Text " Subquestions:"
+                                                        : Text " Subquestions: 1. "
                                                         : subQs)
             where subQs = goSub 1 (subQuestions workspace)
                   goSub !i [] = []
                   goSub i ((_, _, Nothing):qs) = goSub i qs
+                  goSub 1 ((wsId, _, Just a):qs) -- To avoid [Text "...", Text "..."]
+                    = go (M.lookup wsId workspaces):Text " Answer:":a:goSub 2 qs
                   goSub i ((wsId, _, Just a):qs)
                     = Text (fromString (' ':show i ++ ". ")):go (M.lookup wsId workspaces):Text " Answer:":a:goSub (i+1) qs
 
