@@ -1,4 +1,4 @@
-#!/usr/bin/expect -f
+#!/usr/bin/env -S TERM=dumb expect -f
 
 # :command! -range FixExpect '<,'>s/\$\(\d\+\)/\\x24(\\d+)/eg | '<,'>s/?/\\?/& | '<,'>s/\[/\\[/& | '<,'>s/\]/\\]/& | '<,'>s/|/\\|/& | nohls
 # :command! -range FixSend s/\$\(\d\+\)/\\x24$expect_out(\1,string)/eg | s/\[/\\[/& | s/\]/\\]/& | nohls
@@ -55,14 +55,14 @@ Subquestions:\r
 send -- "wait\r"
 expect -re {Question: \[\x24(\d+)\|length \[\x24(\d+)\|cons \x24(\d+) \x24(\d+)\]\]\r
 Subquestions:\r
-  1. length \[nil\]\r
+  1. length \x24(?:\d+)\r
     Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
 > $}
 
 send -- "ask add \[1\] \x24$expect_out(6,string)\r"
 expect -re {Question: \[\x24(\d+)\|length \[\x24(\d+)\|cons \x24(\d+) \x24(\d+)\]\]\r
 Subquestions:\r
-  1. length \[nil\]\r
+  1. length \x24(?:\d+)\r
     Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
   2. add \[1\] \x24(?:\d+)\r
 > $}
@@ -70,7 +70,7 @@ Subquestions:\r
 send -- "wait\r"
 expect -re {Question: \[\x24(\d+)\|length \[\x24(\d+)\|cons \x24(\d+) \x24(\d+)\]\]\r
 Subquestions:\r
-  1. length \[nil\]\r
+  1. length \x24(?:\d+)\r
     Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
   2. add \[1\] \x24(?:\d+)\r
     Answer: \[\x24(\d+)\|result \x24(\d+)\]\r

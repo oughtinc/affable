@@ -1,4 +1,4 @@
-#!/usr/bin/expect -f
+#!/usr/bin/env -S TERM=dumb expect -f
 
 # :command! -range FixExpect '<,'>s/\$\(\d\+\)/\\x24(\\d+)/eg | '<,'>s/?/\\?/& | '<,'>s/\[/\\[/& | '<,'>s/\]/\\]/& | '<,'>s/|/\\|/& | nohls
 # :command! -range FixSend s/\$\(\d\+\)/\\x24$expect_out(\1,string)/eg | s/\[/\\[/& | s/\]/\\]/& | nohls
