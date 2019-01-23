@@ -1,10 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE BangPatterns #-}
 module SqliteSchedulerContext ( makeSqliteSchedulerContext ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
+import Data.String ( fromString ) -- base
 import Data.Text ( Text ) -- text
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
-                                query, query_, execute, executeMany, executeNamed, lastInsertRowId, withTransaction ) -- sqlite-simple
+                                query, query_, execute, execute_, executeMany, executeNamed, lastInsertRowId, withTransaction ) -- sqlite-simple
 
 import Command ( Command(..), commandToBuilder )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
@@ -32,8 +34,65 @@ makeSqliteSchedulerContext conn = do
             normalize = insertMessagePointers lock conn,
             generalize = insertGeneralizedMessagePointers lock conn,
             dereference = dereferenceSqlite lock conn,
+            reifyWorkspace = reifyWorkspaceSqlite lock conn,
             extraContent = (conn, lock)
         }
+
+reifyWorkspaceSqlite :: Lock -> Connection -> WorkspaceId -> IO Message
+reifyWorkspaceSqlite lock conn workspaceId = do
+    workspaces <- withLock lock $ do
+        withTransaction conn $ do
+            execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMRY KEY ASC )"
+            execute_ conn "DELETE FROM Descendants"
+            executeNamed conn "WITH RECURSIVE ds(id) AS ( \
+                              \     VALUES (:root) \
+                              \ UNION ALL \
+                              \     SELECT w.id FROM Workspaces w INNER JOIN ds ON w.parentWorkspaceId = ds.id \
+                              \) INSERT INTO Descendants ( id ) SELECT id FROM ds" [":root" := workspaceId]
+            workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
+                                      \FROM Workspaces WHERE id IN (SELECT id FROM Descendants)"
+            -- messages <- query_ conn "SELECT targetWorkspaceId, content FROM Messages WHERE targetWorkspaceId IN (SELECT id FROM Descendants)" -- TODO: ORDER
+            subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
+                                        \FROM Workspaces p \
+                                        \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
+                                        \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
+                                        \WHERE p.id IN (SELECT id FROM Descendants) \
+                                        \ORDER BY p.id ASC, q.id DESC"
+            {-
+            expanded <- query_ conn "SELECT workspaceId, pointerId, content \
+                                    \FROM ExpandedPointers e \
+                                    \INNER JOIN Pointers p ON e.pointerId = p.id \
+                                    \WHERE workspaceId IN (SELECT id FROM Descendants)"
+            -}
+            let messageMap = M.empty -- M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
+                subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
+                expandedMap = M.empty -- M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
+            return $ M.fromList $ map (\(i, p, t, q) -> (i, Workspace {
+                                                                identity = i,
+                                                                parentId = p,
+                                                                question = parseMessageUnsafeDB q,
+                                                                subQuestions = maybe [] id $ M.lookup i subquestionsMap,
+                                                                messageHistory = maybe [] id $ M.lookup i messageMap,
+                                                                expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
+                                                                time = Time t })) workspaces
+    return (workspaceToMessage workspaces workspaceId)
+
+-- TODO: This could also be done in a way to better reuse existing pointers rather than make new pointers.
+-- TODO: Should the expanded pointers be indicated some way?
+workspaceToMessage :: M.Map WorkspaceId Workspace -> WorkspaceId -> Message
+workspaceToMessage workspaces workspaceId = go (M.lookup workspaceId workspaces)
+    where go (Just workspace) | null subQs = Structured [Text "Question: ", question workspace]
+                              | otherwise =  Structured (Text "Question: "
+                                                        : question workspace
+                                                        : Text " Subquestions: 1. "
+                                                        : subQs)
+            where subQs = goSub 1 (subQuestions workspace)
+                  goSub !i [] = []
+                  goSub i ((_, _, Nothing):qs) = goSub i qs
+                  goSub 1 ((wsId, _, Just a):qs) -- To avoid [Text "...", Text "..."]
+                    = go (M.lookup wsId workspaces):Text " Answer:":a:goSub 2 qs
+                  goSub i ((wsId, _, Just a):qs)
+                    = Text (fromString (' ':show i ++ ". ")):go (M.lookup wsId workspaces):Text " Answer:":a:goSub (i+1) qs
 
 -- TODO: Bulkify this.
 dereferenceSqlite :: Lock -> Connection -> Pointer -> IO Message
@@ -181,10 +240,11 @@ allWorkspacesSqlite lock conn = do
             workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
                                       \FROM Workspaces"
             messages <- query_ conn "SELECT targetWorkspaceId, content FROM Messages" -- TODO: ORDER
-            subquestions <- query_ conn "SELECT w.id, w.questionAsAsked, a.answer \
-                                        \FROM Workspaces w \
-                                        \LEFT OUTER JOIN Answers a ON w.id = a.workspaceId \
-                                        \ORDER BY w.id ASC"
+            subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
+                                        \FROM Workspaces p \
+                                        \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
+                                        \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
+                                        \ORDER BY p.id ASC, q.id DESC"
             expanded <- query_ conn "SELECT workspaceId, pointerId, content \
                                     \FROM ExpandedPointers e \
                                     \INNER JOIN Pointers p ON e.pointerId = p.id"

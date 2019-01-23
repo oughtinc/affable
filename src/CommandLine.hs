@@ -10,9 +10,10 @@ import Data.String ( fromString ) -- base
 import Data.Text ( Text ) -- text
 import Data.Void ( Void ) -- base
 import qualified Data.Text.IO as T -- text
-import System.Console.ANSI ( clearScreen ) -- ansi-terminal
+-- import System.Console.ANSI ( clearScreen, setCursorPosition ) -- ansi-terminal
 import System.Console.Haskeline ( InputT, CompletionFunc, outputStr, outputStrLn,
                                   setComplete, completeWord, simpleCompletion, defaultSettings, runInputT, getInputLine ) -- haskeline
+-- import System.IO ( hFlush, stdout ) -- base
 -- import Text.Megaparsec ( ParseErrorBundle, parse, errorBundlePretty ) -- megaparsec 7.0
 import Text.Megaparsec ( ParseError, parse, parseErrorPretty ) -- megaparsec 6.5
 
@@ -73,7 +74,6 @@ commandLineInteraction initWorkspace scheduler = do
   where userId = 0 :: UserId
         go mapping ws = do
           eCmd <- readCommand
-          -- clearScreen
           case eCmd of
               Left (line, bundle) -> do
                   if line == "exit" then -- Probably make this case-insensitive and not sensitive to extra whitespace.
@@ -88,6 +88,7 @@ commandLineInteraction initWorkspace scheduler = do
                         outputStrLn "Reference to undefined pointer." -- TODO: Better wording.
                         go mapping ws
                     Just evt -> do
+                      -- liftIO $ clearScreen >> setCursorPosition 0 0 >> hFlush stdout
                       mWorkspace <- liftIO $ scheduler userId ws evt
                       case mWorkspace of
                           Nothing -> return ()

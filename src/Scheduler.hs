@@ -32,6 +32,7 @@ data SchedulerContext extra = SchedulerContext {
     normalize :: Message -> IO Message,
     generalize :: Message -> IO Message,
     dereference :: Pointer -> IO Message,
+    reifyWorkspace :: WorkspaceId -> IO Message,
     extraContent :: extra -- This is to support making schedulers that can (e.g.) access SQLite directly.
   }
 
