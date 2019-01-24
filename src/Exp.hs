@@ -15,17 +15,7 @@ import Text.Megaparsec.Char.Lexer ( decimal ) -- megaparsec
 
 import Message ( Message(..), Pointer, messageToBuilder, messageParser', messageToHaskell, messageToPattern )
 
-type Var = Pointer
-
 type Value = Message
-type Pattern = Message
-type Primitive = Int
-
-data Name = ANSWER | LOCAL !Int deriving ( Eq, Ord, Show )
-
-nameToBuilder :: Name -> Builder
-nameToBuilder ANSWER = fromText "answer"
-nameToBuilder (LOCAL i) = singleton 'f' <> T.decimal i
 
 -- NOTE: Currently only ever use LetFun f (Call f _) pattern which is essentially, unsurprisingly,
 -- equivalent to doing a case analysis on _. It's possible having Call be separate could be useful
@@ -40,30 +30,14 @@ data Exp p f v
                                     --     f(p1) = e3
                                     -- in e4
 
-type Exp' = Exp Primitive Name Var
-
-expToBuilder' :: (p -> Builder) -> (f -> Builder) -> (v -> Builder) -> (f -> [([Pattern], Exp p f v)]) -> Exp p f v -> Builder
-expToBuilder' pBuilder fBuilder vBuilder alternativesFor = go 0
-    where go indent (Var x) = vBuilder x
-          go indent (Value v) = messageToBuilder v
-          go indent (Prim p e) = pBuilder p <> singleton '(' <> go 0 e <> singleton ')'
-          go indent (Call f es) = fBuilder f <> singleton '(' <> mconcat (intersperse (singleton ',') (map (go 0) es)) <> singleton ')'
-          go indent (LetFun f body) | null alts = go indent body <> fromText " where "
-                                               <> indentBuilder <> fromText "  " <> fBuilder f <> fromText "(_) = undefined"
-                                    | otherwise = go indent body <> fromText " where "
-                                               <> foldMap (\(ps, e) -> f' ps <> fromText " = " <> go (indent + 2) e) alts
-            where !indentBuilder = singleton '\n' <> fromText (T.replicate indent " ")
-                  !alts = alternativesFor f
-                  f' ps = indentBuilder <> fromText "  " <> fBuilder f <> singleton '(' <> mconcat (intersperse (singleton ',') (map messageToBuilder ps)) <> singleton ')'
-
-expToBuilder :: (Name -> [([Pattern], Exp')]) -> Exp' -> Builder
-expToBuilder = expToBuilder' (\p -> fromText "prim" <> T.decimal p) nameToBuilder (\v -> singleton '$' <> T.decimal v)
-
 type VarEnv v = M.Map v Value
 type VarMapping v = M.Map v v
 type FunEnv s m f = M.Map f (s -> [Value] -> m Value)
 type PrimEnv s m p = M.Map p (s -> Value -> m Value)
 
+-- TODO: Idea for edit: Build dependency graph by executing evaluateExp in a suitable pure monad with
+-- a suitable execMany and match. execMany will be something sort of like catMaybes while match
+-- will return Nothing on pattern match failure.
 evaluateExp :: (Ord p, Ord f, Ord v, Monad m)
             => (s -> [s -> m Value] -> m [Value])
             -> (s -> VarEnv v -> f -> [Value] -> m (s, VarEnv v, Exp p f v))
@@ -101,6 +75,14 @@ evaluateExp' execMany match subst primEnv = go
                 funEnv' = M.insert f fEvaled funEnv
             go varEnv funEnv' s body
 
+type Var = Pointer
+type Pattern = Message
+type Primitive = Int
+
+data Name = ANSWER | LOCAL !Int deriving ( Eq, Ord, Show )
+
+type Exp' = Exp Primitive Name Var
+
 expFromDB :: T.Text -> Exp'
 expFromDB t = case parse expParserDB "" t of Right msg -> msg; Left err -> error (show err)
 
@@ -113,6 +95,27 @@ expParserDB = (Var <$> (string "(Var " *> decimal <* char ')'))
           <|> (Prim <$> (string "(Prim " *> decimal <* char ' ') <*> (expParserDB <* char ')'))
           <|> (Call <$> (string "(Call " *> nameParser) <*> (many (char ' ' *> expParserDB) <* char ')'))
           <|> (LetFun <$> (string "(LetFun " *> nameParser <* char ' ') <*> (expParserDB <* char ')'))
+
+nameToBuilder :: Name -> Builder
+nameToBuilder ANSWER = fromText "answer"
+nameToBuilder (LOCAL i) = singleton 'f' <> T.decimal i
+
+expToBuilder' :: (p -> Builder) -> (f -> Builder) -> (v -> Builder) -> (f -> [([Pattern], Exp p f v)]) -> Exp p f v -> Builder
+expToBuilder' pBuilder fBuilder vBuilder alternativesFor = go 0
+    where go indent (Var x) = vBuilder x
+          go indent (Value v) = messageToBuilder v
+          go indent (Prim p e) = pBuilder p <> singleton '(' <> go 0 e <> singleton ')'
+          go indent (Call f es) = fBuilder f <> singleton '(' <> mconcat (intersperse (singleton ',') (map (go 0) es)) <> singleton ')'
+          go indent (LetFun f body) | null alts = go indent body <> fromText " where "
+                                               <> indentBuilder <> fromText "  " <> fBuilder f <> fromText "(_) = undefined"
+                                    | otherwise = go indent body <> fromText " where "
+                                               <> foldMap (\(ps, e) -> f' ps <> fromText " = " <> go (indent + 2) e) alts
+            where !indentBuilder = singleton '\n' <> fromText (T.replicate indent " ")
+                  !alts = alternativesFor f
+                  f' ps = indentBuilder <> fromText "  " <> fBuilder f <> singleton '(' <> mconcat (intersperse (singleton ',') (map messageToBuilder ps)) <> singleton ')'
+
+expToBuilder :: (Name -> [([Pattern], Exp')]) -> Exp' -> Builder
+expToBuilder = expToBuilder' (\p -> fromText "prim" <> T.decimal p) nameToBuilder (\v -> singleton '$' <> T.decimal v)
 
 expToBuilderDB :: Exp' -> Builder
 expToBuilderDB (Var v) = fromText "(Var " <> T.decimal v <> singleton ')'
