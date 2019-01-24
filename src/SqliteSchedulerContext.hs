@@ -51,7 +51,10 @@ reifyWorkspaceSqlite lock conn workspaceId = do
                               \) INSERT INTO Descendants ( id ) SELECT id FROM ds" [":root" := workspaceId]
             workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
                                       \FROM Workspaces WHERE id IN (SELECT id FROM Descendants)"
-            -- messages <- query_ conn "SELECT targetWorkspaceId, content FROM Messages WHERE targetWorkspaceId IN (SELECT id FROM Descendants)" -- TODO: ORDER
+            messages <- query_ conn "SELECT targetWorkspaceId, content \
+                                    \FROM Messages \
+                                    \WHERE targetWorkspaceId IN (SELECT id FROM Descendants) \
+                                    \ORDER BY id ASC"
             subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
                                         \FROM Workspaces p \
                                         \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
@@ -64,7 +67,7 @@ reifyWorkspaceSqlite lock conn workspaceId = do
                                     \INNER JOIN Pointers p ON e.pointerId = p.id \
                                     \WHERE workspaceId IN (SELECT id FROM Descendants)"
             -}
-            let messageMap = M.empty -- M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
+            let messageMap = M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
                 subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
                 expandedMap = M.empty -- M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
             return $ M.fromList $ map (\(i, p, t, q) -> (i, Workspace {
@@ -81,18 +84,32 @@ reifyWorkspaceSqlite lock conn workspaceId = do
 -- TODO: Should the expanded pointers be indicated some way?
 workspaceToMessage :: M.Map WorkspaceId Workspace -> WorkspaceId -> Message
 workspaceToMessage workspaces workspaceId = go (M.lookup workspaceId workspaces)
-    where go (Just workspace) | null subQs = Structured [Text "Question: ", question workspace]
+    where go (Just workspace) | null subQs && null msgs = Structured [Text "Question: ", question workspace]
+                              | null subQs = Structured (Text "Question: "
+                                                        : question workspace
+                                                        : Text " Messages: 1. "
+                                                        : msgs)
+                              | null msgs = Structured (Text "Question: "
+                                                       : question workspace
+                                                       : Text " Subquestions: 1. "
+                                                       : subQs)
                               | otherwise =  Structured (Text "Question: "
                                                         : question workspace
-                                                        : Text " Subquestions: 1. "
-                                                        : subQs)
+                                                        : Text " Messages: 1. "
+                                                        : msgs
+                                                        ++ (Text " Subquestions: 1. "
+                                                           : subQs))
             where subQs = goSub 1 (subQuestions workspace)
+                  msgs = goMsg 1 (messageHistory workspace)
                   goSub !i [] = []
                   goSub i ((_, _, Nothing):qs) = goSub i qs
                   goSub 1 ((wsId, _, Just a):qs) -- To avoid [Text "...", Text "..."]
                     = go (M.lookup wsId workspaces):Text " Answer:":a:goSub 2 qs
                   goSub i ((wsId, _, Just a):qs)
                     = Text (fromString (' ':show i ++ ". ")):go (M.lookup wsId workspaces):Text " Answer:":a:goSub (i+1) qs
+                  goMsg !i [] = []
+                  goMsg 1 (m:ms) = m:goMsg 2 ms
+                  goMsg i (m:ms) = Text (fromString (' ':show i ++ ". ")):m:goMsg (i+1) ms
 
 -- TODO: Bulkify this.
 dereferenceSqlite :: Lock -> Connection -> Pointer -> IO Message
