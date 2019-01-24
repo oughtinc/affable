@@ -12,7 +12,7 @@ data Event
     | Expand Pointer -- view
     | Send WorkspaceId Message -- send
     | Submit -- wait
-  deriving ( Show )
+  deriving ( Eq, Ord, Show )
 
 type UserId = Int
 

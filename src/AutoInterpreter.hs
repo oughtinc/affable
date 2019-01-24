@@ -113,6 +113,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     -- Begin atomic block
                     pendingMatches <- takeMVar pendingMatchesMVar
                     -- TODO: Error out if there is more than one match.
+                    -- TODO: If an error happens here, pendingMatchesMVar will not be refilled and will lead to deadlock.
                     case asum $ map (\(ps, pMVar) -> pMVar <$ zipWithM matchMessage ps ms') pendingMatches of
                         Just pMVar -> do
                             putMVar pendingMatchesMVar pendingMatches

@@ -33,6 +33,8 @@ makePrimitives ctxt = return (primEnv, matchPrim)
           -- TODO: This could be more efficient.
           matchPrim msg = asum $ map (\(p, pattern, _, _) -> p <$ matchMessage pattern msg) primitives -- TODO: Ensure only one match.
 
+-- TODO: Make it so the Haskell code definitions are written into a Primitives module (similar to the gen-api commandline option)
+-- and simply have the generated code reference this module.
 primitives :: [(Primitive, Pattern, T.Text, PrimFunc extra)]
 primitives = [
     (1, Structured [Text "add ", Reference 0, Text " ", Reference 1], binPrimCode "(+)", binIntPrim (+)),
