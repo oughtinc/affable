@@ -23,7 +23,7 @@ import Data.Tuple ( swap ) -- base
 import System.IO ( stderr) -- base
 
 import AutoScheduler ( AutoSchedulerContext(..) )
-import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, evaluateExp, expToBuilder, expToHaskell )
+import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, evaluateExpK, expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage,
                  matchPointers, expandPointers, substitute, renumberMessage' )
 import Primitive ( makePrimitives )
@@ -35,7 +35,7 @@ import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 -- expression evaluation that supports suspending a computation or implements cooperative
 -- concurrency.
 
-type MatchFn = WorkspaceId -> VarEnv Var -> Name -> [Message] -> IO (WorkspaceId, VarEnv Var, Exp')
+type MatchFn = WorkspaceId -> VarEnv Var -> Name -> [Message] -> ((WorkspaceId, VarEnv Var, Exp') -> IO Message) -> IO Message
 
 makeMatcher :: (Bool -> WorkspaceId -> IO Event)
             -> (Value -> Maybe Primitive)
@@ -89,11 +89,11 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
     -- When we receive the Submit event, we look at the unanswered questions of the current workspace for the parameters.
     -- Expand doesn't get batched, so we only have batches of questions, i.e. multi-argument function calls are always
     -- of the form `f(answer(...), prim1(...), ...)`.
-    let match s varEnv f [Reference p] = do
+    let match s varEnv f [Reference p] k = do
             error "Did you get here? If so, tell me how."
             m <- dereference ctxt p
-            match s varEnv f [m]
-        match workspaceId varEnv f ms = do
+            match s varEnv f [m] k
+        match workspaceId varEnv f ms k = do
             ms' <- mapM (\m -> normalize ctxt =<< generalize ctxt m) ms
 
             -- Atomically:
@@ -158,7 +158,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                             arg <- dereference ctxt p
                                             expandPointer ctxt workspaceId p
                                             giveArgument workspaceId arg
-                                            return (workspaceId, M.insert ptr arg varEnv', e)
+                                            k (workspaceId, M.insert ptr arg varEnv', e) -- TODO: Think about this.
                                         LetFun _ (Call _ args) -> do -- ask cases
                                             let !localToGlobal = invertMap globalToLocal
                                             forM_ args $ \argExp -> do
@@ -166,13 +166,13 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                                 let !arg = substitute bindings m
                                                 pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt arg
                                                 createWorkspace ctxt False workspaceId (renumberMessage' localToGlobal m) pattern
-                                            return (workspaceId, varEnv', e)
+                                            k (workspaceId, varEnv', e) -- TODO: Think about this.
                                         Value msg -> do -- reply case
                                             let !msg' = substitute bindings msg -- TODO: Need to do the same local-to-global renumbering as above?
                                             msg <- normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
                                             sendAnswer ctxt False workspaceId msg -- TODO: Can I clean out workspaceVariablesRef a bit now?
-                                            return (workspaceId, varEnv', e)
-                                        -- _ -> return (workspaceId, varEnv', e) -- Intentionally missing this case.
+                                            k (workspaceId, varEnv', e) -- TODO: Think about this.
+                                        -- _ -> k (workspaceId, varEnv', e) -- Intentionally missing this case.
                                 Nothing -> matchPending workspace
                         [] -> matchPending workspace
             retryLoop
@@ -220,7 +220,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     (extraBindings, e) <- loop False
                     addCaseFor autoCtxt f patterns e
                     debugCode
-                    return (workspaceId, M.union extraBindings varEnv', e)
+                    k (workspaceId, M.union extraBindings varEnv', e) -- TODO: Probably need to be more sophisticated than this.
     return match
 
 makeInterpreterScheduler :: Bool -> AutoSchedulerContext extra -> WorkspaceId -> IO SchedulerFn
@@ -280,15 +280,26 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
 
     forkIO $ do
         (firstWorkspaceId, startExp) <- begin
-        t <- {-withTaskGroup 1000 {- TODO: number of threads in pool -} $ \g ->-} do
-                let execMany workspaceId args = do
+        t <- do
+                let execMany workspaceId args k = do
                         qIds <- pendingQuestions ctxt workspaceId
                         if null qIds then do -- Then either Var case or no arguments case, either way we can reuse the current workspaceId.
-                            mapM ($ workspaceId) args
+                            k =<< mapM (\arg -> arg workspaceId return) args -- TODO: Think about this.
                           else do -- we have precreated workspaces for the Call ANSWER or Prim case.
-                            -- TODO: Need to fallback to sequential execution if we run out of threads.
-                            (if isSequential then sequenceA else mapConcurrently id {- mapTasks g -}) $ zipWith ($) args qIds
-                evaluateExp execMany match substitute primEnv firstWorkspaceId startExp
+                            k =<< (if isSequential then sequenceA else mapConcurrently id)
+                                    (zipWith (\arg qId -> arg qId return) args qIds) -- TODO: Think about his.
+
+                -- forkIO $ do -- TODO
+                --     revisitor given (evaluateExp execMany match substitute primEnv)
+                --     that modifies the workspace that is being revisited and the relevant
+                --     automation, and then calls the evaluator with that workspaceId and a
+                --     startExp that just evaluates `answer` with the question from the
+                --     revisited workspace.
+                --
+                --     Ideally, use a modified evaluateExp that can skip already answered
+                --     subquestions. Maybe we can do this just by modifying execMany.
+
+                evaluateExpK execMany match substitute primEnv firstWorkspaceId startExp return
         t <- fullyExpand ctxt t
         T.putStrLn (toText (messageToBuilder t))
         end

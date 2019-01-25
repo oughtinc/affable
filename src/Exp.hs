@@ -1,7 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 module Exp ( Value, Pattern, Exp(..), Exp', Primitive, Var, Name(..), VarEnv, VarMapping, FunEnv, PrimEnv,
-             nameToBuilder, expToBuilder', expToBuilder, expToBuilderDB, expFromDB, expToHaskell, evaluateExp, evaluateExp' ) where
+             nameToBuilder, expToBuilder', expToBuilder, expToBuilderDB, expFromDB, expToHaskell,
+             evaluateExp, evaluateExp', evaluateExpK, evaluateExpK' ) where
 import Data.Functor ( (<$) ) -- base
 import Data.List ( intersperse ) -- base
 import qualified Data.Map as M -- containers
@@ -74,6 +75,46 @@ evaluateExp' execMany match subst primEnv = go
                     go varEnv' funEnv' s' e -- recursive let
                 funEnv' = M.insert f fEvaled funEnv
             go varEnv funEnv' s body
+
+type FunEnvK s m f = M.Map f (s -> [Value] -> (Value -> m Value) -> m Value)
+
+evaluateExpK :: (Ord p, Ord f, Ord v, Monad m)
+             => (s -> [s -> (Value -> m Value) -> m Value] -> ([Value] -> m Value) -> m Value)
+             -> (s -> VarEnv v -> f -> [Value] -> ((s, VarEnv v, Exp p f v) -> m Value) -> m Value)
+             -> (VarEnv v -> Value -> Value)
+             -> PrimEnv s m p
+             -> s
+             -> Exp p f v
+             -> (Value -> m Value)
+             -> m Value
+evaluateExpK execMany match subst primEnv = evaluateExpK' execMany match subst primEnv M.empty M.empty
+
+evaluateExpK' :: (Ord p, Ord f, Ord v, Monad m)
+             => (s -> [s -> (Value -> m Value) -> m Value] -> ([Value] -> m Value) -> m Value)
+             -> (s -> VarEnv v -> f -> [Value] -> ((s, VarEnv v, Exp p f v) -> m Value) -> m Value)
+             -> (VarEnv v -> Value -> Value)
+             -> PrimEnv s m p
+             -> VarEnv v
+             -> FunEnvK s m f
+             -> s
+             -> Exp p f v
+             -> (Value -> m Value)
+             -> m Value
+evaluateExpK' execMany match subst primEnv = go
+    where go varEnv funEnv s (Var x) k = k $! case M.lookup x varEnv of Just v -> v
+          go varEnv funEnv s (Value v) k = k $ subst varEnv v
+          go varEnv funEnv s (Prim p e) k =
+            go varEnv funEnv s e $ \v ->
+            k =<< (case M.lookup p primEnv of Just p' -> p') s v
+          go varEnv funEnv s (Call f es) k =
+            execMany s (map (\e s -> go varEnv funEnv s e) es) $ \vs ->
+            (case M.lookup f funEnv of Just f' -> f') s vs k
+          go varEnv funEnv s (LetFun f body) k = do
+            let fEvaled s vs k' =
+                    match s varEnv f vs $ \(s', varEnv', e) ->
+                    go varEnv' funEnv' s' e k'
+                funEnv' = M.insert f fEvaled funEnv
+            go varEnv funEnv' s body k
 
 type Var = Pointer
 type Pattern = Message
