@@ -23,8 +23,8 @@ import Data.Tuple ( swap ) -- base
 import System.IO ( stderr) -- base
 
 import AutoScheduler ( AutoSchedulerContext(..) )
-import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), KontMatch(..), FunEnvK,
-             evaluateExpK', applyKonts, applyKontMatch, sequenceK, concurrentlyK, expToBuilder, expToHaskell )
+import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), KontMatch(..), GoFn, FunEnvK,
+             evaluateExp', applyKonts, applyKontMatch, sequenceK, concurrentlyK, expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage,
                  matchPointers, expandPointers, substitute, renumberMessage' )
 import Primitive ( makePrimitives )
@@ -36,7 +36,7 @@ import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 -- expression evaluation that supports suspending a computation or implements cooperative
 -- concurrency.
 
-type MatchFn = (VarEnv Var -> FunEnvK IO WorkspaceId Primitive Name Var -> WorkspaceId -> Exp' -> Kont1 IO WorkspaceId Primitive Name Var -> IO Value)
+type MatchFn = GoFn IO WorkspaceId Primitive Name Var
             -> WorkspaceId -> VarEnv Var -> Name -> [Message] -> KontMatch IO WorkspaceId Primitive Name Var -> IO Message
 
 makeMatcher :: (Bool -> WorkspaceId -> IO Event)
@@ -284,7 +284,7 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
     forkIO $ do
         (firstWorkspaceId, startExp) <- begin
         t <- do
-                let execMany workspaceId args k = do
+                let execMany go varEnv funEnv workspaceId es k = do
                         qIds <- pendingQuestions ctxt workspaceId
                         -- TODO: XXX The use of continuations here definitely needs to be thought about.
                         -- Seems like we should have a continuation which writes into an MVar per arg and this
@@ -293,7 +293,7 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                         --
                         -- Idea: We have a join continuation for k -- it will be a different type anyway -- that has
                         -- identifiers for a notify continuation that we'll create for each arg. (We can optimize the
-                        -- length args == 1 case.) These new notify continuations will be given an ID for the join
+                        -- length es == 1 case.) These new notify continuations will be given an ID for the join
                         -- continuation as well as some ID of their own. When we reach these new continuations they
                         -- will signal the join continuation in some appropriate manner. Basically, when we "restore",
                         -- we'll load all the "outstanding" (TODO: How do we know which continuations are "outstanding"?)
@@ -307,15 +307,17 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                         -- To track outstanding continuations, we can have a table of outstanding continuations. This
                         -- can either be updated in-place, or it can be some append-only structure.
                         if null qIds then do -- Then either Var case or no arguments case, either way we can reuse the current workspaceId.
-                            case args of [] -> applyKonts k []; [arg] -> arg workspaceId (SimpleKont k)
-                            -- Intentionally omitting length args > 1 case which shouldn't happen.
+                            case es of
+                                [] -> applyKonts k []
+                                [e] -> go varEnv funEnv workspaceId e (SimpleKont k)
+                            -- Intentionally omitting length es > 1 case which shouldn't happen.
                           else do -- we have precreated workspaces for the Call ANSWER or Prim case.
                             if isSequential then do
-                                sequenceK (zipWith ($) args qIds) k
+                                sequenceK go varEnv funEnv qIds es k
                               else do
-                                case args of
-                                    [arg] -> arg (head qIds) (SimpleKont k) -- Just an optimization.
-                                    _ -> concurrentlyK (zipWith ($) args qIds) k
+                                case es of
+                                    [e] -> go varEnv funEnv (head qIds) e (SimpleKont k) -- Just an optimization.
+                                    _ -> concurrentlyK go varEnv funEnv qIds es k
 
                 -- forkIO $ do -- TODO
                 --     revisitor given (evaluateExp execMany match substitute primEnv)
@@ -327,7 +329,7 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                 --     Ideally, use a modified evaluateExp that can skip already answered
                 --     subquestions. Maybe we can do this just by modifying execMany.
 
-                let go = evaluateExpK' execMany (match go) substitute primEnv
+                let go = evaluateExp' (execMany go) (match go) substitute primEnv
                 go M.empty M.empty firstWorkspaceId startExp Done
         t <- fullyExpand ctxt t
         T.putStrLn (toText (messageToBuilder t))
