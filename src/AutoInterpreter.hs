@@ -23,7 +23,8 @@ import Data.Tuple ( swap ) -- base
 import System.IO ( stderr) -- base
 
 import AutoScheduler ( AutoSchedulerContext(..) )
-import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, evaluateExpK, expToBuilder, expToHaskell )
+import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), KontMatch(..), FunEnvK,
+             evaluateExpK', applyKonts, applyKontMatch, sequenceK, concurrentlyK, expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage,
                  matchPointers, expandPointers, substitute, renumberMessage' )
 import Primitive ( makePrimitives )
@@ -35,13 +36,15 @@ import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 -- expression evaluation that supports suspending a computation or implements cooperative
 -- concurrency.
 
-type MatchFn = WorkspaceId -> VarEnv Var -> Name -> [Message] -> ((WorkspaceId, VarEnv Var, Exp') -> IO Message) -> IO Message
+type MatchFn = (VarEnv Var -> FunEnvK IO WorkspaceId Primitive Name Var -> WorkspaceId -> Exp' -> Kont1 IO WorkspaceId Primitive Name Var -> IO Value)
+            -> WorkspaceId -> VarEnv Var -> Name -> [Message] -> KontMatch IO WorkspaceId Primitive Name Var -> IO Message
 
 makeMatcher :: (Bool -> WorkspaceId -> IO Event)
             -> (Value -> Maybe Primitive)
             -> (WorkspaceId -> Message -> IO())
             -> (WorkspaceId -> IO (Maybe Message))
-            -> AutoSchedulerContext extra -> IO MatchFn
+            -> AutoSchedulerContext extra
+            -> IO MatchFn
 makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
     let !ctxt = schedulerContext autoCtxt
 
@@ -89,11 +92,11 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
     -- When we receive the Submit event, we look at the unanswered questions of the current workspace for the parameters.
     -- Expand doesn't get batched, so we only have batches of questions, i.e. multi-argument function calls are always
     -- of the form `f(answer(...), prim1(...), ...)`.
-    let match s varEnv f [Reference p] k = do
+    let match go s varEnv f [Reference p] k = do
             error "Did you get here? If so, tell me how."
             m <- dereference ctxt p
-            match s varEnv f [m] k
-        match workspaceId varEnv f ms k = do
+            match go s varEnv f [m] k
+        match go workspaceId varEnv f ms k = do
             ms' <- mapM (\m -> normalize ctxt =<< generalize ctxt m) ms
 
             -- Atomically:
@@ -158,7 +161,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                             arg <- dereference ctxt p
                                             expandPointer ctxt workspaceId p
                                             giveArgument workspaceId arg
-                                            k (workspaceId, M.insert ptr arg varEnv', e) -- TODO: Think about this.
+                                            applyKontMatch go k (workspaceId, M.insert ptr arg varEnv', e) -- TODO: Think about this.
                                         LetFun _ (Call _ args) -> do -- ask cases
                                             let !localToGlobal = invertMap globalToLocal
                                             forM_ args $ \argExp -> do
@@ -166,13 +169,13 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                                 let !arg = substitute bindings m
                                                 pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt arg
                                                 createWorkspace ctxt False workspaceId (renumberMessage' localToGlobal m) pattern
-                                            k (workspaceId, varEnv', e) -- TODO: Think about this.
+                                            applyKontMatch go k (workspaceId, varEnv', e) -- TODO: Think about this.
                                         Value msg -> do -- reply case
                                             let !msg' = substitute bindings msg -- TODO: Need to do the same local-to-global renumbering as above?
                                             msg <- normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
                                             sendAnswer ctxt False workspaceId msg -- TODO: Can I clean out workspaceVariablesRef a bit now?
-                                            k (workspaceId, varEnv', e) -- TODO: Think about this.
-                                        -- _ -> k (workspaceId, varEnv', e) -- Intentionally missing this case.
+                                            applyKontMatch go k (workspaceId, varEnv', e) -- TODO: Think about this.
+                                        -- _ -> applyKontMatch go k (workspaceId, varEnv', e) -- Intentionally missing this case.
                                 Nothing -> matchPending workspace
                         [] -> matchPending workspace
             retryLoop
@@ -220,7 +223,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     (extraBindings, e) <- loop False
                     addCaseFor autoCtxt f patterns e
                     debugCode
-                    k (workspaceId, M.union extraBindings varEnv', e) -- TODO: Probably need to be more sophisticated than this.
+                    applyKontMatch go k (workspaceId, M.union extraBindings varEnv', e) -- TODO: Probably need to be more sophisticated than this.
     return match
 
 makeInterpreterScheduler :: Bool -> AutoSchedulerContext extra -> WorkspaceId -> IO SchedulerFn
@@ -304,14 +307,14 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                         -- To track outstanding continuations, we can have a table of outstanding continuations. This
                         -- can either be updated in-place, or it can be some append-only structure.
                         if null qIds then do -- Then either Var case or no arguments case, either way we can reuse the current workspaceId.
-                            case args of [] -> k []; [arg] -> arg workspaceId (k . (:[]))
+                            case args of [] -> applyKonts k []; [arg] -> arg workspaceId (SimpleKont k)
                             -- Intentionally omitting length args > 1 case which shouldn't happen.
                           else do -- we have precreated workspaces for the Call ANSWER or Prim case.
                             if isSequential then do
                                 sequenceK (zipWith ($) args qIds) k
                               else do
                                 case args of
-                                    [arg] -> arg (head qIds) (k . (:[])) -- Just an optimization.
+                                    [arg] -> arg (head qIds) (SimpleKont k) -- Just an optimization.
                                     _ -> concurrentlyK (zipWith ($) args qIds) k
 
                 -- forkIO $ do -- TODO
@@ -324,18 +327,8 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                 --     Ideally, use a modified evaluateExp that can skip already answered
                 --     subquestions. Maybe we can do this just by modifying execMany.
 
-                evaluateExpK execMany match substitute primEnv firstWorkspaceId startExp return
+                let go = evaluateExpK' execMany (match go) substitute primEnv
+                go M.empty M.empty firstWorkspaceId startExp Done
         t <- fullyExpand ctxt t
         T.putStrLn (toText (messageToBuilder t))
         end
-
-sequenceK :: [(a -> b) -> b] -> ([a] -> b) -> b
-sequenceK [] k = k []
-sequenceK (act:acts) k = act (\x -> sequenceK acts (k . (x:)))
-
-concurrentlyK :: [(a -> IO a) -> IO a] -> ([a] -> IO a) -> IO a
-concurrentlyK acts k = k =<< mapConcurrently ($ return) acts
-    -- Modulo dealing with exceptions, this is conceptually:
-    -- mvars <- mapM (\_ -> newEmptyMVar) acts  +------------------+ <-- notification continuations
-    -- zipWithM_ (\act mvar -> forkIO $         (act (putMVar mvar)) acts mvars
-    -- (k =<< mapM takeMVar mvars) <-- the join continuation
