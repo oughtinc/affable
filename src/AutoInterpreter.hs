@@ -111,14 +111,14 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                         return $ maybe fMVar id mMVar
 
                     -- Begin atomic block
-                    pendingMatches <- takeMVar pendingMatchesMVar
+                    pendingMatches <- takeMVar pendingMatchesMVar -- BLOCK
                     -- TODO: Error out if there is more than one match.
                     -- TODO: If an error happens here, pendingMatchesMVar will not be refilled and will lead to deadlock.
                     case asum $ map (\(ps, pMVar) -> pMVar <$ zipWithM matchMessage ps ms') pendingMatches of
                         Just pMVar -> do
                             putMVar pendingMatchesMVar pendingMatches
                             -- End atomic block
-                            readMVar pMVar -- block until filled
+                            readMVar pMVar -- BLOCK until filled
                             retryLoop
                         Nothing -> do
                             pMVar <- newEmptyMVar -- locked lock
@@ -235,7 +235,7 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
             responseMVar <- newEmptyMVar
             modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
             writeChan requestChan (Just workspaceId)
-            takeMVar responseMVar
+            takeMVar responseMVar -- BLOCK
         replyFromUser workspaceId evt = do
             Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
             putMVar responseMVar evt
@@ -283,11 +283,36 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
         t <- do
                 let execMany workspaceId args k = do
                         qIds <- pendingQuestions ctxt workspaceId
+                        -- TODO: XXX The use of continuations here definitely needs to be thought about.
+                        -- Seems like we should have a continuation which writes into an MVar per arg and this
+                        -- waiting on all the MVars to feed to k. Essentially, this is part of the implementation
+                        -- of mapConcurrently. (For the sequential version we can just have ContT's mapM/sequenceA.)
+                        --
+                        -- Idea: We have a join continuation for k -- it will be a different type anyway -- that has
+                        -- identifiers for a notify continuation that we'll create for each arg. (We can optimize the
+                        -- length args == 1 case.) These new notify continuations will be given an ID for the join
+                        -- continuation as well as some ID of their own. When we reach these new continuations they
+                        -- will signal the join continuation in some appropriate manner. Basically, when we "restore",
+                        -- we'll load all the "outstanding" (TODO: How do we know which continuations are "outstanding"?)
+                        -- continuations. This will be a join continuation and a bunch of other continuations that end
+                        -- in a notify continuation. When we execute a notify continuation, we see if all the other
+                        -- notify continuations are outstanding. If so, we continue with the join continuation and
+                        -- all these continuations are no longer outstanding. Otherwise, this continuation remains
+                        -- outstanding but we cease execution. Eventually all the last notify continuation will
+                        -- become outstanding.
+                        --
+                        -- To track outstanding continuations, we can have a table of outstanding continuations. This
+                        -- can either be updated in-place, or it can be some append-only structure.
                         if null qIds then do -- Then either Var case or no arguments case, either way we can reuse the current workspaceId.
-                            k =<< mapM (\arg -> arg workspaceId return) args -- TODO: Think about this.
+                            case args of [] -> k []; [arg] -> arg workspaceId (k . (:[]))
+                            -- Intentionally omitting length args > 1 case which shouldn't happen.
                           else do -- we have precreated workspaces for the Call ANSWER or Prim case.
-                            k =<< (if isSequential then sequenceA else mapConcurrently id)
-                                    (zipWith (\arg qId -> arg qId return) args qIds) -- TODO: Think about his.
+                            if isSequential then do
+                                sequenceK (zipWith ($) args qIds) k
+                              else do
+                                case args of
+                                    [arg] -> arg (head qIds) (k . (:[])) -- Just an optimization.
+                                    _ -> concurrentlyK (zipWith ($) args qIds) k
 
                 -- forkIO $ do -- TODO
                 --     revisitor given (evaluateExp execMany match substitute primEnv)
@@ -303,3 +328,14 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
         t <- fullyExpand ctxt t
         T.putStrLn (toText (messageToBuilder t))
         end
+
+sequenceK :: [(a -> b) -> b] -> ([a] -> b) -> b
+sequenceK [] k = k []
+sequenceK (act:acts) k = act (\x -> sequenceK acts (k . (x:)))
+
+concurrentlyK :: [(a -> IO a) -> IO a] -> ([a] -> IO a) -> IO a
+concurrentlyK acts k = k =<< mapConcurrently ($ return) acts
+    -- Modulo dealing with exceptions, this is conceptually:
+    -- mvars <- mapM (\_ -> newEmptyMVar) acts  +------------------+ <-- notification continuations
+    -- zipWithM_ (\act mvar -> forkIO $         (act (putMVar mvar)) acts mvars
+    -- (k =<< mapM takeMVar mvars) <-- the join continuation
