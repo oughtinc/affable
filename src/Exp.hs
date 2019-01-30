@@ -3,7 +3,7 @@
 module Exp ( Value, Pattern, Exp(..), Exp', Primitive, Var, Name(..), VarEnv, VarMapping, FunEnv, PrimEnv,
              nameToBuilder, expToBuilder', expToBuilder, expToBuilderDB, expFromDB, expToHaskell,
              evaluateExp, evaluateExp', sequenceK, concurrentlyK,
-             GoFn, MatchFn, Kont1(..), Konts(..), KontMatch(..), applyKont1, applyKonts, applyKontMatch ) where
+             GoFn, MatchFn, Kont1(..), Konts(..), applyKont1, applyKonts ) where
 import Data.Functor ( (<$) ) -- base
 import Data.List ( intersperse ) -- base
 import qualified Data.Map as M -- containers
@@ -38,12 +38,12 @@ type FunEnv f v = M.Map f (VarEnv v) -- NOTE: Could possibly reduce this to a Va
 type PrimEnv s m p = M.Map p (s -> Value -> m Value)
 
 type GoFn m s p f v = VarEnv v -> FunEnv f v -> s -> Exp p f v -> Kont1 s p f v -> m Value
-type MatchFn m s p f v = s -> VarEnv v -> f -> [Value] -> KontMatch s p f v -> m Value
+type MatchFn m s p f v = s -> VarEnv v -> FunEnv f v -> f -> [Value] -> Kont1 s p f v -> m Value
 
 data Kont1 s p f v
     = Done
     | PrimKont p s (Kont1 s p f v)
-    | ArgKont [s] [Exp p f v] (Konts s p f v)
+    | ArgKont [s] [Exp p f v] (Konts s p f v) -- Only for sequential.
     | SimpleKont (Konts s p f v)
 --     | NotifyKont (MVar Value) (Konts s p f v)
 
@@ -66,17 +66,15 @@ applyKont1 go match varEnv funEnv primEnv (SimpleKont k) v = applyKonts match k 
 
 data Konts s p f v
     = CallKont (FunEnv f v) f s (Kont1 s p f v)
-    | PendKont Value (Konts s p f v)
+    | PendKont Value (Konts s p f v) -- Only for sequential.
 --    | JoinKont (Konts s p f v) -- TODO
 
 applyKonts :: (Monad m, Ord f) => MatchFn m s p f v -> Konts s p f v -> [Value] -> m Value
-applyKonts match (CallKont funEnv f s k) vs = match s (case M.lookup f funEnv of Just varEnv -> varEnv) f vs (MatchKont funEnv k)
+applyKonts match (CallKont funEnv f s k) vs = match s (case M.lookup f funEnv of Just varEnv -> varEnv) funEnv f vs k
 applyKonts match (PendKont v k) vs = applyKonts match k (v:vs)
 
-data KontMatch s p f v = MatchKont (FunEnv f v) (Kont1 s p f v)
-
-applyKontMatch :: (Monad m) => GoFn m s p f v -> KontMatch s p f v -> s -> VarEnv v -> Exp p f v -> m Value
-applyKontMatch go (MatchKont funEnv' k') s' varEnv' e = go varEnv' funEnv' s' e k'
+-- TODO: Can probably eliminate this by passing the FunEnv and Kont1 directly to match.
+-- Only save continuations when we blockOnUser? Index Konts table by WorkspaceId and Name?
 
 sequenceK :: (Monad m, Ord f) => GoFn m s p f v -> MatchFn m s p f v -> VarEnv v -> FunEnv f v -> [s] -> [Exp p f v] -> Konts s p f v -> m Value
 sequenceK go match varEnv funEnv [] [] k = applyKonts match k []

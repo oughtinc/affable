@@ -23,8 +23,8 @@ import Data.Tuple ( swap ) -- base
 import System.IO ( stderr) -- base
 
 import AutoScheduler ( AutoSchedulerContext(..) )
-import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), KontMatch(..), GoFn, MatchFn,
-             evaluateExp', applyKonts, applyKontMatch, sequenceK, concurrentlyK, expToBuilder, expToHaskell )
+import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), GoFn, MatchFn,
+             evaluateExp', applyKonts, sequenceK, concurrentlyK, expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage,
                  matchPointers, expandPointers, substitute, renumberMessage' )
 import Primitive ( makePrimitives )
@@ -89,11 +89,11 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
     -- When we receive the Submit event, we look at the unanswered questions of the current workspace for the parameters.
     -- Expand doesn't get batched, so we only have batches of questions, i.e. multi-argument function calls are always
     -- of the form `f(answer(...), prim1(...), ...)`.
-    let match go s varEnv f [Reference p] k = do
+    let match go s varEnv funEnv f [Reference p] k = do
             error "Did you get here? If so, tell me how."
             m <- dereference ctxt p
-            match go s varEnv f [m] k
-        match go workspaceId varEnv f ms k = do
+            match go s varEnv funEnv f [m] k
+        match go workspaceId varEnv funEnv f ms k = do
             ms' <- mapM (\m -> normalize ctxt =<< generalize ctxt m) ms
 
             -- Atomically:
@@ -158,7 +158,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                             arg <- dereference ctxt p
                                             expandPointer ctxt workspaceId p
                                             giveArgument workspaceId arg
-                                            applyKontMatch go k workspaceId (M.insert ptr arg varEnv') e -- TODO: Think about this.
+                                            go (M.insert ptr arg varEnv') funEnv workspaceId e k -- TODO: Think about this.
                                         LetFun _ (Call _ args) -> do -- ask cases
                                             let !localToGlobal = invertMap globalToLocal
                                             forM_ args $ \argExp -> do
@@ -166,13 +166,13 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                                 let !arg = substitute bindings m
                                                 pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt arg
                                                 createWorkspace ctxt False workspaceId (renumberMessage' localToGlobal m) pattern
-                                            applyKontMatch go k workspaceId varEnv' e -- TODO: Think about this.
+                                            go varEnv' funEnv workspaceId e k -- TODO: Think about this.
                                         Value msg -> do -- reply case
                                             let !msg' = substitute bindings msg -- TODO: Need to do the same local-to-global renumbering as above?
                                             msg <- normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
                                             sendAnswer ctxt False workspaceId msg -- TODO: Can I clean out workspaceVariablesRef a bit now?
-                                            applyKontMatch go k workspaceId varEnv' e -- TODO: Think about this.
-                                        -- _ -> applyKontMatch go k workspaceId varEnv' e -- Intentionally missing this case.
+                                            go varEnv' funEnv workspaceId e k -- TODO: Think about this.
+                                        -- _ -> go varEnv' funEnv workspaceId e k -- Intentionally missing this case.
                                 Nothing -> matchPending workspace
                         [] -> matchPending workspace
             retryLoop
@@ -220,7 +220,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     (extraBindings, e) <- loop False
                     addCaseFor autoCtxt f patterns e
                     debugCode
-                    applyKontMatch go k workspaceId (M.union extraBindings varEnv') e -- TODO: Probably need to be more sophisticated than this.
+                    go (M.union extraBindings varEnv') funEnv workspaceId e k -- TODO: Probably need to be more sophisticated than this.
     return match
 
 makeInterpreterScheduler :: Bool -> AutoSchedulerContext extra -> WorkspaceId -> IO SchedulerFn
