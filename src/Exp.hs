@@ -3,7 +3,7 @@
 module Exp ( Value, Pattern, Exp(..), Exp', Primitive, Var, Name(..), VarEnv, VarMapping, FunEnv, PrimEnv,
              nameToBuilder, expToBuilder', expToBuilder, expToBuilderDB, expFromDB, expToHaskell,
              evaluateExp, evaluateExp', sequenceK, concurrentlyK,
-             GoFn, FunEnvK, Kont1(..), Konts(..), KontMatch(..), applyKont1, applyKonts, applyKontMatch ) where
+             GoFn, MatchFn, Kont1(..), Konts(..), KontMatch(..), applyKont1, applyKonts, applyKontMatch ) where
 import Data.Functor ( (<$) ) -- base
 import Data.List ( intersperse ) -- base
 import qualified Data.Map as M -- containers
@@ -34,93 +34,97 @@ data Exp p f v
 
 type VarEnv v = M.Map v Value
 type VarMapping v = M.Map v v
-type FunEnv s m f = M.Map f (s -> [Value] -> m Value)
+type FunEnv f v = M.Map f (VarEnv v)
 type PrimEnv s m p = M.Map p (s -> Value -> m Value)
 
-type FunEnvK m s p f v = M.Map f (s -> [Value] -> Kont1 m s p f v -> m Value)
+type GoFn m s p f v = VarEnv v -> FunEnv f v -> s -> Exp p f v -> Kont1 s p f v -> m Value
+type MatchFn m s p f v = s -> VarEnv v -> f -> [Value] -> KontMatch s p f v -> m Value
 
-data Kont1 m s p f v
+data Kont1 s p f v
     = Done
-    | PrimKont p s (Kont1 m s p f v)
-    | ArgKont [s] [Exp p f v] (Konts m s p f v)
-    | SimpleKont (Konts m s p f v)
-    | NotifyKont (Konts m s p f v)
+    | PrimKont p s (Kont1 s p f v)
+    | ArgKont [s] [Exp p f v] (Konts s p f v)
+    | SimpleKont (Konts s p f v)
+--     | NotifyKont (MVar Value) (Konts s p f v)
 
-applyKont1 :: (Monad m, Ord p, Ord f) => GoFn m s p f v -> VarEnv v -> FunEnvK m s p f v -> PrimEnv s m p -> Kont1 m s p f v -> Value -> m Value
-applyKont1 go varEnv funEnv primEnv Done v = return v
-applyKont1 go varEnv funEnv primEnv (PrimKont p s k) v = do
+applyKont1 :: (Monad m, Ord p, Ord f)
+           => GoFn m s p f v
+           -> MatchFn m s p f v
+           -> VarEnv v
+           -> FunEnv f v
+           -> PrimEnv s m p
+           -> Kont1 s p f v
+           -> Value
+           -> m Value
+applyKont1 go match varEnv funEnv primEnv Done v = return v
+applyKont1 go match varEnv funEnv primEnv (PrimKont p s k) v = do
     result <- (case M.lookup p primEnv of Just p' -> p') s v
-    applyKont1 go varEnv funEnv primEnv k result
-applyKont1 go varEnv funEnv primEnv (ArgKont ss es k) v = sequenceK go varEnv funEnv ss es (PendKont v k)
-applyKont1 go varEnv funEnv primEnv (SimpleKont k) v = applyKonts k [v]
-applyKont1 go varEnv funEnv primEnv (NotifyKont k) v = undefined -- TODO
+    applyKont1 go match varEnv funEnv primEnv k result
+applyKont1 go match varEnv funEnv primEnv (ArgKont ss es k) v = sequenceK go match varEnv funEnv ss es (PendKont v k)
+applyKont1 go match varEnv funEnv primEnv (SimpleKont k) v = applyKonts match k [v]
+-- applyKont1 go match varEnv funEnv primEnv (NotifyKont mvar k) v = do putMVar v; applyKont1 go match varEnv funEnv primEnv k v
 
-data Konts m s p f v
-    = CallKont (FunEnvK m s p f v) {- <-- TODO -} f s (Kont1 m s p f v)
-    | PendKont Value (Konts m s p f v)
-    | JoinKont (Konts m s p f v) -- TODO
+data Konts s p f v
+    = CallKont (FunEnv f v) f s (Kont1 s p f v)
+    | PendKont Value (Konts s p f v)
+    | JoinKont (Konts s p f v) -- TODO
 
-applyKonts :: (Monad m, Ord f) => Konts m s p f v -> [Value] -> m Value
-applyKonts (CallKont funEnv f s k) vs = (case M.lookup f funEnv of Just f' -> f') s vs k
-applyKonts (PendKont v k) vs = applyKonts k (v:vs)
+applyKonts :: (Monad m, Ord f) => MatchFn m s p f v -> Konts s p f v -> [Value] -> m Value
+applyKonts match (CallKont funEnv f s k) vs = match s (case M.lookup f funEnv of Just varEnv -> varEnv) f vs (KontMatch funEnv k)
+applyKonts match (PendKont v k) vs = applyKonts match k (v:vs)
 
-data KontMatch m s p f v = KontMatch (FunEnvK m s p f v) {- <-- TODO -} (Kont1 m s p f v)
+data KontMatch s p f v = KontMatch (FunEnv f v) (Kont1 s p f v)
 
-applyKontMatch :: (Monad m)
-               => GoFn m s p f v
-               -> KontMatch m s p f v
-               -> (s, VarEnv v, Exp p f v)
-               -> m Value
-applyKontMatch go (KontMatch funEnv' k') (s', varEnv', e) = go varEnv' funEnv' s' e k'
+applyKontMatch :: (Monad m) => GoFn m s p f v -> KontMatch s p f v -> s -> VarEnv v -> Exp p f v -> m Value
+applyKontMatch go (KontMatch funEnv' k') s' varEnv' e = go varEnv' funEnv' s' e k'
 
-sequenceK :: (Monad m, Ord f) => GoFn m s p f v -> VarEnv v -> FunEnvK m s p f v -> [s] -> [Exp p f v] -> Konts m s p f v -> m Value
-sequenceK go varEnv funEnv [] [] k = applyKonts k []
-sequenceK go varEnv funEnv (s:ss) (e:es) k = go varEnv funEnv s e (ArgKont ss es k)
+sequenceK :: (Monad m, Ord f) => GoFn m s p f v -> MatchFn m s p f v -> VarEnv v -> FunEnv f v -> [s] -> [Exp p f v] -> Konts s p f v -> m Value
+sequenceK go match varEnv funEnv [] [] k = applyKonts match k []
+sequenceK go match varEnv funEnv (s:ss) (e:es) k = go varEnv funEnv s e (ArgKont ss es k)
 -- Intentionally incomplete.
 
-concurrentlyK :: (Monad m) => GoFn m s p f v -> VarEnv v -> FunEnvK m s p f v -> [s] -> [Exp p f v] -> Konts m s p f v -> m Value
-concurrentlyK go varEnv funEnv ss es k = undefined -- TODO
+concurrentlyK :: (Monad m) => GoFn m s p f v -> MatchFn m s p f v -> VarEnv v -> FunEnv f v -> [s] -> [Exp p f v] -> Konts s p f v -> m Value
+concurrentlyK go match varEnv funEnv ss es k = undefined -- do -- TODO
+--     mvars <- mapM (\_ -> newEmptyMVar) ss
+--     zipWithM_ (\(s, e) mvar -> forkIO (go varEnv funEnv s e (NotifyKont mvar Done))) (zip ss es) mvars
+--     applyKonts k =<< mapM takeMVar mvars
+
 -- concurrentlyK acts k = applyKonts k =<< mapConcurrently ($ return) acts
 -- Modulo dealing with exceptions, this is conceptually:
 -- mvars <- mapM (\_ -> newEmptyMVar) acts  +------------------+ <-- notification continuations
--- zipWithM_ (\act mvar -> forkIO $         (act (putMVar mvar)) acts mvars
+-- zipWithM_ (\act mvar -> forkIO $         (act (putMVar mvar))) acts mvars
 -- (k =<< mapM takeMVar mvars) <-- the join continuation
 
-type GoFn m s p f v = VarEnv v -> FunEnvK m s p f v -> s -> Exp p f v -> Kont1 m s p f v -> m Value
-
-type ExecManyFn m s p f v = VarEnv v -> FunEnvK m s p f v -> s -> [Exp p f v] -> Konts m s p f v -> m Value
+type ExecManyFn m s p f v = VarEnv v -> FunEnv f v -> s -> [Exp p f v] -> Konts s p f v -> m Value
 
 evaluateExp :: (Ord p, Ord f, Ord v, Monad m)
             => ExecManyFn m s p f v
-            -> (s -> VarEnv v -> f -> [Value] -> KontMatch m s p f v -> m Value)
+            -> MatchFn m s p f v
             -> (VarEnv v -> Value -> Value)
             -> PrimEnv s m p
             -> s
             -> Exp p f v
-            -> Kont1 m s p f v
+            -> Kont1 s p f v
             -> m Value
 evaluateExp execMany match subst primEnv = evaluateExp' execMany match subst primEnv M.empty M.empty
 
 evaluateExp' :: (Ord p, Ord f, Ord v, Monad m)
              => ExecManyFn m s p f v
-             -> (s -> VarEnv v -> f -> [Value] -> KontMatch m s p f v -> m Value)
+             -> MatchFn m s p f v
              -> (VarEnv v -> Value -> Value)
              -> PrimEnv s m p
              -> VarEnv v
-             -> FunEnvK m s p f v
+             -> FunEnv f v
              -> s
              -> Exp p f v
-             -> Kont1 m s p f v
+             -> Kont1 s p f v
              -> m Value
 evaluateExp' execMany match subst primEnv = go
-    where go varEnv funEnv s (Var x) k = applyKont1 go varEnv funEnv primEnv k $! case M.lookup x varEnv of Just v -> v
-          go varEnv funEnv s (Value v) k = applyKont1 go varEnv funEnv primEnv k $ subst varEnv v
+    where go varEnv funEnv s (Var x) k = applyKont1 go match varEnv funEnv primEnv k $! case M.lookup x varEnv of Just v -> v
+          go varEnv funEnv s (Value v) k = applyKont1 go match varEnv funEnv primEnv k $ subst varEnv v
           go varEnv funEnv s (Prim p e) k = go varEnv funEnv s e (PrimKont p s k)
           go varEnv funEnv s (Call f es) k = execMany varEnv funEnv s es (CallKont funEnv f s k)
-          go varEnv funEnv s (LetFun f body) k = do
-            let fEvaled s vs k' = match s varEnv f vs (KontMatch funEnv' k')
-                funEnv' = M.insert f fEvaled funEnv
-            go varEnv funEnv' s body k
+          go varEnv funEnv s (LetFun f body) k = go varEnv (M.insert f varEnv funEnv) s body k
 
 type Var = Pointer
 type Pattern = Message
