@@ -34,7 +34,7 @@ data Exp p f v
 
 type VarEnv v = M.Map v Value
 type VarMapping v = M.Map v v
-type FunEnv f v = M.Map f (VarEnv v)
+type FunEnv f v = M.Map f (VarEnv v) -- NOTE: Could possibly reduce this to a Var-to-Var mapping if all Values are labeled.
 type PrimEnv s m p = M.Map p (s -> Value -> m Value)
 
 type GoFn m s p f v = VarEnv v -> FunEnv f v -> s -> Exp p f v -> Kont1 s p f v -> m Value
@@ -67,16 +67,16 @@ applyKont1 go match varEnv funEnv primEnv (SimpleKont k) v = applyKonts match k 
 data Konts s p f v
     = CallKont (FunEnv f v) f s (Kont1 s p f v)
     | PendKont Value (Konts s p f v)
-    | JoinKont (Konts s p f v) -- TODO
+--    | JoinKont (Konts s p f v) -- TODO
 
 applyKonts :: (Monad m, Ord f) => MatchFn m s p f v -> Konts s p f v -> [Value] -> m Value
-applyKonts match (CallKont funEnv f s k) vs = match s (case M.lookup f funEnv of Just varEnv -> varEnv) f vs (KontMatch funEnv k)
+applyKonts match (CallKont funEnv f s k) vs = match s (case M.lookup f funEnv of Just varEnv -> varEnv) f vs (MatchKont funEnv k)
 applyKonts match (PendKont v k) vs = applyKonts match k (v:vs)
 
-data KontMatch s p f v = KontMatch (FunEnv f v) (Kont1 s p f v)
+data KontMatch s p f v = MatchKont (FunEnv f v) (Kont1 s p f v)
 
 applyKontMatch :: (Monad m) => GoFn m s p f v -> KontMatch s p f v -> s -> VarEnv v -> Exp p f v -> m Value
-applyKontMatch go (KontMatch funEnv' k') s' varEnv' e = go varEnv' funEnv' s' e k'
+applyKontMatch go (MatchKont funEnv' k') s' varEnv' e = go varEnv' funEnv' s' e k'
 
 sequenceK :: (Monad m, Ord f) => GoFn m s p f v -> MatchFn m s p f v -> VarEnv v -> FunEnv f v -> [s] -> [Exp p f v] -> Konts s p f v -> m Value
 sequenceK go match varEnv funEnv [] [] k = applyKonts match k []
