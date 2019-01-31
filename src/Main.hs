@@ -177,7 +177,7 @@ initSqlite conn = do
        \    PRIMARY KEY ( workspaceId ASC, function ASC )\n\
        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS ContinuationsEnvironment (\n\
+       \CREATE TABLE IF NOT EXISTS ContinuationEnvironments (\n\
        \    workspaceId INTEGER NOT NULL,\n\
        \    function INTEGER NOT NULL,\n\
        \    variable INTEGER NOT NULL,\n\

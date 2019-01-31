@@ -4,7 +4,7 @@ module AutoScheduler ( AutoSchedulerContext(..) ) where
 import qualified Data.Map as M -- containers
 
 import Scheduler ( SchedulerContext )
-import Exp ( Pattern, Name, Exp', Konts' )
+import Exp ( Pattern, Name, Exp', Konts', KontsId' )
 
 data AutoSchedulerContext extra = AutoSchedulerContext {
     alternativesFor :: Name -> IO [([Pattern], Exp')],
@@ -12,5 +12,6 @@ data AutoSchedulerContext extra = AutoSchedulerContext {
     addCaseFor :: Name -> [Pattern] -> Exp' -> IO (),
     newFunction :: IO Name,
     saveContinuation :: Konts' -> IO (),
+    loadContinuation :: KontsId' -> IO Konts',
     schedulerContext :: SchedulerContext extra
   }

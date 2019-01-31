@@ -2,8 +2,8 @@
 {-# LANGUAGE BangPatterns #-}
 module Exp ( Value, Pattern, Exp(..), Exp', Primitive, Var, Name(..), VarEnv, VarMapping, FunEnv, PrimEnv,
              nameToBuilder, expToBuilder', expToBuilder, expToBuilderDB, expFromDB, expToHaskell,
-             evaluateExp, evaluateExp', sequenceK, concurrentlyK, kont1ToBuilderDB,
-             GoFn, MatchFn, Kont1(..), Kont1', Konts(..), Konts', applyKont1, applyKonts ) where
+             evaluateExp, evaluateExp', kont1ToBuilderDB, parseKont1UnsafeDB,
+             GoFn, MatchFn, Kont1(..), Kont1', Konts(..), Konts', KontsId', applyKont1, applyKonts ) where
 import Data.Functor ( (<$) ) -- base
 import Data.List ( intersperse ) -- base
 import qualified Data.Map as M -- containers
@@ -41,77 +41,63 @@ type PrimEnv s m p = M.Map p (s -> Value -> m Value)
 type GoFn m s p f v = VarEnv v -> FunEnv f v -> s -> Exp p f v -> Kont1 s p f v -> m Value
 type MatchFn m s p f v = s -> VarEnv v -> FunEnv f v -> f -> [Value] -> Kont1 s p f v -> m Value
 
+type KontsId s f = (s, f)
+
 data Kont1 s p f v
     = Done
     | PrimKont p s (Kont1 s p f v)
-    | ArgKont [s] [Exp p f v] (Konts s p f v) -- Only for sequential.
-    | SimpleKont (Konts s p f v) -- Essentially, SimpleKont k = ArgKont [] [] k
---     | NotifyKont (MVar Value) (Konts s p f v)
+    | SimpleKont (KontsId s f)
+    | NotifyKont (KontsId s f)
+  deriving ( Show )
 
--- TODO: XXX Eliminate sequential stuff (i.e. ArgKont, PendKont, sequenceK). Have sequential or concurrent
--- be a matter of using threads versus sequentially pulling continuations from a queue.
+-- TODO: Have sequential or concurrent be a matter of using threads versus sequentially pulling continuations from a queue.
 data Konts s p f v
     = CallKont (FunEnv f v) f s (Kont1 s p f v)
-    | PendKont Value (Konts s p f v) -- Only for sequential.
 --    | JoinKont (Konts s p f v) -- TODO
+  deriving ( Show )
 
 applyKont1 :: (Monad m, Ord p, Ord f)
            => GoFn m s p f v
            -> MatchFn m s p f v
+           -> (KontsId s f -> m (Konts s p f v))
            -> VarEnv v
            -> FunEnv f v
            -> PrimEnv s m p
            -> Kont1 s p f v
            -> Value
            -> m Value
-applyKont1 go match varEnv funEnv primEnv Done v = return v
-applyKont1 go match varEnv funEnv primEnv (PrimKont p s k) v = do
+applyKont1 go match lookupKont varEnv funEnv primEnv Done v = return v
+applyKont1 go match lookupKont varEnv funEnv primEnv (PrimKont p s k) v = do
     result <- (case M.lookup p primEnv of Just p' -> p') s v
-    applyKont1 go match varEnv funEnv primEnv k result
-applyKont1 go match varEnv funEnv primEnv (ArgKont ss es k) v = sequenceK go match varEnv funEnv ss es (PendKont v k)
-applyKont1 go match varEnv funEnv primEnv (SimpleKont k) v = applyKonts match k [v]
--- applyKont1 go match varEnv funEnv primEnv (NotifyKont mvar k) v = do putMVar v; applyKont1 go match varEnv funEnv primEnv k v
+    applyKont1 go match lookupKont varEnv funEnv primEnv k result
+applyKont1 go match lookupKont varEnv funEnv primEnv (SimpleKont kId) v = do
+    k <- lookupKont kId
+    applyKonts match k [v]
+applyKont1 go match lookupKont varEnv funEnv primEnv (NotifyKont k) v = do
+    -- notifyKont kId v -- TODO XXX
+    return v
 
 applyKonts :: (Monad m, Ord f) => MatchFn m s p f v -> Konts s p f v -> [Value] -> m Value
-applyKonts match (CallKont funEnv f s k) vs = match s (case M.lookup f funEnv of Just varEnv -> varEnv) funEnv f vs k
-applyKonts match (PendKont v k) vs = applyKonts match k (v:vs)
-
--- TODO: XXX Can probably eliminate this by passing the FunEnv and Kont1 directly to match.
--- Only save continuations when we blockOnUser? Index Konts table by WorkspaceId and Name?
-
-sequenceK :: (Monad m, Ord f) => GoFn m s p f v -> MatchFn m s p f v -> VarEnv v -> FunEnv f v -> [s] -> [Exp p f v] -> Konts s p f v -> m Value
-sequenceK go match varEnv funEnv [] [] k = applyKonts match k []
-sequenceK go match varEnv funEnv (s:ss) (e:es) k = go varEnv funEnv s e (ArgKont ss es k)
--- Intentionally incomplete.
-
-concurrentlyK :: (Monad m) => GoFn m s p f v -> MatchFn m s p f v -> VarEnv v -> FunEnv f v -> [s] -> [Exp p f v] -> Konts s p f v -> m Value
-concurrentlyK go match varEnv funEnv ss es k = undefined -- do -- TODO
---     mvars <- mapM (\_ -> newEmptyMVar) ss
---     zipWithM_ (\(s, e) mvar -> forkIO (go varEnv funEnv s e (NotifyKont mvar Done))) (zip ss es) mvars
---     applyKonts k =<< mapM takeMVar mvars
-
--- concurrentlyK acts k = applyKonts k =<< mapConcurrently ($ return) acts
--- Modulo dealing with exceptions, this is conceptually:
--- mvars <- mapM (\_ -> newEmptyMVar) acts  +------------------+ <-- notification continuations
--- zipWithM_ (\act mvar -> forkIO $         (act (putMVar mvar))) acts mvars
--- (k =<< mapM takeMVar mvars) <-- the join continuation
+applyKonts match (CallKont funEnv f s k) vs = match s (maybe M.empty id $ M.lookup f funEnv) funEnv f vs k
 
 type ExecManyFn m s p f v = VarEnv v -> FunEnv f v -> s -> [Exp p f v] -> Konts s p f v -> m Value
 
 evaluateExp :: (Ord p, Ord f, Ord v, Monad m)
             => ExecManyFn m s p f v
             -> MatchFn m s p f v
+            -> (KontsId s f -> m (Konts s p f v))
             -> (VarEnv v -> Value -> Value)
             -> PrimEnv s m p
             -> s
             -> Exp p f v
             -> Kont1 s p f v
             -> m Value
-evaluateExp execMany match subst primEnv = evaluateExp' execMany match subst primEnv M.empty M.empty
+evaluateExp execMany match lookupKont subst primEnv = evaluateExp' execMany match lookupKont subst primEnv M.empty M.empty
 
 evaluateExp' :: (Ord p, Ord f, Ord v, Monad m)
              => ExecManyFn m s p f v
              -> MatchFn m s p f v
+             -> (KontsId s f -> m (Konts s p f v))
              -> (VarEnv v -> Value -> Value)
              -> PrimEnv s m p
              -> VarEnv v
@@ -120,9 +106,9 @@ evaluateExp' :: (Ord p, Ord f, Ord v, Monad m)
              -> Exp p f v
              -> Kont1 s p f v
              -> m Value
-evaluateExp' execMany match subst primEnv = go
-    where go varEnv funEnv s (Var x) k = applyKont1 go match varEnv funEnv primEnv k $! case M.lookup x varEnv of Just v -> v
-          go varEnv funEnv s (Value v) k = applyKont1 go match varEnv funEnv primEnv k $ subst varEnv v
+evaluateExp' execMany match lookupKont subst primEnv = go
+    where go varEnv funEnv s (Var x) k = applyKont1 go match lookupKont varEnv funEnv primEnv k $! case M.lookup x varEnv of Just v -> v
+          go varEnv funEnv s (Value v) k = applyKont1 go match lookupKont varEnv funEnv primEnv k $ subst varEnv v
           go varEnv funEnv s (Prim p e) k = go varEnv funEnv s e (PrimKont p s k)
           go varEnv funEnv s (Call f es) k = execMany varEnv funEnv s es (CallKont funEnv f s k)
           go varEnv funEnv s (LetFun f body) k = go varEnv (M.insert f varEnv funEnv) s body k
@@ -135,6 +121,7 @@ data Name = ANSWER | LOCAL !Int deriving ( Eq, Ord, Show )
 
 type Exp' = Exp Primitive Name Var
 type Kont1' = Kont1 WorkspaceId Primitive Name Var
+type KontsId' = KontsId WorkspaceId Name
 type Konts' = Konts WorkspaceId Primitive Name Var
 
 intersperseChar :: Char -> (a -> Builder) -> [a] -> Builder
@@ -195,66 +182,35 @@ expToHaskell alternativesFor = go 0
                   !alts = alternativesFor f
                   f' ps = indentBuilder <> fromText "  " <> nameToBuilder f <> singleton '(' <> intersperseChar ',' messageToPattern ps <> singleton ')'
 
--- TODO: XXX Can fix fBuilder as nameToBuilder as I expect to have f = Name and s = WorkspaceId for keying in the database.
+-- TODO: Can fix fBuilder as nameToBuilder as I expect to have f = Name and s = WorkspaceId for keying in the database.
 -- NOTE: All this isn't quite as bad as it looks, at least in the concurrent case. If CallKont gets represented by an
--- key for a database table, then Kont1 values will tend to be fairly small. Also ArgKont isn't necessary in the concurrent case.
+-- key for a database table, then Kont1 values will tend to be fairly small.
 --
 -- The overall idea is that I'll have a database table of Konts keyed by WorkspaceId and Name that holds the contents of
--- CallKonts or maybe JoinKonts. (PendKont isn't needed in the concurrent case). Konts occurring in Kont1 values (which will
+-- CallKonts or maybe JoinKonts. Konts occurring in Kont1 values (which will
 -- only be Done, PrimKont, SimpleKont[maybe?], and NotifyKont in the concurrent case), will be represented as WorkspaceId-Name pairs.
 -- The actual representation of Kont1 values that are actually used will then be fairly small.
-kont1ToBuilderDB' :: (p -> Builder) -> (f -> Builder) -> (v -> Builder) -> (f -> [([Pattern], Exp p f v)]) -> Kont1 WorkspaceId p f v -> Builder
-kont1ToBuilderDB' pBuilder fBuilder vBuilder alternativesFor = go
+kont1ToBuilderDB' :: (p -> Builder) -> (f -> Builder) -> Kont1 WorkspaceId p f v -> Builder
+kont1ToBuilderDB' pBuilder fBuilder = go
     where go Done = fromText "Done"
           go (PrimKont p s k) = fromText "(PrimKont " <> pBuilder p <> singleton ' ' <> T.decimal s <> singleton ' ' <> go k <> singleton ')'
-          go (ArgKont ss es k) = fromText "(ArgKont ("
-                              <> intersperseChar ' '  T.decimal ss <> fromText ") ("
-                              <> intersperseChar ' ' (expToBuilder' pBuilder fBuilder vBuilder alternativesFor) es <> fromText ") "
-                              <> kontsToBuilderDB pBuilder fBuilder vBuilder alternativesFor k <> singleton ')'
-          go (SimpleKont k) = fromText "(SimpleKont " <> kontsToBuilderDB pBuilder fBuilder vBuilder alternativesFor k <> singleton ')'
-          -- go (NotifyKont mvar k) =
+          go (SimpleKont kId) = fromText "(SimpleKont " <> kontsIdToBuilderDB fBuilder kId <> singleton ')'
+          go (NotifyKont kId) = fromText "(NotifyKont " <> kontsIdToBuilderDB fBuilder kId <> singleton ')'
 
 kont1ToBuilderDB :: Kont1' -> Builder
-kont1ToBuilderDB = kont1ToBuilderDB' T.decimal nameToBuilder T.decimal (const []) -- TODO: Should eliminate alternativesFor eventually.
+kont1ToBuilderDB = kont1ToBuilderDB' T.decimal nameToBuilder
 
-{-
 kont1ParserDB :: Parsec Void T.Text Kont1'
 kont1ParserDB = (Done <$ string "Done")
             <|> (PrimKont <$> (string "(PrimKont" *> decimal) <*> (char ' ' *> decimal) <*> (char ' ' *> kont1ParserDB) <* char ')')
-            <|> (ArgKont <$> (string "(ArgKont (" *> sepBy decimal (char ' '))
-                         <*> (string ") (" *> sepBy expParserDB (char ' '))
-                         <*> (string ") " *> kontsParserDB <* char ')'))
-            <|> (SimpleKont <$> (string "(SimpleKont " *> kontsParserDB <* char ')'))
-            -- <|> (NotifyKont <$> (string "(NotifyKont " *> nameParser <* char ' ') <*> (kontsParserDB <* char ')'))
+            <|> (SimpleKont <$> (string "(SimpleKont " *> kontsIdParserDB <* char ')'))
+            <|> (NotifyKont <$> (string "(NotifyKont " *> kontsIdParserDB <* char ')'))
 
+parseKont1UnsafeDB :: T.Text -> Kont1'
+parseKont1UnsafeDB t = case parse kont1ParserDB "" t of Right k -> k
 
-kontsParserDB :: Parsec Void T.Text (Name, WorkspaceId)
-kontsParserDB = flip (,) <$> (string "(CallKont " *> nameParser) <*> (char ' ' *> decimal) <* char ')'
--}
+kontsIdParserDB :: Parsec Void T.Text KontsId'
+kontsIdParserDB = (,) <$> (char '(' *> decimal) <*> (char ',' *> nameParser) <* char ')'
 
-kontsToBuilderDB :: (p -> Builder) -> (f -> Builder) -> (v -> Builder) -> (f -> [([Pattern], Exp p f v)]) -> Konts WorkspaceId p f v -> Builder
-kontsToBuilderDB _ fBuilder _ _ = go
-    where go (CallKont funEnv f s k) = fromText "(CallKont " <> T.decimal s <> singleton ' ' <> fBuilder f <> singleton ')'
-          -- go (JoinKont k) =
-{-
--- TODO: Like below, this will probably parse the key representation instead.
-kontsParserDB :: Parsec Void T.Text Konts'
-kontsParserDB = (CallKont <$> (string "(CallKont " *> funEnvParser)
-                          <*> (char ' ' *> nameParser)
-                          <*> (char ' ' *> decimal)
-                          <*> (char ' ' *> kont1ParserDB) <* char ')')
-            <|> (PendKont <$> (string "(PendKont " *> messageParser') <*> (char ' ' *> kontsParserDB) <* char ')')
-            -- <|> (JoinKont <$> (string "(JoinKont " *> messageParser') <*> (char ' ' *> kontsParserDB) <* char ')')
-    where funEnvParser = undefined -- TODO
-
-kontsToBuilderDB :: (p -> Builder) -> (f -> Builder) -> (v -> Builder) -> (f -> [([Pattern], Exp p f v)]) -> Konts WorkspaceId p f v -> Builder
-kontsToBuilderDB pBuilder fBuilder vBuilder alternativesFor = go
-    where funEnvToBuilder _ = fromText "TODO" -- TODO
-          go (CallKont funEnv f s k) = fromText "(CallKont "                   -- TODO: Don't really want this. Maybe don't want this function as a whole.
-                                    <> funEnvToBuilder funEnv <> singleton ' ' -- I want to refer to Konts by index, i.e. WorkspaceId and Name.
-                                    <> fBuilder f <> singleton ' '
-                                    <> T.decimal s <> singleton ' '
-                                    <> kont1ToBuilderDB' pBuilder fBuilder vBuilder alternativesFor k <> singleton ')'
-          go (PendKont v k) = fromText "(PendKont " <> messageToBuilder v <> singleton ' ' <> go k <> singleton ')'
-          -- go (JoinKont k) =
--}
+kontsIdToBuilderDB :: (f -> Builder) -> KontsId WorkspaceId f -> Builder
+kontsIdToBuilderDB fBuilder (s, f) = singleton '(' <> T.decimal s <> singleton ',' <> fBuilder f <> singleton ')'

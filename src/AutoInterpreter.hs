@@ -23,8 +23,8 @@ import Data.Tuple ( swap ) -- base
 import System.IO ( stderr) -- base
 
 import AutoScheduler ( AutoSchedulerContext(..) )
-import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), GoFn, MatchFn,
-             evaluateExp', applyKonts, sequenceK, concurrentlyK, expToBuilder, expToHaskell )
+import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), GoFn, MatchFn, Konts(..), FunEnv, Konts',
+             evaluateExp', applyKonts, expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage,
                  matchPointers, expandPointers, substitute, renumberMessage' )
 import Primitive ( makePrimitives )
@@ -261,6 +261,28 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
 
     return scheduler
 
+concurrentlyK :: GoFn IO WorkspaceId Primitive Name Var
+              -> MatchFn IO WorkspaceId Primitive Name Var
+              -- -> ([Kont1'] -> Konts' -> IO Value)
+              -> VarEnv Var
+              -> FunEnv Name Var
+              -> [WorkspaceId]
+              -> [Exp']
+              -> Konts'
+              -> IO Value
+concurrentlyK go match varEnv funEnv ss es k@(CallKont _ f workspaceId _) = do
+    let kId = (workspaceId, f)
+    -- TODO: This is all wrong, but for now, we'll give it a go.
+    mvars <- mapM (\_ -> newEmptyMVar) ss
+    zipWithM_ (\(s, e) mvar -> forkIO (putMVar mvar =<< go varEnv funEnv s e (NotifyKont kId))) (zip ss es) mvars
+    applyKonts match k =<< mapM takeMVar mvars
+
+-- concurrentlyK acts k = applyKonts k =<< mapConcurrently ($ return) acts
+-- Modulo dealing with exceptions, this is conceptually:
+-- mvars <- mapM (\_ -> newEmptyMVar) acts  +------------------+ <-- notification continuations
+-- zipWithM_ (\act mvar -> forkIO $         (act (putMVar mvar))) acts mvars
+-- (k =<< mapM takeMVar mvars) <-- the join continuation
+
 spawnInterpreter :: (Bool -> WorkspaceId -> IO Event)
                  -> IO (WorkspaceId, Exp')
                  -> IO ()
@@ -281,15 +303,12 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
     forkIO $ do
         (firstWorkspaceId, startExp) <- begin
         t <- do
-                let execMany go varEnv funEnv workspaceId es k = do
+                let execMany go varEnv funEnv workspaceId es k@(CallKont _ f s _) = do
+                        let kId = (s, f)
                         saveContinuation autoCtxt k
                         qIds <- pendingQuestions ctxt workspaceId
-                        -- TODO: XXX The use of continuations here definitely needs to be thought about.
-                        -- Seems like we should have a continuation which writes into an MVar per arg and this
-                        -- waiting on all the MVars to feed to k. Essentially, this is part of the implementation
-                        -- of mapConcurrently. (For the sequential version we can just have ContT's mapM/sequenceA.)
-                        --
-                        -- Idea: We have a join continuation for k -- it will be a different type anyway -- that has
+                        -- TODO: XXX
+                        -- We have a join continuation for k -- it will be a different type anyway -- that has
                         -- identifiers for a notify continuation that we'll create for each arg. (We can optimize the
                         -- length es == 1 case.) These new notify continuations will be given an ID for the join
                         -- continuation as well as some ID of their own. When we reach these new continuations they
@@ -307,12 +326,12 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                         if null qIds then do -- Then either Var case or no arguments case, either way we can reuse the current workspaceId.
                             case es of
                                 [] -> applyKonts match k []
-                                [e] -> go varEnv funEnv workspaceId e (SimpleKont k)
+                                [e] -> go varEnv funEnv workspaceId e (SimpleKont kId)
                             -- Intentionally omitting length es > 1 case which shouldn't happen.
                           else do -- we have precreated workspaces for the Call ANSWER or Prim case.
                             case es of
-                                [e] -> go varEnv funEnv (head qIds) e (SimpleKont k) -- Just an optimization.
-                                _ -> (if isSequential then sequenceK else concurrentlyK) go match varEnv funEnv qIds es k
+                                [e] -> go varEnv funEnv (head qIds) e (SimpleKont kId) -- Just an optimization.
+                                _ -> concurrentlyK go match varEnv funEnv qIds es k
 
                 -- forkIO $ do -- TODO
                 --     revisitor given (evaluateExp execMany match substitute primEnv)
@@ -325,7 +344,7 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                 --     subquestions. Maybe we can do this just by modifying execMany.
 
                     match = match' go
-                    go = evaluateExp' (execMany go) match substitute primEnv
+                    go = evaluateExp' (execMany go) match (loadContinuation autoCtxt) substitute primEnv
                 go M.empty M.empty firstWorkspaceId startExp Done
         t <- fullyExpand ctxt t
         T.putStrLn (toText (messageToBuilder t))

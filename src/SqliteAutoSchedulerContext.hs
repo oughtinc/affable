@@ -6,7 +6,8 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
                                 query, query_, executeMany, executeNamed, execute_, lastInsertRowId ) -- sqlite-simple
 
 import AutoScheduler ( AutoSchedulerContext(..) )
-import Exp ( Pattern, Exp(..), Exp', Name(..), Konts', Konts(..), kont1ToBuilderDB, expToBuilderDB, expFromDB )
+import Exp ( Pattern, Exp(..), Exp', Name(..), Konts', KontsId', Konts(..),
+             kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
 import Message ( messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
 import Scheduler ( SchedulerContext(..) )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
@@ -24,7 +25,7 @@ makeSqliteAutoSchedulerContext' ctxt = do
     let (conn, lock) = extraContent ctxt
 
     answerId <- withLock lock $ do
-        execute_ conn "INSERT INTO Functions( isAnswer ) VALUES (1)"
+        execute_ conn "INSERT INTO Functions ( isAnswer ) VALUES (1)"
         lastInsertRowId conn
 
     return $ AutoSchedulerContext {
@@ -33,6 +34,7 @@ makeSqliteAutoSchedulerContext' ctxt = do
                     addCaseFor = addCaseForSqlite lock conn answerId,
                     newFunction = newFunctionSqlite lock conn,
                     saveContinuation = saveContinuationSqlite lock conn answerId,
+                    loadContinuation = loadContinuationSqlite lock conn answerId,
                     schedulerContext = ctxt
                 }
 
@@ -44,6 +46,7 @@ idToName :: FunctionId -> FunctionId -> Name
 idToName answerId fId | answerId == fId = ANSWER
                       | otherwise = LOCAL (fromIntegral fId)
 
+-- NOT CACHEABLE
 alternativesForSqlite :: Lock -> Connection -> FunctionId -> Name -> IO [([Pattern], Exp')]
 alternativesForSqlite lock conn answerId f = do
     let !fId = nameToId answerId f
@@ -51,6 +54,7 @@ alternativesForSqlite lock conn answerId f = do
         alts <- query conn "SELECT pattern, body FROM Alternatives WHERE function = ?" (Only fId)
         return $ map (\(ps, e) -> (parsePatternsUnsafe ps, expFromDB e)) alts
 
+-- NOT CACHEABLE
 allAlternativesSqlite :: Lock -> Connection -> FunctionId -> IO (M.Map Name [([Pattern], Exp')])
 allAlternativesSqlite lock conn answerId = do
     withLock lock $ do
@@ -82,6 +86,24 @@ saveContinuationSqlite lock conn answerId (CallKont funEnv f workspaceId k) = do
                             ":k" := toText (kont1ToBuilderDB k)]
         -- TODO: This isn't storing the full funEnv. Can we rebuild a suitable version anyway, by simply taking
         -- all the ContinuationEnvironments associated with this Workspace?
-        executeMany conn "INSERT INTO ContinuationsEnvironment ( workspaceId, function, variable, value ) VALUES (?, ?, ?, ?)"
+        -- TODO: This also doesn't store any entries with empty VarEnvs. For now, when I consume funEnv, I'll just assume a
+        -- lookup that fails means an empty VarEnv.
+        executeMany conn "INSERT INTO ContinuationEnvironments ( workspaceId, function, variable, value ) VALUES (?, ?, ?, ?)"
             (map (\(x, v) -> (workspaceId, fId, x, toText (messageToBuilder v)))
-                 (M.toList (case M.lookup f funEnv of Just varEnv -> varEnv)))
+                 (M.toList (maybe M.empty id $ M.lookup f funEnv)))
+
+
+-- CACHEABLE
+loadContinuationSqlite :: Lock -> Connection -> FunctionId -> KontsId' -> IO Konts'
+loadContinuationSqlite lock conn answerId (workspaceId, f) = do
+    let !fId = nameToId answerId f
+    withLock lock $ do
+        [Only k] <- query conn "SELECT next FROM Continuations WHERE workspaceId = ? AND function = ? LIMIT 1" (workspaceId, fId)
+        -- TODO: Here we just get every VarEnv for every function in the Workspace. I don't know if this is right.
+        -- It definitely gets more than we need or than was there when the continuation was saved, but that's harmless.
+        -- The issue is if we can have branching continuations within a single Workspace. I'm pretty sure the answer
+        -- is "no", at least for now.
+        vars <- query conn "SELECT function, variable, value FROM ContinuationEnvironments WHERE workspaceId = ?" (Only workspaceId)
+        -- TODO: parseMessageUnsafeDB the right function to use?
+        let !funEnv = M.fromListWith M.union $ map (\(g, x, v) -> (idToName answerId g, M.singleton x (parseMessageUnsafeDB v))) vars
+        return (CallKont funEnv f workspaceId (parseKont1UnsafeDB k))
