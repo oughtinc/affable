@@ -282,6 +282,7 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
         (firstWorkspaceId, startExp) <- begin
         t <- do
                 let execMany go varEnv funEnv workspaceId es k = do
+                        saveContinuation autoCtxt k
                         qIds <- pendingQuestions ctxt workspaceId
                         -- TODO: XXX The use of continuations here definitely needs to be thought about.
                         -- Seems like we should have a continuation which writes into an MVar per arg and this
@@ -309,12 +310,9 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                                 [e] -> go varEnv funEnv workspaceId e (SimpleKont k)
                             -- Intentionally omitting length es > 1 case which shouldn't happen.
                           else do -- we have precreated workspaces for the Call ANSWER or Prim case.
-                            if isSequential then do
-                                sequenceK go match varEnv funEnv qIds es k
-                              else do
-                                case es of
-                                    [e] -> go varEnv funEnv (head qIds) e (SimpleKont k) -- Just an optimization.
-                                    _ -> concurrentlyK go match varEnv funEnv qIds es k
+                            case es of
+                                [e] -> go varEnv funEnv (head qIds) e (SimpleKont k) -- Just an optimization.
+                                _ -> (if isSequential then sequenceK else concurrentlyK) go match varEnv funEnv qIds es k
 
                 -- forkIO $ do -- TODO
                 --     revisitor given (evaluateExp execMany match substitute primEnv)

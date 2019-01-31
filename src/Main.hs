@@ -114,6 +114,7 @@ initSqlite conn = do
        \    questionAsAnswered TEXT NOT NULL,\n\
        \    FOREIGN KEY ( parentWorkspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
        \);"
+    execute_ conn "CREATE INDEX Workspaces_IDX_ParentWorkspaces_Id ON Workspaces(parentWorkspaceId, id);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Messages (\n\
        \    id INTEGER PRIMARY KEY ASC,\n\
@@ -124,6 +125,7 @@ initSqlite conn = do
        \    FOREIGN KEY ( sourceWorkspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
        \    FOREIGN KEY ( targetWorkspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
        \);"
+    execute_ conn "CREATE INDEX Messages_IDX_TargetWorkspaceId ON Messages(targetWorkspaceId);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Pointers (\n\
        \    id INTEGER PRIMARY KEY ASC,\n\
@@ -165,6 +167,24 @@ initSqlite conn = do
        \    body TEXT NOT NULL,\n\
        \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE\n\
        \    PRIMARY KEY ( function ASC, pattern ASC )\n\
+       \);"
+    execute_ conn "\
+       \CREATE TABLE IF NOT EXISTS Continuations (\n\
+       \    workspaceId INTEGER NOT NULL,\n\
+       \    function INTEGER NOT NULL,\n\
+       \    next TEXT NOT NULL,\n\
+       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE\n\
+       \    PRIMARY KEY ( workspaceId ASC, function ASC )\n\
+       \);"
+    execute_ conn "\
+       \CREATE TABLE IF NOT EXISTS ContinuationsEnvironment (\n\
+       \    workspaceId INTEGER NOT NULL,\n\
+       \    function INTEGER NOT NULL,\n\
+       \    variable INTEGER NOT NULL,\n\
+       \    value TEXT NOT NULL,\n\
+       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE\n\
+       \    FOREIGN KEY ( workspaceId, function ) REFERENCES Continuations ( workspaceId, function ) ON DELETE CASCADE\n\
+       \    PRIMARY KEY ( workspaceId ASC, function ASC, variable ASC )\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Primitives (\n\

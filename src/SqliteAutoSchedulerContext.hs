@@ -2,10 +2,11 @@
 module SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext, makeSqliteAutoSchedulerContext' ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
-import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, query_, executeNamed, execute_, lastInsertRowId ) -- sqlite-simple
+import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
+                                query, query_, executeMany, executeNamed, execute_, lastInsertRowId ) -- sqlite-simple
 
 import AutoScheduler ( AutoSchedulerContext(..) )
-import Exp ( Pattern, Exp(..), Exp', Name(..), expToBuilderDB, expFromDB )
+import Exp ( Pattern, Exp(..), Exp', Name(..), Konts', Konts(..), kont1ToBuilderDB, expToBuilderDB, expFromDB )
 import Message ( messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
 import Scheduler ( SchedulerContext(..) )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
@@ -23,7 +24,7 @@ makeSqliteAutoSchedulerContext' ctxt = do
     let (conn, lock) = extraContent ctxt
 
     answerId <- withLock lock $ do
-        execute_ conn "INSERT INTO Functions(isAnswer) VALUES (1)"
+        execute_ conn "INSERT INTO Functions( isAnswer ) VALUES (1)"
         lastInsertRowId conn
 
     return $ AutoSchedulerContext {
@@ -31,6 +32,7 @@ makeSqliteAutoSchedulerContext' ctxt = do
                     allAlternatives = allAlternativesSqlite lock conn answerId,
                     addCaseFor = addCaseForSqlite lock conn answerId,
                     newFunction = newFunctionSqlite lock conn,
+                    saveContinuation = saveContinuationSqlite lock conn answerId,
                     schedulerContext = ctxt
                 }
 
@@ -44,8 +46,8 @@ idToName answerId fId | answerId == fId = ANSWER
 
 alternativesForSqlite :: Lock -> Connection -> FunctionId -> Name -> IO [([Pattern], Exp')]
 alternativesForSqlite lock conn answerId f = do
+    let !fId = nameToId answerId f
     withLock lock $ do
-        let !fId = nameToId answerId f
         alts <- query conn "SELECT pattern, body FROM Alternatives WHERE function = ?" (Only fId)
         return $ map (\(ps, e) -> (parsePatternsUnsafe ps, expFromDB e)) alts
 
@@ -63,9 +65,23 @@ newFunctionSqlite lock conn = do
 
 addCaseForSqlite :: Lock -> Connection -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()
 addCaseForSqlite lock conn answerId f patterns e = do
+    let !fId = nameToId answerId f
     withLock lock $ do
-        let !fId = nameToId answerId f
         executeNamed conn "INSERT INTO Alternatives (function, pattern, body) VALUES (:function, :patterns, :body)" [
                             ":function" := fId,
                             ":patterns" := toText (patternsToBuilder patterns),
                             ":body" := toText (expToBuilderDB e)]
+
+saveContinuationSqlite :: Lock -> Connection -> FunctionId -> Konts' -> IO ()
+saveContinuationSqlite lock conn answerId (CallKont funEnv f workspaceId k) = do -- Intentionally incomplete (for now).
+    let !fId = nameToId answerId f
+    withLock lock $ do
+        executeNamed conn "INSERT INTO Continuations ( workspaceId, function, next ) VALUES (:workspaceId, :function, :k)" [
+                            ":workspaceId" := workspaceId,
+                            ":function" := fId,
+                            ":k" := toText (kont1ToBuilderDB k)]
+        -- TODO: This isn't storing the full funEnv. Can we rebuild a suitable version anyway, by simply taking
+        -- all the ContinuationEnvironments associated with this Workspace?
+        executeMany conn "INSERT INTO ContinuationsEnvironment ( workspaceId, function, variable, value ) VALUES (?, ?, ?, ?)"
+            (map (\(x, v) -> (workspaceId, fId, x, toText (messageToBuilder v)))
+                 (M.toList (case M.lookup f funEnv of Just varEnv -> varEnv)))
