@@ -1,0 +1,15 @@
+ask commit cf0f596ad71dda7e4cf00338d91b6a882a11d354
+ask length [nil]
+ask length [cons [1] [cons [2] [nil]]]
+wait
+view $1
+reply result [0]
+wait
+ask length $3
+wait
+ask add [1] $5
+wait
+reply $6
+ask length [cons [1] [cons [2] [cons [3] [cons [4] [cons [5] [nil]]]]]]
+wait
+reply $6
