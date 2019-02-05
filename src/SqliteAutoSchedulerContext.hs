@@ -2,12 +2,12 @@
 module SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext, makeSqliteAutoSchedulerContext' ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
-import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
-                                query, query_, executeMany, executeNamed, execute_, lastInsertRowId ) -- sqlite-simple
+import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), withTransaction,
+                                query, query_, queryNamed, executeMany, executeNamed, execute_, lastInsertRowId ) -- sqlite-simple
 
 import AutoScheduler ( AutoSchedulerContext(..) )
-import Exp ( Pattern, Exp(..), Exp', Name(..), Konts', KontsId', Konts(..),
-             kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
+import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsId', Konts(..),
+             varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
 import Message ( messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
 import Scheduler ( SchedulerContext(..) )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
@@ -35,6 +35,9 @@ makeSqliteAutoSchedulerContext' ctxt = do
                     newFunction = newFunctionSqlite lock conn,
                     saveContinuation = saveContinuationSqlite lock conn answerId,
                     loadContinuation = loadContinuationSqlite lock conn answerId,
+                    addContinuationArgument = addContinuationArgumentSqlite lock conn answerId,
+                    enqueueStates = enqueueStatesSqlite lock conn answerId,
+                    continuationArguments = continuationArgumentsSqlite lock conn answerId,
                     schedulerContext = ctxt
                 }
 
@@ -77,21 +80,21 @@ addCaseForSqlite lock conn answerId f patterns e = do
                             ":body" := toText (expToBuilderDB e)]
 
 saveContinuationSqlite :: Lock -> Connection -> FunctionId -> Konts' -> IO ()
-saveContinuationSqlite lock conn answerId (CallKont funEnv f workspaceId k) = do -- Intentionally incomplete (for now).
+saveContinuationSqlite lock conn answerId (CallKont funEnv f workspaceId k) = do
     let !fId = nameToId answerId f
     withLock lock $ do
-        executeNamed conn "INSERT INTO Continuations ( workspaceId, function, next ) VALUES (:workspaceId, :function, :k)" [
-                            ":workspaceId" := workspaceId,
-                            ":function" := fId,
-                            ":k" := toText (kont1ToBuilderDB k)]
-        -- TODO: This isn't storing the full funEnv. Can we rebuild a suitable version anyway, by simply taking
-        -- all the ContinuationEnvironments associated with this Workspace?
-        -- TODO: This also doesn't store any entries with empty VarEnvs. For now, when I consume funEnv, I'll just assume a
-        -- lookup that fails means an empty VarEnv.
-        executeMany conn "INSERT INTO ContinuationEnvironments ( workspaceId, function, variable, value ) VALUES (?, ?, ?, ?)"
-            (map (\(x, v) -> (workspaceId, fId, x, toText (messageToBuilder v)))
-                 (M.toList (maybe M.empty id $ M.lookup f funEnv)))
-
+        withTransaction conn $ do
+            executeNamed conn "INSERT INTO Continuations ( workspaceId, function, next ) VALUES (:workspaceId, :function, :k)" [
+                                ":workspaceId" := workspaceId,
+                                ":function" := fId,
+                                ":k" := toText (kont1ToBuilderDB k)]
+            -- TODO: This isn't storing the full funEnv. Can we rebuild a suitable version anyway, by simply taking
+            -- all the ContinuationEnvironments associated with this Workspace?
+            -- TODO: This also doesn't store any entries with empty VarEnvs. For now, when I consume funEnv, I'll just assume a
+            -- lookup that fails means an empty VarEnv.
+            executeMany conn "INSERT INTO ContinuationEnvironments ( workspaceId, function, variable, value ) VALUES (?, ?, ?, ?)"
+                (map (\(x, v) -> (workspaceId, fId, x, toText (messageToBuilder v)))
+                     (M.toList (maybe M.empty id $ M.lookup f funEnv)))
 
 -- CACHEABLE
 loadContinuationSqlite :: Lock -> Connection -> FunctionId -> KontsId' -> IO Konts'
@@ -104,6 +107,49 @@ loadContinuationSqlite lock conn answerId (workspaceId, f) = do
         -- The issue is if we can have branching continuations within a single Workspace. I'm pretty sure the answer
         -- is "no", at least for now.
         vars <- query conn "SELECT function, variable, value FROM ContinuationEnvironments WHERE workspaceId = ?" (Only workspaceId)
-        -- TODO: parseMessageUnsafeDB the right function to use?
+        -- TODO: Verify that parseMessageUnsafeDB is the right function to use?
         let !funEnv = M.fromListWith M.union $ map (\(g, x, v) -> (idToName answerId g, M.singleton x (parseMessageUnsafeDB v))) vars
         return (CallKont funEnv f workspaceId (parseKont1UnsafeDB k))
+
+addContinuationArgumentSqlite :: Lock -> Connection -> FunctionId -> KontsId' -> Int -> Value -> IO ()
+addContinuationArgumentSqlite lock conn answerId (workspaceId, f) argNumber v = do
+    let !fId = nameToId answerId f
+    withLock lock $ do
+        withTransaction conn $ do
+            executeNamed conn "INSERT INTO ContinuationArguments ( workspaceId, function, argNumber, value ) \
+                              \VALUES (:workspaceId, :function, :argNumber, :value)" [
+                                ":workspaceId" := workspaceId,
+                                ":function" := fId,
+                                ":argNumber" := argNumber,
+                                ":value" := toText (messageToBuilder v)]
+            executeNamed conn "DELETE FROM RunQueue WHERE parentWorkspaceId = :workspaceId AND function = :function AND argNumber = :argNumber" [
+                                ":workspaceId" := workspaceId,
+                                ":function" := fId,
+                                ":argNumber" := argNumber]
+
+-- TODO: Will need a "restore states" that will produce EvalState' and a Konts1' which will be a NotifyKont.
+enqueueStatesSqlite :: Lock -> Connection -> FunctionId -> [(KontsId', Int, EvalState')] -> IO ()
+enqueueStatesSqlite lock conn answerId states = do
+    withLock lock $ do
+        executeMany conn "INSERT INTO RunQueue ( parentWorkspaceId, function, argNumber, varEnv, funEnv, workspaceId, expression ) \
+                         \VALUES (?, ?, ?, ?, ?, ?, ?)"
+            (map (\((workspaceId, f), i, (varEnv, funEnv, s, e))
+                    -> (workspaceId,
+                        nameToId answerId f,
+                        i,
+                        toText (varEnvToBuilder varEnv), -- TODO: Seems like the varEnv will also be in funEnv and so doesn't need
+                        toText (funEnvToBuilder funEnv), -- to be stored separately.
+                        s,
+                        toText (expToBuilderDB e))) states)
+
+-- NOT CACHEABLE
+continuationArgumentsSqlite :: Lock -> Connection -> FunctionId -> KontsId' -> IO (Konts', [Value])
+continuationArgumentsSqlite lock conn answerId kId@(workspaceId, f) = do
+    let !fId = nameToId answerId f
+    vs <- withLock lock $ do
+        vals <- queryNamed conn "SELECT value \
+                                \FROM ContinuationArguments \
+                                \WHERE workspaceId = :workspaceId AND function = :function \
+                                \ORDER BY argNumber ASC" [":workspaceId" := workspaceId, ":function" := fId]
+        return $ map (\(Only v) -> parseMessageUnsafeDB v) vals
+    fmap (\k -> (k, vs)) $ loadContinuationSqlite lock conn answerId kId

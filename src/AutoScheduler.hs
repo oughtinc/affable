@@ -3,8 +3,8 @@
 module AutoScheduler ( AutoSchedulerContext(..) ) where
 import qualified Data.Map as M -- containers
 
+import Exp ( Pattern, Name, Value, Exp', EvalState', Konts', KontsId' )
 import Scheduler ( SchedulerContext )
-import Exp ( Pattern, Name, Exp', Konts', KontsId' )
 
 data AutoSchedulerContext extra = AutoSchedulerContext {
     alternativesFor :: Name -> IO [([Pattern], Exp')],
@@ -13,5 +13,8 @@ data AutoSchedulerContext extra = AutoSchedulerContext {
     newFunction :: IO Name,
     saveContinuation :: Konts' -> IO (),
     loadContinuation :: KontsId' -> IO Konts',
+    addContinuationArgument :: KontsId' -> Int -> Value -> IO (),
+    enqueueStates :: [(KontsId', Int, EvalState')] -> IO (),
+    continuationArguments :: KontsId' -> IO (Konts', [Value]),
     schedulerContext :: SchedulerContext extra
   }
