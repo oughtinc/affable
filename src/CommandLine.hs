@@ -30,8 +30,7 @@ putMessageLn = liftIO . T.putStrLn . toText . messageToBuilder
 -- readCommand :: InputT IO (Either (Text, ParseErrorBundle Text Void) Command) -- megaparsec 7.0
 readCommand :: InputT IO (Either (Text, ParseError Char Void) Command) -- megaparsec 6.5
 readCommand = do
-    -- l <- liftIO $ T.getLine
-    l <- maybe "" fromString <$> getInputLine "> "
+    l <- maybe "exit" fromString <$> getInputLine "> "
     return $ first ((,) l) (parse commandParser "" l)
 
 renderWorkspace :: Workspace -> InputT IO PointerRemapping
