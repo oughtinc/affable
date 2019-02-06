@@ -25,9 +25,14 @@ makeSqliteAutoSchedulerContext' :: SchedulerContext (Connection, Lock) -> IO (Au
 makeSqliteAutoSchedulerContext' ctxt = do
     let (conn, lock) = extraContent ctxt
 
+    q <- runQueueSqlite lock conn -- TODO: This should really be controllable.
     answerId <- withLock lock $ do
-        execute_ conn "INSERT INTO Functions ( isAnswer ) VALUES (1)"
-        lastInsertRowId conn
+        if null q then do
+            execute_ conn "INSERT INTO Functions ( isAnswer ) VALUES (1)"
+            lastInsertRowId conn
+          else do
+            [Only fId] <- query_ conn "SELECT id FROM Functions WHERE isAnswer = 1 ORDER BY id DESC LIMIT 1"
+            return fId
 
     return $ AutoSchedulerContext {
                     alternativesFor = alternativesForSqlite lock conn answerId,
