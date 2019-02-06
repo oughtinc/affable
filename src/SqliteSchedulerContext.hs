@@ -38,6 +38,7 @@ makeSqliteSchedulerContext conn = do
             extraContent = (conn, lock)
         }
 
+-- NOT CACHEABLE
 reifyWorkspaceSqlite :: Lock -> Connection -> WorkspaceId -> IO Message
 reifyWorkspaceSqlite lock conn workspaceId = do
     workspaces <- withLock lock $ do
@@ -112,6 +113,7 @@ workspaceToMessage workspaces workspaceId = go (M.lookup workspaceId workspaces)
                   goMsg i (m:ms) = Text (fromString (' ':show i ++ ". ")):m:goMsg (i+1) ms
 
 -- TODO: Bulkify this.
+-- CACHEABLE
 dereferenceSqlite :: Lock -> Connection -> Pointer -> IO Message
 dereferenceSqlite lock conn ptr = do
     withLock lock $ do
@@ -212,6 +214,7 @@ expandPointerSqlite lock conn workspaceId ptr = do
                             ":time" := (0 :: LogicalTime)] -- TODO
     insertCommand lock conn workspaceId (View ptr)
 
+-- NOT CACHEABLE
 pendingQuestionsSqlite :: Lock -> Connection -> WorkspaceId -> IO [WorkspaceId]
 pendingQuestionsSqlite lock conn workspaceId = do
     withLock lock $ do
@@ -223,6 +226,7 @@ pendingQuestionsSqlite lock conn workspaceId = do
         return $ map (\(Only qId) -> qId) subquestions
 
 -- TODO: Maybe maintain a cache of workspaces.
+-- NOT CACHEABLE but the components should be. Cacheable if answered, for now at least.
 getWorkspaceSqlite :: Lock -> Connection -> WorkspaceId -> IO Workspace
 getWorkspaceSqlite lock conn workspaceId = do
     withLock lock $ do
@@ -250,6 +254,7 @@ getWorkspaceSqlite lock conn workspaceId = do
                 expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
                 time = Time t }
 
+-- NOT CACHEABLE
 allWorkspacesSqlite :: Lock -> Connection -> IO (M.Map WorkspaceId Workspace)
 allWorkspacesSqlite lock conn = do
     withLock lock $ do
@@ -277,6 +282,7 @@ allWorkspacesSqlite lock conn = do
                                                                 expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
                                                                 time = Time t })) workspaces
 
+-- NOT CACHEABLE
 getNextWorkspaceSqlite :: Lock -> Connection -> IO (Maybe WorkspaceId)
 getNextWorkspaceSqlite lock conn = do
     withLock lock $ do

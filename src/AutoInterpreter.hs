@@ -8,10 +8,11 @@ import Control.Concurrent.Async ( mapConcurrently ) -- async
 import Control.Concurrent.MVar ( MVar, newEmptyMVar, newMVar, putMVar, takeMVar, readMVar, modifyMVar_ ) -- base
 import Control.Concurrent.Chan ( Chan, newChan, readChan, writeChan ) -- base TODO: Use TChan instead?
 import qualified Control.Exception as IO ( bracket_ ) -- base
-import Control.Monad ( zipWithM, zipWithM_ ) -- base
-import Control.Monad.IO.Class ( MonadIO, liftIO ) -- transformers
+import Control.Monad ( ap, zipWithM, zipWithM_ ) -- base
+import Control.Monad.IO.Class ( MonadIO, liftIO ) -- base
 import Data.Foldable ( asum, forM_ ) -- base
 import Data.IORef ( IORef, newIORef, readIORef, writeIORef, atomicModifyIORef', modifyIORef' ) -- base
+import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Data.Maybe ( mapMaybe ) -- base
 import Data.String ( fromString ) -- base
@@ -24,9 +25,9 @@ import Data.Traversable ( traverse ) -- base
 import Data.Tuple ( swap ) -- base
 import System.IO ( stderr) -- base
 
-import AutoScheduler ( AutoSchedulerContext(..) )
-import Exp ( Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), GoFn, MatchFn, Konts(..), FunEnv, Konts',
-             varEnvToBuilder, funEnvToBuilder, nameToBuilder, nameParser, evaluateExp', applyKonts, expToBuilder, expToHaskell )
+import AutoScheduler ( AutoSchedulerContext(..), ProcessId )
+import Exp ( Result, Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), GoFn, MatchFn, Konts(..), FunEnv, Konts',
+             EvalState', varEnvToBuilder, funEnvToBuilder, nameToBuilder, nameParser, evaluateExp', applyKonts, expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage, messageParser',
                  matchPointers, expandPointers, substitute, renumberMessage' )
 import Primitive ( makePrimitives )
@@ -34,19 +35,42 @@ import Scheduler ( Event(..), SchedulerContext(..), SchedulerFn, relabelMessage,
 import Util ( toText, invertMap )
 import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 
-class (MonadIO m) => MonadFork m where
-    fork :: m () -> m ThreadId
+class MonadFork m where
+    fork :: ProcessId -> m () -> m ThreadId
     bracket_ :: m a -> m b -> m c -> m c
+    myProcessId :: m ProcessId
 
 instance MonadFork IO where
-    fork = forkIO
+    fork _ = forkIO
     bracket_ = IO.bracket_
+    myProcessId = return 0
+
+newtype M a = M { runM :: ProcessId -> IO a }
+
+instance Functor M where
+    fmap f (M g) = M (fmap f . g)
+
+instance Applicative M where
+    pure = return
+    (<*>) = ap
+
+instance Monad M where
+    return x = M (\_ -> return x)
+    M f >>= k = M (\r -> do x <- f r; runM (k x) r)
+
+instance MonadIO M where
+    liftIO act = M (const act)
+
+instance MonadFork M where
+    fork pId (M f) = M (\_ -> forkIO (f pId))
+    bracket_ (M before) (M after) (M body) = M (\r -> bracket_ (before r) (after r) (body r))
+    myProcessId = M return
 
 -- NOTE: Instead of using forkIO and co, we could use a monad other than IO for
 -- expression evaluation that supports suspending a computation or implements cooperative
 -- concurrency.
 
-makeMatcher :: (MonadFork m)
+makeMatcher :: (MonadIO m, MonadFork m)
             => (Bool -> WorkspaceId -> m Event)
             -> (Value -> Maybe Primitive)
             -> (WorkspaceId -> Message -> m ())
@@ -179,7 +203,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                                 liftIO $ createWorkspace ctxt False workspaceId (renumberMessage' localToGlobal m) pattern
                                             go varEnv' funEnv workspaceId e k -- TODO: Think about this.
                                         Value msg -> do -- reply case
-                                            let !msg' = substitute bindings msg -- TODO: Need to do the same local-to-global renumbering as above?
+                                            let !msg' = substitute bindings msg
                                             msg <- liftIO $ normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
                                             liftIO $ sendAnswer ctxt False workspaceId msg -- TODO: Can I clean out workspaceVariablesRef a bit now?
                                             go varEnv' funEnv workspaceId e k -- TODO: Think about this.
@@ -231,10 +255,10 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     (extraBindings, e) <- loop False
                     liftIO $ addCaseFor autoCtxt f patterns e
                     liftIO $ debugCode
-                    go (M.union extraBindings varEnv') funEnv workspaceId e k -- TODO: Probably need to be more sophisticated than this.
+                    go (M.union extraBindings varEnv') funEnv workspaceId e k
     return match
 
-makeInterpreterScheduler :: (MonadFork m) => Bool -> AutoSchedulerContext extra -> WorkspaceId -> m SchedulerFn
+makeInterpreterScheduler :: (MonadIO m, MonadFork m) => Bool -> AutoSchedulerContext extra -> WorkspaceId -> m SchedulerFn
 makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     let !ctxt = schedulerContext autoCtxt
 
@@ -272,54 +296,25 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
 
     return scheduler
 
-{-
-yield :: [(KontsId', Int, EvalState')] -> m Value
-yield [(kId, 0, (varEnv, funEnv, s, e)] = do
-    undefined -- TODO: Just proceed immediately.
-yield states = do
-    enqueueStates autoCtxt states
-    undefined -- TODO
-    -- Fork threads evaluating each state (or evaluate them sequentially).
-    -- Maintain mapping
--}
-
-concurrentlyK :: (MonadFork m)
-              => -- ([(KontsId', Int, EvalState')] -> m Value) ->
-                 GoFn m WorkspaceId Primitive Name Var
+concurrentlyK :: (MonadIO m, MonadFork m)
+              => GoFn m WorkspaceId Primitive Name Var
               -> MatchFn m WorkspaceId Primitive Name Var
+              -> AutoSchedulerContext extra
               -> VarEnv Var
               -> FunEnv Name Var
               -> [WorkspaceId]
               -> [Exp']
               -> Konts'
-              -> m Value
-concurrentlyK {-yield-} go match varEnv funEnv ss es k@(CallKont _ f workspaceId _) = do
-    -- TODO: XXX Just enqueue all the states then yield with kId. The yield will
-    -- store a MVar in a KontsId'-indexed mapped and block on it. When k is resolved,
-    -- i.e. ContinuationArguments is full, the "scheduler" will look up the continuation
-    -- and applyKonts to it. The result will be put in the MVar and the yield will return.
-    -- When we restore from the database, there won't be an MVar, but that doesn't matter.
-    -- In fact, maybe it's better to just abort this after "yielding".
+              -> m Result
+concurrentlyK go match autoCtxt varEnv funEnv ss es k@(CallKont _ f workspaceId _) = do
     let kId = (workspaceId, f)
+        !n = length ss -- should equal length es, TODO: Add assertion.
+    forM_ (zip3 [0..] ss es) $ \(i, s, e) -> do
+        pId <- liftIO (newProcess autoCtxt)
+        fork pId (() <$ go varEnv funEnv s e (NotifyKont i n kId))
+    return Nothing
 
-    -- yield $ zipWith3 (\i s e -> (kId, i, (varEnv, funEnv, s, e))) [0..] ss es
-    -- enqueueStates autoCtxt $ zipWith3 (\i s e -> (kId, i, (varEnv, funEnv, s, e))) [0..] ss es
-
-    -- TODO: This is all wrong, but for now, we'll give it a go.
-    mvars <- mapM (\_ -> liftIO newEmptyMVar) ss
-
-    -- TODO: Need to save varEnv, funEnv, s, e, and the NotifyKont.
-    let !n = length ss -- should equal length es, TODO: Add assertion.
-    zipWithM_ (\(i, s, e) mvar -> fork (liftIO . putMVar mvar =<< go varEnv funEnv s e (NotifyKont i n kId))) (zip3 [0..] ss es) mvars
-    applyKonts match k =<< mapM (liftIO . takeMVar) mvars
-
--- concurrentlyK acts k = applyKonts k =<< mapConcurrently ($ return) acts
--- Modulo dealing with exceptions, this is conceptually:
--- mvars <- mapM (\_ -> newEmptyMVar) acts  +------------------+ <-- notification continuations
--- zipWithM_ (\act mvar -> forkIO $         (act (putMVar mvar))) acts mvars
--- (k =<< mapM takeMVar mvars) <-- the join continuation
-
-spawnInterpreter :: (MonadFork m)
+spawnInterpreter :: (MonadIO m, MonadFork m)
                  => (Bool -> WorkspaceId -> m Event)
                  -> m (WorkspaceId, Exp')
                  -> m ()
@@ -338,65 +333,45 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
     let !primEnv = fmap (\f x y -> liftIO (f x y)) primEnv'
     match' <- makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt
 
-    fork $ do
+    pId <- liftIO (newProcess autoCtxt)
+    fork pId $ do
         (firstWorkspaceId, startExp) <- begin
-        t <- do
+        mt <- do
                 let execMany go varEnv funEnv workspaceId es k@(CallKont _ f s _) = do
                         let kId = (s, f)
-                        liftIO $ saveContinuation autoCtxt k -- TODO: Saving CallKonts when they are pushed would give finer-grained
-                                                             -- information, but do I need that finer-grained information? The answer
-                                                             -- is "yes", if you wanted to avoid needing to roll-forward a bit during
-                                                             -- time-travel debugging, but otherwise I don't know. I don't think so.
+                        liftIO $ saveContinuation autoCtxt k -- TODO: Think about this.
                         qIds <- liftIO $ pendingQuestions ctxt workspaceId
-                        -- TODO:
-                        -- We have a join continuation for k -- it will be a different type anyway -- that has
-                        -- identifiers for a notify continuation that we'll create for each arg. (We can optimize the
-                        -- length es == 1 case.) These new notify continuations will be given an ID for the join
-                        -- continuation as well as some ID of their own. When we reach these new continuations they
-                        -- will signal the join continuation in some appropriate manner. Basically, when we "restore",
-                        -- we'll load all the "outstanding" (TODO: How do we know which continuations are "outstanding"?)
-                        -- continuations. This will be a join continuation and a bunch of other continuations that end
-                        -- in a notify continuation. When we execute a notify continuation, we see if all the other
-                        -- notify continuations are outstanding. If so, we continue with the join continuation and
-                        -- all these continuations are no longer outstanding. Otherwise, this continuation remains
-                        -- outstanding but we cease execution. Eventually all the last notify continuation will
-                        -- become outstanding.
-                        --
-                        -- To track outstanding continuations, we can have a table of outstanding continuations. This
-                        -- can either be updated in-place, or it can be some append-only structure.
                         if null qIds then do -- Then either Var case or no arguments case, either way we can reuse the current workspaceId.
                             case es of
                                 [] -> applyKonts match k []
-                                [e] -> concurrentlyK {-yield-} go match varEnv funEnv [workspaceId] es k
+                                [e] -> concurrentlyK go match autoCtxt varEnv funEnv [workspaceId] es k
                                 -- Intentionally omitting length es > 1 case which shouldn't happen.
                           else do -- we have precreated workspaces for the Call ANSWER or Prim case.
-                                concurrentlyK {-yield-} go match varEnv funEnv qIds es k
+                                concurrentlyK go match autoCtxt varEnv funEnv qIds es k
 
                     match = match' go
-                    {- TODO: XXX
                     notifyKont kId 0 1 v = do
                         liftIO $ addContinuationArgument autoCtxt kId 0 v
                         k <- liftIO $ loadContinuation autoCtxt kId
                         applyKonts match k [v]
-                    -}
                     notifyKont kId argNumber numArgs v = do
+                        -- Check to see if all the arguments are available for the continuation
+                        -- that kId refers to, and if so, continue with it, else terminate.
                         liftIO $ addContinuationArgument autoCtxt kId argNumber v
-                        -- TODO: XXX Check to see if all the arguments are available for the continuation
-                        -- that kId refers to, and if so, enqueue it.
+                        (k, vs) <- liftIO $ continuationArguments autoCtxt kId -- TODO: This could be more efficient.
+                        if length vs == numArgs then do
+                            applyKonts match k vs
+                          else do
+                            return Nothing
+                    go varEnv funEnv s e k = do
+                        v <- evaluateExp' (\s -> do pId <- myProcessId; liftIO (recordState autoCtxt pId s)) (execMany go) match notifyKont substitute primEnv varEnv funEnv s e k
+                        liftIO . terminate autoCtxt =<< myProcessId
                         return v
-                    go = evaluateExp' (execMany go) match notifyKont substitute primEnv
-
-                -- fork $ do -- TODO
-                --     revisitor given (evaluateExp execMany match substitute primEnv)
-                --     that modifies the workspace that is being revisited and the relevant
-                --     automation, and then calls the evaluator with that workspaceId and a
-                --     startExp that just evaluates `answer` with the question from the
-                --     revisited workspace.
-                --
-                --     Ideally, use a modified evaluateExp that can skip already answered
-                --     subquestions. Maybe we can do this just by modifying execMany.
 
                 go M.empty M.empty firstWorkspaceId startExp Done
-        t <- liftIO $ fullyExpand ctxt t
-        liftIO $ T.putStrLn (toText (messageToBuilder t))
-        end
+        case mt of
+            Nothing -> undefined-- TODO: XXX Here we would trampoline on t. To that end, we would eliminate the uses of fork.
+            Just t -> do
+                t <- liftIO $ fullyExpand ctxt t
+                liftIO $ T.putStrLn (toText (messageToBuilder t))
+                end

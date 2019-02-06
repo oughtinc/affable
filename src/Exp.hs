@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
-module Exp ( Value, Pattern, Exp(..), Exp', Primitive, Var, Name(..), VarEnv, VarMapping, FunEnv, PrimEnv,
+module Exp ( Result, Value, Pattern, Exp(..), Exp', Primitive, Var, Name(..), VarEnv, VarMapping, FunEnv, PrimEnv,
              nameToBuilder, expToBuilder', expToBuilder, expToBuilderDB, expFromDB, expToHaskell,
              evaluateExp, evaluateExp', kont1ToBuilderDB, parseKont1UnsafeDB, nameParser,
              varEnvToBuilder, parseVarEnv, funEnvToBuilder, parseFunEnv,
@@ -21,6 +21,7 @@ import Workspace ( WorkspaceId )
 import Util ( mapToBuilder, parseMap )
 
 type Value = Message
+type Result = Maybe Value
 
 -- NOTE: Currently only ever use LetFun f (Call f _) pattern which is essentially, unsurprisingly,
 -- equivalent to doing a case analysis on _. It's possible having Call be separate could be useful
@@ -40,8 +41,8 @@ type VarMapping v = M.Map v v
 type FunEnv f v = M.Map f (VarEnv v) -- NOTE: Could possibly reduce this to a Var-to-Var mapping if all Values are labeled.
 type PrimEnv s m p = M.Map p (s -> Value -> m Value)
 
-type GoFn m s p f v = VarEnv v -> FunEnv f v -> s -> Exp p f v -> Kont1 s p f v -> m Value
-type MatchFn m s p f v = s -> VarEnv v -> FunEnv f v -> f -> [Value] -> Kont1 s p f v -> m Value
+type GoFn m s p f v = VarEnv v -> FunEnv f v -> s -> Exp p f v -> Kont1 s p f v -> m Result
+type MatchFn m s p f v = s -> VarEnv v -> FunEnv f v -> f -> [Value] -> Kont1 s p f v -> m Result
 
 type KontsId s f = (s, f)
 
@@ -58,57 +59,62 @@ data Konts s p f v
 applyKont1 :: (Monad m, Ord p, Ord f)
            => GoFn m s p f v
            -> MatchFn m s p f v
-           -> (KontsId s f -> Int -> Int -> Value -> m Value)
+           -> (KontsId s f -> Int -> Int -> Value -> m Result)
            -> PrimEnv s m p
            -> VarEnv v
            -> FunEnv f v
            -> Kont1 s p f v
            -> Value
-           -> m Value
-applyKont1 go match notifyKont primEnv varEnv funEnv Done v = return v
+           -> m Result
+applyKont1 go match notifyKont primEnv varEnv funEnv Done v = return (Just v)
 applyKont1 go match notifyKont primEnv varEnv funEnv (PrimKont p s k) v = do
     result <- (case M.lookup p primEnv of Just p' -> p') s v
     applyKont1 go match notifyKont primEnv varEnv funEnv k result
 applyKont1 go match notifyKont primEnv varEnv funEnv (NotifyKont argNumber numArgs kId) v = do
     notifyKont kId argNumber numArgs v
 
-applyKonts :: (Monad m, Ord f) => MatchFn m s p f v -> Konts s p f v -> [Value] -> m Value
+applyKonts :: (Monad m, Ord f) => MatchFn m s p f v -> Konts s p f v -> [Value] -> m Result
 applyKonts match (CallKont funEnv f s k) vs = match s (maybe M.empty id $ M.lookup f funEnv) funEnv f vs k
 
-type ExecManyFn m s p f v = VarEnv v -> FunEnv f v -> s -> [Exp p f v] -> Konts s p f v -> m Value
+type ExecManyFn m s p f v = VarEnv v -> FunEnv f v -> s -> [Exp p f v] -> Konts s p f v -> m Result
 
 evaluateExp :: (Ord p, Ord f, Ord v, Monad m)
-            => ExecManyFn m s p f v
+            => (EvalState s p f v -> m ())
+            -> ExecManyFn m s p f v
             -> MatchFn m s p f v
-            -> (KontsId s f -> Int -> Int -> Value -> m Value)
+            -> (KontsId s f -> Int -> Int -> Value -> m Result)
             -> (VarEnv v -> Value -> Value)
             -> PrimEnv s m p
             -> s
             -> Exp p f v
             -> Kont1 s p f v
-            -> m Value
-evaluateExp execMany match notifyKont subst primEnv = evaluateExp' execMany match notifyKont subst primEnv M.empty M.empty
+            -> m Result
+evaluateExp record execMany match notifyKont subst primEnv = evaluateExp' record execMany match notifyKont subst primEnv M.empty M.empty
 
-type EvalState s p f v  = (VarEnv v, FunEnv f v, s, Exp p f v)
+type EvalState s p f v  = (VarEnv v, FunEnv f v, s, Exp p f v, Kont1 s p f v)
 
 evaluateExp' :: (Ord p, Ord f, Ord v, Monad m)
-             => ExecManyFn m s p f v                            -- TODO: Perhaps collect these arguments into a "context" parameter.
-             -> MatchFn m s p f v                               -- |
-             -> (KontsId s f -> Int -> Int -> Value -> m Value) -- |
-             -> (VarEnv v -> Value -> Value)                    -- |
-             -> PrimEnv s m p                                   -- +
-             -> VarEnv v
-             -> FunEnv f v
-             -> s
-             -> Exp p f v
-             -> Kont1 s p f v
-             -> m Value
-evaluateExp' execMany match notifyKont subst primEnv = go
-    where go varEnv funEnv s (Var x) k = applyKont1 go match notifyKont primEnv varEnv funEnv k $! case M.lookup x varEnv of Just v -> v
-          go varEnv funEnv s (Value v) k = applyKont1 go match notifyKont primEnv varEnv funEnv k $ subst varEnv v
-          go varEnv funEnv s (Prim p e) k = go varEnv funEnv s e (PrimKont p s k)
+             => (EvalState s p f v -> m ())
+             -> ExecManyFn m s p f v                             -- TODO: Perhaps collect these arguments into a "context" parameter.
+             -> MatchFn m s p f v                                -- |
+             -> (KontsId s f -> Int -> Int -> Value -> m Result) -- |
+             -> (VarEnv v -> Value -> Value)                     -- |
+             -> PrimEnv s m p                                    -- +
+             -> VarEnv v                                         -- + State
+             -> FunEnv f v                                       -- |
+             -> s                                                -- |
+             -> Exp p f v                                        -- |
+             -> Kont1 s p f v                                    -- +
+             -> m Result
+evaluateExp' record execMany match notifyKont subst primEnv = go'
+    where go varEnv funEnv s (Var x) k = applyKont1 go' match notifyKont primEnv varEnv funEnv k $! case M.lookup x varEnv of Just v -> v
+          go varEnv funEnv s (Value v) k = applyKont1 go' match notifyKont primEnv varEnv funEnv k $ subst varEnv v
+          go varEnv funEnv s (Prim p e) k = go' varEnv funEnv s e (PrimKont p s k)
           go varEnv funEnv s (Call f es) k = execMany varEnv funEnv s es (CallKont funEnv f s k)
-          go varEnv funEnv s (LetFun f body) k = go varEnv (M.insert f varEnv funEnv) s body k
+          go varEnv funEnv s (LetFun f body) k = go' varEnv (M.insert f varEnv funEnv) s body k
+          go' varEnv funEnv s e k = do
+            record (varEnv, funEnv, s, e, k)
+            go varEnv funEnv s e k
 
 type Var = Pointer
 type Pattern = Message
@@ -213,7 +219,7 @@ kontsIdParserDB = (,) <$> (char '(' *> decimal) <*> (char ',' *> nameParser) <* 
 kontsIdToBuilderDB :: (f -> Builder) -> KontsId WorkspaceId f -> Builder
 kontsIdToBuilderDB fBuilder (s, f) = singleton '(' <> T.decimal s <> singleton ',' <> fBuilder f <> singleton ')'
 
--- I don't really want to store these as strings or really at all, but, for now, it is the most direct thing to do.`
+-- I don't really want to store these as strings or really at all, but, for now, it is the most direct thing to do.
 varEnvToBuilder :: VarEnv Var -> Builder
 varEnvToBuilder = mapToBuilder T.decimal messageToBuilder
 

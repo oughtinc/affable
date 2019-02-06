@@ -10,7 +10,7 @@ import Servant ( Proxy(..) ) -- servant-server
 import Servant.JS ( writeJSForAPI, axios, defAxiosOptions ) -- servant-js
 import System.Environment ( getArgs ) -- base
 
-import AutoInterpreter ( makeInterpreterScheduler )
+import AutoInterpreter ( runM, makeInterpreterScheduler, )
 import AutoScheduler ( schedulerContext, allAlternatives )
 import CommandLine ( commandLineInteraction )
 import Exp ( Exp(..), Name(..), expToHaskell )
@@ -27,6 +27,13 @@ main :: IO ()
 main = do
     args <- getArgs
     case args of
+        ["help"] -> putStrLn "\
+            \affable gen-api                - Generate static/command-api.js.\n\
+            \affable serve [DB]             - Start concurrent web server, optionally storing to DB.\n\
+            \affable noauto [DB]            - Start sequential command-line execution with no automation, optionally storing to DB.\n\
+            \affable export DB FUNCTIONID   - Print automation code identified by FUNCTIONID in DB as Haskell.\n\
+            \affable concurrent [DB]        - Start concurrent command-line execution, optionally storing to DB.\n\
+            \affable [DB]                   - Start sequential command-line execution, optionally storing to DB."
         ["gen-api"] -> writeJSForAPI (Proxy :: Proxy API) (axios defAxiosOptions) "static/command-api.js"
         ("serve":args) -> do
             withConnection (fileOrMemory args) $ \conn -> do
@@ -71,7 +78,7 @@ main = do
                 autoCtxt <- makeSqliteAutoSchedulerContext conn
                 let !ctxt = schedulerContext autoCtxt
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
-                scheduler <- makeInterpreterScheduler False autoCtxt $! identity initWorkspace
+                scheduler <- runM (makeInterpreterScheduler False autoCtxt $! identity initWorkspace) 0
                 commandLineInteraction initWorkspace scheduler
         _ -> do
             withConnection (fileOrMemory args) $ \conn -> do
@@ -80,7 +87,7 @@ main = do
                 autoCtxt <- makeSqliteAutoSchedulerContext conn
                 let !ctxt = schedulerContext autoCtxt
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
-                scheduler <- makeInterpreterScheduler True autoCtxt $! identity initWorkspace
+                scheduler <- runM (makeInterpreterScheduler True autoCtxt $! identity initWorkspace) 0
                 commandLineInteraction initWorkspace scheduler
 
 fileOrMemory :: [String] -> String
@@ -200,21 +207,20 @@ initSqlite conn = do
        \    FOREIGN KEY ( workspaceId, function ) REFERENCES Continuations ( workspaceId, function ) ON DELETE CASCADE\n\
        \    PRIMARY KEY ( workspaceId ASC, function ASC, argNumber ASC )\n\
        \);"
-    -- TODO: Will almost certainly change this.
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS RunQueue (\n\
-       \    parentWorkspaceId INTEGER NOT NULL,\n\
-       \    function INTEGER NOT NULL,\n\
-       \    argNumber INTEGER NOT NULL,\n\
+       \CREATE TABLE IF NOT EXISTS Trace (\n\
+       \    t INTEGER PRIMARY KEY ASC,\n\
+       \    processId INTEGER NOT NULL,\n\
        \    varEnv TEXT NOT NULL,\n\
        \    funEnv TEXT NOT NULL,\n\
        \    workspaceId INTEGER NOT NULL,\n\
        \    expression TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE\n\
+       \    continuation TEXT NOT NULL,\n\
        \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
-       \    FOREIGN KEY ( parentWorkspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
-       \    FOREIGN KEY ( parentWorkspaceId, function ) REFERENCES Continuations ( workspaceId, function ) ON DELETE CASCADE\n\
-       \    PRIMARY KEY ( parentWorkspaceId ASC, function ASC, argNumber ASC )\n\
+       \);"
+    execute_ conn "\
+       \CREATE TABLE IF NOT EXISTS RunQueue (\n\
+       \    processId INTEGER PRIMARY KEY ASC\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Primitives (\n\

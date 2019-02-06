@@ -20,7 +20,7 @@ import Servant ( (:<|>)(..), (:>), Server, Get, Post, Proxy(..), ReqBody, JSON, 
 import Servant.Server ( serve, Application ) -- servant-server
 import System.Timeout ( timeout ) -- base
 
-import AutoInterpreter ( spawnInterpreter )
+import AutoInterpreter ( runM, spawnInterpreter )
 import Exp ( Name(..), Exp(..) )
 import Message ( Message(..), Pointer )
 import Scheduler ( SchedulerFn, UserId, Event(..), getWorkspace, createInitialWorkspace, normalize, generalize, relabelMessage, createWorkspace )
@@ -104,14 +104,14 @@ initServer conn = do
     responseMVarsRef <- newIORef (M.empty :: M.Map WorkspaceId (MVar Event))
     drainingMVarsRef <- newIORef (M.empty :: M.Map WorkspaceId (MVar Event))
 
-    let blockOnUser True workspaceId = do
+    let blockOnUser True workspaceId = liftIO $ do
             Just responseMVar <- M.lookup workspaceId <$> readIORef drainingMVarsRef
             resp <- takeMVar responseMVar
             case resp of
                 Submit -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return Submit
                 Expand _ -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return resp
                 _ -> return resp
-        blockOnUser _ workspaceId = do
+        blockOnUser _ workspaceId = liftIO $ do
             responseMVar <- newEmptyMVar
             modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
             writeChan requestChan workspaceId
@@ -135,7 +135,7 @@ initServer conn = do
             isDone <- atomicModifyIORef' doneRef (\d -> (False, d))
             when isDone $ do
                 autoCtxt <- makeSqliteAutoSchedulerContext' ctxt
-                () <$ spawnInterpreter blockOnUser begin (writeIORef doneRef True) False autoCtxt
+                () <$ runM (spawnInterpreter blockOnUser (liftIO begin) (liftIO $ writeIORef doneRef True) False autoCtxt) 0
             timeout 10000000 (readChan requestChan) -- Timeout after 10 seconds.
 
     userIdRef <- liftIO $ newIORef (0 :: UserId)

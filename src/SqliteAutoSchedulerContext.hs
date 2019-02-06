@@ -5,7 +5,7 @@ import qualified Data.Map as M -- containers
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), withTransaction,
                                 query, query_, queryNamed, executeMany, executeNamed, execute_, lastInsertRowId ) -- sqlite-simple
 
-import AutoScheduler ( AutoSchedulerContext(..) )
+import AutoScheduler ( AutoSchedulerContext(..), ProcessId )
 import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsId', Konts(..),
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
 import Message ( messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
@@ -35,8 +35,10 @@ makeSqliteAutoSchedulerContext' ctxt = do
                     newFunction = newFunctionSqlite lock conn,
                     saveContinuation = saveContinuationSqlite lock conn answerId,
                     loadContinuation = loadContinuationSqlite lock conn answerId,
+                    recordState = recordStateSqlite lock conn,
+                    newProcess = newProcessSqlite lock conn,
+                    terminate = terminateSqlite lock conn,
                     addContinuationArgument = addContinuationArgumentSqlite lock conn answerId,
-                    enqueueStates = enqueueStatesSqlite lock conn answerId,
                     continuationArguments = continuationArgumentsSqlite lock conn answerId,
                     schedulerContext = ctxt
                 }
@@ -111,6 +113,29 @@ loadContinuationSqlite lock conn answerId (workspaceId, f) = do
         let !funEnv = M.fromListWith M.union $ map (\(g, x, v) -> (idToName answerId g, M.singleton x (parseMessageUnsafeDB v))) vars
         return (CallKont funEnv f workspaceId (parseKont1UnsafeDB k))
 
+recordStateSqlite :: Lock -> Connection -> ProcessId -> EvalState' -> IO ()
+recordStateSqlite lock conn processId (varEnv, funEnv, s, e, k) = do
+    withLock lock $ do
+        executeNamed conn "INSERT INTO Trace ( processId, varEnv, funEnv, workspaceId, expression, continuation ) \
+                          \VALUES (:processId, :varEnv, :funEnv, :workspaceId, :expression, :continuation)" [
+                            ":processId" := processId,
+                            ":varEnv" := toText (varEnvToBuilder varEnv), -- TODO: Seems like the varEnv will also be in funEnv
+                            ":funEnv" := toText (funEnvToBuilder funEnv), -- and so doesn't need to be stored separately.
+                            ":workspaceId" := s,
+                            ":expression" := toText (expToBuilderDB e),
+                            ":continuation" := toText (kont1ToBuilderDB k)]
+
+newProcessSqlite :: Lock -> Connection -> IO ProcessId
+newProcessSqlite lock conn = do
+    withLock lock $ do
+        execute_ conn "INSERT INTO RunQueue DEFAULT VALUES"
+        lastInsertRowId conn
+
+terminateSqlite :: Lock -> Connection -> ProcessId -> IO ()
+terminateSqlite lock conn processId = do
+    withLock lock $ do
+        executeNamed conn "DELETE FROM RunQueue WHERE processId = :processId" [":processId" := processId]
+
 addContinuationArgumentSqlite :: Lock -> Connection -> FunctionId -> KontsId' -> Int -> Value -> IO ()
 addContinuationArgumentSqlite lock conn answerId (workspaceId, f) argNumber v = do
     let !fId = nameToId answerId f
@@ -122,25 +147,6 @@ addContinuationArgumentSqlite lock conn answerId (workspaceId, f) argNumber v = 
                                 ":function" := fId,
                                 ":argNumber" := argNumber,
                                 ":value" := toText (messageToBuilder v)]
-            executeNamed conn "DELETE FROM RunQueue WHERE parentWorkspaceId = :workspaceId AND function = :function AND argNumber = :argNumber" [
-                                ":workspaceId" := workspaceId,
-                                ":function" := fId,
-                                ":argNumber" := argNumber]
-
--- TODO: Will need a "restore states" that will produce EvalState' and a Konts1' which will be a NotifyKont.
-enqueueStatesSqlite :: Lock -> Connection -> FunctionId -> [(KontsId', Int, EvalState')] -> IO ()
-enqueueStatesSqlite lock conn answerId states = do
-    withLock lock $ do
-        executeMany conn "INSERT INTO RunQueue ( parentWorkspaceId, function, argNumber, varEnv, funEnv, workspaceId, expression ) \
-                         \VALUES (?, ?, ?, ?, ?, ?, ?)"
-            (map (\((workspaceId, f), i, (varEnv, funEnv, s, e))
-                    -> (workspaceId,
-                        nameToId answerId f,
-                        i,
-                        toText (varEnvToBuilder varEnv), -- TODO: Seems like the varEnv will also be in funEnv and so doesn't need
-                        toText (funEnvToBuilder funEnv), -- to be stored separately.
-                        s,
-                        toText (expToBuilderDB e))) states)
 
 -- NOT CACHEABLE
 continuationArgumentsSqlite :: Lock -> Connection -> FunctionId -> KontsId' -> IO (Konts', [Value])
