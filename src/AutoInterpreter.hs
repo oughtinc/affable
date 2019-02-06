@@ -14,7 +14,7 @@ import Data.Foldable ( asum, forM_ ) -- base
 import Data.IORef ( IORef, newIORef, readIORef, writeIORef, atomicModifyIORef', modifyIORef' ) -- base
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
-import Data.Maybe ( mapMaybe ) -- base
+import Data.Maybe ( mapMaybe, catMaybes ) -- base
 import Data.String ( fromString ) -- base
 import Data.Text ( Text ) -- text
 import qualified Data.Text as T -- text
@@ -36,14 +36,18 @@ import Util ( toText, invertMap )
 import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 
 class MonadFork m where
-    fork :: ProcessId -> m () -> m ThreadId
+    fork :: m () -> m ThreadId
     bracket_ :: m a -> m b -> m c -> m c
     myProcessId :: m ProcessId
+    withProcessId :: ProcessId -> m a -> m a
+    mapTasks :: [m a] -> m [a]
 
 instance MonadFork IO where
-    fork _ = forkIO
+    fork = forkIO
     bracket_ = IO.bracket_
     myProcessId = return 0
+    withProcessId _ = id
+    mapTasks = mapConcurrently id
 
 newtype M a = M { runM :: ProcessId -> IO a }
 
@@ -62,9 +66,11 @@ instance MonadIO M where
     liftIO act = M (const act)
 
 instance MonadFork M where
-    fork pId (M f) = M (\_ -> forkIO (f pId))
+    fork (M f) = M (forkIO . f)
     bracket_ (M before) (M after) (M body) = M (\r -> bracket_ (before r) (after r) (body r))
     myProcessId = M return
+    withProcessId pId (M f) = M (const (f pId))
+    mapTasks ts = M (\pId -> mapConcurrently (\t -> runM t pId) ts)
 
 -- NOTE: Instead of using forkIO and co, we could use a monad other than IO for
 -- expression evaluation that supports suspending a computation or implements cooperative
@@ -124,11 +130,11 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
     -- When we receive the Submit event, we look at the unanswered questions of the current workspace for the parameters.
     -- Expand doesn't get batched, so we only have batches of questions, i.e. multi-argument function calls are always
     -- of the form `f(answer(...), prim1(...), ...)`.
-    let match go s varEnv funEnv f [Reference p] k = do
+    let match eval s varEnv funEnv f [Reference p] k = do
             error "Did you get here? If so, tell me how."
             m <- liftIO $ dereference ctxt p
-            match go s varEnv funEnv f [m] k
-        match go workspaceId varEnv funEnv f ms k = do
+            match eval s varEnv funEnv f [m] k
+        match eval workspaceId varEnv funEnv f ms k = do
             ms' <- liftIO $ mapM (\m -> normalize ctxt =<< generalize ctxt m) ms
 
             -- Atomically:
@@ -193,7 +199,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                             arg <- liftIO $ dereference ctxt p
                                             liftIO $ expandPointer ctxt workspaceId p
                                             giveArgument workspaceId arg
-                                            go (M.insert ptr arg varEnv') funEnv workspaceId e k -- TODO: Think about this.
+                                            eval (M.insert ptr arg varEnv') funEnv workspaceId e k -- TODO: Think about this.
                                         LetFun _ (Call _ args) -> do -- ask cases
                                             let !localToGlobal = invertMap globalToLocal
                                             forM_ args $ \argExp -> do
@@ -201,13 +207,13 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                                 let !arg = substitute bindings m
                                                 pattern <- liftIO $ relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt arg
                                                 liftIO $ createWorkspace ctxt False workspaceId (renumberMessage' localToGlobal m) pattern
-                                            go varEnv' funEnv workspaceId e k -- TODO: Think about this.
+                                            eval varEnv' funEnv workspaceId e k -- TODO: Think about this.
                                         Value msg -> do -- reply case
                                             let !msg' = substitute bindings msg
                                             msg <- liftIO $ normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
                                             liftIO $ sendAnswer ctxt False workspaceId msg -- TODO: Can I clean out workspaceVariablesRef a bit now?
-                                            go varEnv' funEnv workspaceId e k -- TODO: Think about this.
-                                        -- _ -> go varEnv' funEnv workspaceId e k -- Intentionally missing this case.
+                                            eval varEnv' funEnv workspaceId e k -- TODO: Think about this.
+                                        -- _ -> eval varEnv' funEnv workspaceId e k -- Intentionally missing this case.
                                 Nothing -> matchPending workspace
                         [] -> matchPending workspace
             retryLoop
@@ -255,7 +261,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     (extraBindings, e) <- loop False
                     liftIO $ addCaseFor autoCtxt f patterns e
                     liftIO $ debugCode
-                    go (M.union extraBindings varEnv') funEnv workspaceId e k
+                    eval (M.union extraBindings varEnv') funEnv workspaceId e k
     return match
 
 makeInterpreterScheduler :: (MonadIO m, MonadFork m) => Bool -> AutoSchedulerContext extra -> WorkspaceId -> m SchedulerFn
@@ -266,19 +272,19 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     initResponseMVar <- liftIO (newEmptyMVar :: IO (MVar Event)) -- This gets leaked but who cares.
     responseMVarsRef <- liftIO $ newIORef (M.singleton initWorkspaceId initResponseMVar)
 
-    let blockOnUser _ workspaceId = do
-            responseMVar <- liftIO $ newEmptyMVar
-            liftIO $ modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
-            liftIO $ writeChan requestChan (Just workspaceId)
-            liftIO $ takeMVar responseMVar -- BLOCK
+    let blockOnUser _ workspaceId = liftIO $ do
+            responseMVar <- newEmptyMVar
+            modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
+            writeChan requestChan (Just workspaceId)
+            takeMVar responseMVar -- BLOCK
         replyFromUser workspaceId evt = do
             Just responseMVar <- liftIO $ atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
             liftIO $ putMVar responseMVar evt
             liftIO $ readChan requestChan
-        begin = do
-            Create msg <- liftIO $ takeMVar initResponseMVar -- TODO: Better error handling.
-            pattern <- liftIO $ relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
-            firstWorkspaceId <- liftIO $ createWorkspace ctxt False initWorkspaceId msg pattern
+        begin = liftIO $ do
+            Create msg <- takeMVar initResponseMVar -- TODO: Better error handling.
+            pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
+            firstWorkspaceId <- createWorkspace ctxt False initWorkspaceId msg pattern
             return (firstWorkspaceId, LetFun ANSWER (Call ANSWER [Value msg]))
 
     spawnInterpreter blockOnUser begin (liftIO $ writeChan requestChan Nothing) isSequential autoCtxt
@@ -297,8 +303,7 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     return scheduler
 
 concurrentlyK :: (MonadIO m, MonadFork m)
-              => GoFn m WorkspaceId Primitive Name Var
-              -> MatchFn m WorkspaceId Primitive Name Var
+              => MatchFn m WorkspaceId Primitive Name Var
               -> AutoSchedulerContext extra
               -> VarEnv Var
               -> FunEnv Name Var
@@ -306,12 +311,13 @@ concurrentlyK :: (MonadIO m, MonadFork m)
               -> [Exp']
               -> Konts'
               -> m Result
-concurrentlyK go match autoCtxt varEnv funEnv ss es k@(CallKont _ f workspaceId _) = do
+concurrentlyK match autoCtxt varEnv funEnv ss es k@(CallKont _ f workspaceId _) = do
     let kId = (workspaceId, f)
         !n = length ss -- should equal length es, TODO: Add assertion.
     forM_ (zip3 [0..] ss es) $ \(i, s, e) -> do
         pId <- liftIO (newProcess autoCtxt)
-        fork pId (() <$ go varEnv funEnv s e (NotifyKont i n kId))
+        liftIO $ recordState autoCtxt pId (varEnv, funEnv, s, e, NotifyKont i n kId)
+    liftIO . terminate autoCtxt =<< myProcessId -- TODO: Alternatively, have this process handle one of the e's.
     return Nothing
 
 spawnInterpreter :: (MonadIO m, MonadFork m)
@@ -333,45 +339,79 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
     let !primEnv = fmap (\f x y -> liftIO (f x y)) primEnv'
     match' <- makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt
 
-    pId <- liftIO (newProcess autoCtxt)
-    fork pId $ do
-        (firstWorkspaceId, startExp) <- begin
-        mt <- do
-                let execMany go varEnv funEnv workspaceId es k@(CallKont _ f s _) = do
-                        let kId = (s, f)
-                        liftIO $ saveContinuation autoCtxt k -- TODO: Think about this.
-                        qIds <- liftIO $ pendingQuestions ctxt workspaceId
-                        if null qIds then do -- Then either Var case or no arguments case, either way we can reuse the current workspaceId.
-                            case es of
-                                [] -> applyKonts match k []
-                                [e] -> concurrentlyK go match autoCtxt varEnv funEnv [workspaceId] es k
-                                -- Intentionally omitting length es > 1 case which shouldn't happen.
-                          else do -- we have precreated workspaces for the Call ANSWER or Prim case.
-                                concurrentlyK go match autoCtxt varEnv funEnv qIds es k
+    fork $ do
+        q <- liftIO $ runQueue autoCtxt
+        q <- if null q then do
+                (firstWorkspaceId, startExp) <- begin
+                initProcessId <- liftIO (newProcess autoCtxt)
+                liftIO $ recordState autoCtxt initProcessId (M.empty, M.empty, firstWorkspaceId, startExp, Done)
+                return [initProcessId]
+              else do
+                return q -- TODO: Think through what needs to be done for initialization.
 
-                    match = match' go
-                    notifyKont kId 0 1 v = do
-                        liftIO $ addContinuationArgument autoCtxt kId 0 v
-                        k <- liftIO $ loadContinuation autoCtxt kId
-                        applyKonts match k [v]
-                    notifyKont kId argNumber numArgs v = do
-                        -- Check to see if all the arguments are available for the continuation
-                        -- that kId refers to, and if so, continue with it, else terminate.
-                        liftIO $ addContinuationArgument autoCtxt kId argNumber v
-                        (k, vs) <- liftIO $ continuationArguments autoCtxt kId -- TODO: This could be more efficient.
-                        if length vs == numArgs then do
-                            applyKonts match k vs
-                          else do
-                            return Nothing
-                    go varEnv funEnv s e k = do
-                        v <- evaluateExp' (\s -> do pId <- myProcessId; liftIO (recordState autoCtxt pId s)) (execMany go) match notifyKont substitute primEnv varEnv funEnv s e k
-                        liftIO . terminate autoCtxt =<< myProcessId
+        let execMany varEnv funEnv workspaceId es k@(CallKont _ f s _) = do
+                let kId = (s, f)
+                liftIO $ saveContinuation autoCtxt k -- TODO: Think about this.
+                qIds <- liftIO $ pendingQuestions ctxt workspaceId
+                if null qIds then do -- Then either Var case or no arguments case, either way we can reuse the current workspaceId.
+                    case es of
+                        [] -> applyKonts match k []
+                        [e] -> concurrentlyK match autoCtxt varEnv funEnv [workspaceId] es k
+                        -- Intentionally omitting length es > 1 case which shouldn't happen.
+                  else do -- we have precreated workspaces for the Call ANSWER or Prim case.
+                        concurrentlyK match autoCtxt varEnv funEnv qIds es k
+
+            record s = do pId <- myProcessId; liftIO $ recordState autoCtxt pId s
+
+            match = match' (\varEnv funEnv s e k -> do record (varEnv, funEnv, s, e, k); return Nothing)
+
+            notifyKont kId 0 1 v = do
+                liftIO $ addContinuationArgument autoCtxt kId 0 v
+                k <- liftIO $ loadContinuation autoCtxt kId
+                applyKonts match k [v]
+            notifyKont kId argNumber numArgs v = do
+                -- Check to see if all the arguments are available for the continuation
+                -- that kId refers to, and if so, continue with it, else terminate.
+                liftIO $ addContinuationArgument autoCtxt kId argNumber v
+                (k, vs) <- liftIO $ continuationArguments autoCtxt kId -- TODO: This could be more efficient.
+                if length vs == numArgs then do
+                    applyKonts match k vs
+                  else do
+                    liftIO . terminate autoCtxt =<< myProcessId
+                    return Nothing
+
+            eval = evaluateExp' record execMany match notifyKont substitute primEnv
+
+            consumeConcurrent [] = do
+                q <- liftIO $ runQueue autoCtxt
+                if null q then return (error "AutoInterpreter.hs:consumeConcurrent: Should this happen?") -- TODO
+                          else consumeConcurrent q
+            consumeConcurrent pIds = do
+                mvs <- mapTasks $ map (\pId -> do
+                        (varEnv, funEnv, s, e, k) <- liftIO $ currentState autoCtxt pId
+                        fmap ((,) pId) <$> withProcessId pId (eval varEnv funEnv s e k)) pIds
+                case catMaybes mvs of
+                    [] -> consumeConcurrent []
+                    [(pId, v)] -> do
+                        liftIO $ terminate autoCtxt pId
+                        return v
+                    -- Intentionally incomplete -- TODO: This right?
+
+            consumeSequential [] = do
+                q <- liftIO $ runQueue autoCtxt
+                if null q then return (error "AutoInterpreter.hs:consumeSequential: Should this happen?") -- TODO
+                          else consumeSequential q
+            consumeSequential (pId:pIds) = do
+                state@(varEnv, funEnv, s, e, k) <- liftIO $ currentState autoCtxt pId
+                mv <- withProcessId pId $ eval varEnv funEnv s e k
+                case mv of -- TODO: XXX This is effectively where the scheduling decision is being made.
+                    Nothing -> consumeSequential pIds
+                    Just v -> do
+                        liftIO $ terminate autoCtxt pId
                         return v
 
-                go M.empty M.empty firstWorkspaceId startExp Done
-        case mt of
-            Nothing -> undefined-- TODO: XXX Here we would trampoline on t. To that end, we would eliminate the uses of fork.
-            Just t -> do
-                t <- liftIO $ fullyExpand ctxt t
-                liftIO $ T.putStrLn (toText (messageToBuilder t))
-                end
+        t <- (if isSequential then consumeSequential else consumeConcurrent) q
+
+        t <- liftIO $ fullyExpand ctxt t
+        liftIO $ T.putStrLn (toText (messageToBuilder t))
+        end

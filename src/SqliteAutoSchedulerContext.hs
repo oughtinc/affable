@@ -7,11 +7,12 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), withTransa
 
 import AutoScheduler ( AutoSchedulerContext(..), ProcessId )
 import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsId', Konts(..),
+             parseVarEnv, parseFunEnv,
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
 import Message ( messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
 import Scheduler ( SchedulerContext(..) )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
-import Util ( toText, Lock, withLock )
+import Util ( toText, Lock, withLock, parseUnsafe )
 
 type FunctionId = Int64
 
@@ -36,7 +37,9 @@ makeSqliteAutoSchedulerContext' ctxt = do
                     saveContinuation = saveContinuationSqlite lock conn answerId,
                     loadContinuation = loadContinuationSqlite lock conn answerId,
                     recordState = recordStateSqlite lock conn,
+                    currentState = currentStateSqlite lock conn,
                     newProcess = newProcessSqlite lock conn,
+                    runQueue = runQueueSqlite lock conn,
                     terminate = terminateSqlite lock conn,
                     addContinuationArgument = addContinuationArgumentSqlite lock conn answerId,
                     continuationArguments = continuationArgumentsSqlite lock conn answerId,
@@ -125,11 +128,26 @@ recordStateSqlite lock conn processId (varEnv, funEnv, s, e, k) = do
                             ":expression" := toText (expToBuilderDB e),
                             ":continuation" := toText (kont1ToBuilderDB k)]
 
+currentStateSqlite :: Lock -> Connection -> ProcessId -> IO EvalState'
+currentStateSqlite lock conn pId = do
+    withLock lock $ do
+        [(varEnv, funEnv, s, e, k)] <- queryNamed conn "SELECT varEnv, funEnv, workspaceId, expression, continuation \
+                                                       \FROM Trace \
+                                                       \WHERE processId = :processId \
+                                                       \ORDER BY t DESC \
+                                                       \LIMIT 1" [":processId" := pId]
+        return (parseUnsafe parseVarEnv varEnv, parseUnsafe parseFunEnv funEnv, s, expFromDB e, parseKont1UnsafeDB k)
+
 newProcessSqlite :: Lock -> Connection -> IO ProcessId
 newProcessSqlite lock conn = do
     withLock lock $ do
         execute_ conn "INSERT INTO RunQueue DEFAULT VALUES"
         lastInsertRowId conn
+
+runQueueSqlite :: Lock -> Connection -> IO [ProcessId]
+runQueueSqlite lock conn = do
+    withLock lock $ do
+        map (\(Only pId) -> pId) <$> query_ conn "SELECT processId FROM RunQueue"
 
 terminateSqlite :: Lock -> Connection -> ProcessId -> IO ()
 terminateSqlite lock conn processId = do
@@ -140,8 +158,8 @@ addContinuationArgumentSqlite :: Lock -> Connection -> FunctionId -> KontsId' ->
 addContinuationArgumentSqlite lock conn answerId (workspaceId, f) argNumber v = do
     let !fId = nameToId answerId f
     withLock lock $ do
-        withTransaction conn $ do
-            executeNamed conn "INSERT INTO ContinuationArguments ( workspaceId, function, argNumber, value ) \
+        withTransaction conn $ do -- TODO: The 'OR REPLACE' case should only come up when revisiting and we may want to handel it a different way.
+            executeNamed conn "INSERT OR REPLACE INTO ContinuationArguments ( workspaceId, function, argNumber, value ) \
                               \VALUES (:workspaceId, :function, :argNumber, :value)" [
                                 ":workspaceId" := workspaceId,
                                 ":function" := fId,

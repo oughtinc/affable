@@ -16,9 +16,9 @@ import Text.Megaparsec ( Parsec, parse, (<|>), (<?>), many, sepBy ) -- megaparse
 import Text.Megaparsec.Char ( char, string ) -- megaparsec
 import Text.Megaparsec.Char.Lexer ( decimal ) -- megaparsec
 
-import Message ( Message(..), Pointer, messageToBuilder, messageParser', messageToHaskell, messageToPattern )
+import Message ( Message(..), Pointer, messageToBuilder, messageToBuilderDB, messageParser', messageToHaskell, messageToPattern )
 import Workspace ( WorkspaceId )
-import Util ( mapToBuilder, parseMap )
+import Util ( mapToBuilder, parseMap, parseUnsafe )
 
 type Value = Message
 type Result = Maybe Value
@@ -50,10 +50,12 @@ data Kont1 s p f v
     = Done
     | PrimKont p s (Kont1 s p f v)
     | NotifyKont !Int !Int (KontsId s f)
+  deriving ( Show )
 
 -- TODO: Have sequential or concurrent be a matter of using threads versus sequentially pulling continuations from a queue.
 data Konts s p f v
     = CallKont (FunEnv f v) f s (Kont1 s p f v)
+  deriving ( Show )
 --    | JoinKont (FunEnv f v) f s (Kont1 s p f v) -- TODO
 
 applyKont1 :: (Monad m, Ord p, Ord f)
@@ -66,11 +68,11 @@ applyKont1 :: (Monad m, Ord p, Ord f)
            -> Kont1 s p f v
            -> Value
            -> m Result
-applyKont1 go match notifyKont primEnv varEnv funEnv Done v = return (Just v)
-applyKont1 go match notifyKont primEnv varEnv funEnv (PrimKont p s k) v = do
+applyKont1 eval match notifyKont primEnv varEnv funEnv Done v = return (Just v)
+applyKont1 eval match notifyKont primEnv varEnv funEnv (PrimKont p s k) v = do
     result <- (case M.lookup p primEnv of Just p' -> p') s v
-    applyKont1 go match notifyKont primEnv varEnv funEnv k result
-applyKont1 go match notifyKont primEnv varEnv funEnv (NotifyKont argNumber numArgs kId) v = do
+    applyKont1 eval match notifyKont primEnv varEnv funEnv k result
+applyKont1 eval match notifyKont primEnv varEnv funEnv (NotifyKont argNumber numArgs kId) v = do
     notifyKont kId argNumber numArgs v
 
 applyKonts :: (Monad m, Ord f) => MatchFn m s p f v -> Konts s p f v -> [Value] -> m Result
@@ -106,15 +108,15 @@ evaluateExp' :: (Ord p, Ord f, Ord v, Monad m)
              -> Exp p f v                                        -- |
              -> Kont1 s p f v                                    -- +
              -> m Result
-evaluateExp' record execMany match notifyKont subst primEnv = go'
-    where go varEnv funEnv s (Var x) k = applyKont1 go' match notifyKont primEnv varEnv funEnv k $! case M.lookup x varEnv of Just v -> v
-          go varEnv funEnv s (Value v) k = applyKont1 go' match notifyKont primEnv varEnv funEnv k $ subst varEnv v
-          go varEnv funEnv s (Prim p e) k = go' varEnv funEnv s e (PrimKont p s k)
-          go varEnv funEnv s (Call f es) k = execMany varEnv funEnv s es (CallKont funEnv f s k)
-          go varEnv funEnv s (LetFun f body) k = go' varEnv (M.insert f varEnv funEnv) s body k
-          go' varEnv funEnv s e k = do
+evaluateExp' record execMany match notifyKont subst primEnv = eval
+    where eval varEnv funEnv s (Var x) k = applyKont1 eval' match notifyKont primEnv varEnv funEnv k $! case M.lookup x varEnv of Just v -> v
+          eval varEnv funEnv s (Value v) k = applyKont1 eval' match notifyKont primEnv varEnv funEnv k $ subst varEnv v
+          eval varEnv funEnv s (Prim p e) k = eval' varEnv funEnv s e (PrimKont p s k)
+          eval varEnv funEnv s (Call f es) k = execMany varEnv funEnv s es (CallKont funEnv f s k)
+          eval varEnv funEnv s (LetFun f body) k = eval' varEnv (M.insert f varEnv funEnv) s body k
+          eval' varEnv funEnv s e k = do
             record (varEnv, funEnv, s, e, k)
-            go varEnv funEnv s e k
+            return Nothing
 
 type Var = Pointer
 type Pattern = Message
@@ -143,6 +145,7 @@ expParserDB = (Var <$> (string "(Var " *> decimal <* char ')'))
           <|> (Prim <$> (string "(Prim " *> decimal <* char ' ') <*> (expParserDB <* char ')'))
           <|> (Call <$> (string "(Call " *> nameParser) <*> (many (char ' ' *> expParserDB) <* char ')'))
           <|> (LetFun <$> (string "(LetFun " *> nameParser <* char ' ') <*> (expParserDB <* char ')'))
+          <?> "expression DB"
 
 nameToBuilder :: Name -> Builder
 nameToBuilder ANSWER = fromText "answer"
@@ -207,27 +210,29 @@ kont1ToBuilderDB = kont1ToBuilderDB' T.decimal nameToBuilder
 
 kont1ParserDB :: Parsec Void T.Text Kont1'
 kont1ParserDB = (Done <$ string "Done")
-            <|> (PrimKont <$> (string "(PrimKont" *> decimal) <*> (char ' ' *> decimal) <*> (char ' ' *> kont1ParserDB) <* char ')')
+            <|> (PrimKont <$> (string "(PrimKont " *> decimal) <*> (char ' ' *> decimal) <*> (char ' ' *> kont1ParserDB) <* char ')')
             <|> (NotifyKont <$> (string "(NotifyKont " *> decimal) <*> (char ' ' *> decimal) <*> (char ' ' *> kontsIdParserDB) <* char ')')
+            <?> "kont1"
 
 parseKont1UnsafeDB :: T.Text -> Kont1'
-parseKont1UnsafeDB t = case parse kont1ParserDB "" t of Right k -> k
+-- parseKont1UnsafeDB t = case parse kont1ParserDB "" t of Right k -> k
+parseKont1UnsafeDB = parseUnsafe kont1ParserDB
 
 kontsIdParserDB :: Parsec Void T.Text KontsId'
-kontsIdParserDB = (,) <$> (char '(' *> decimal) <*> (char ',' *> nameParser) <* char ')'
+kontsIdParserDB = (,) <$> (char '(' *> decimal) <*> (char ',' *> nameParser) <* char ')' <?> "continuation ID"
 
 kontsIdToBuilderDB :: (f -> Builder) -> KontsId WorkspaceId f -> Builder
 kontsIdToBuilderDB fBuilder (s, f) = singleton '(' <> T.decimal s <> singleton ',' <> fBuilder f <> singleton ')'
 
 -- I don't really want to store these as strings or really at all, but, for now, it is the most direct thing to do.
 varEnvToBuilder :: VarEnv Var -> Builder
-varEnvToBuilder = mapToBuilder T.decimal messageToBuilder
+varEnvToBuilder = mapToBuilder T.decimal (\msg -> singleton '[' <> messageToBuilderDB msg <> singleton ']')
 
 parseVarEnv :: Parsec Void T.Text (VarEnv Var)
-parseVarEnv = parseMap decimal messageParser'
+parseVarEnv = parseMap decimal (char '[' *> messageParser' <* char ']') <?> "variable environment"
 
 funEnvToBuilder :: FunEnv Name Var -> Builder
 funEnvToBuilder = mapToBuilder nameToBuilder varEnvToBuilder
 
 parseFunEnv :: Parsec Void T.Text (FunEnv Name Var)
-parseFunEnv = parseMap nameParser parseVarEnv
+parseFunEnv = parseMap nameParser parseVarEnv <?> "function environment"
