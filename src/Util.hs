@@ -8,7 +8,7 @@ import Data.Text.Lazy.Builder ( Builder, toLazyText, singleton ) -- text
 import Data.Text.Lazy ( toStrict ) -- text
 import Data.Tuple ( swap ) -- base
 import Data.Void ( Void ) -- base
-import Text.Megaparsec ( Parsec, sepBy, parse ) -- megaparsec
+import Text.Megaparsec ( Parsec, sepBy, parse, parseErrorPretty ) -- megaparsec
 import Text.Megaparsec.Char ( char ) -- megaparsec
 
 toText :: Builder -> S.Text
@@ -37,4 +37,4 @@ parseMap parseKey parseValue = fmap M.fromList (char '[' *> (parseEntry `sepBy` 
     where parseEntry = (,) <$> (char '(' *> parseKey) <*> (char ',' *> parseValue) <* char ')'
 
 parseUnsafe :: Parsec Void S.Text a -> S.Text -> a
-parseUnsafe p t = case parse p "" t of Right x -> x
+parseUnsafe p t = case parse p "" t of Right x -> x; Left bundle -> error (parseErrorPretty bundle)
