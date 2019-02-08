@@ -23,7 +23,7 @@ import System.Timeout ( timeout ) -- base
 import AutoInterpreter ( runM, spawnInterpreter )
 import Exp ( Name(..), Exp(..) )
 import Message ( Message(..), Pointer )
-import Scheduler ( SchedulerFn, UserId, Event(..), getWorkspace, createInitialWorkspace, normalize, generalize, relabelMessage, createWorkspace )
+import Scheduler ( UserId, Event(..), getWorkspace, createInitialWorkspace, normalize, generalize, relabelMessage, createWorkspace )
 import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext' )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )

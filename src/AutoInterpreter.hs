@@ -25,7 +25,7 @@ import Data.Traversable ( traverse ) -- base
 import Data.Tuple ( swap ) -- base
 import System.IO ( stderr) -- base
 
-import AutoScheduler ( AutoSchedulerContext(..), ProcessId )
+import AutoScheduler ( AutoSchedulerContext(..), ProcessId, AddContinuationResult(..) )
 import Exp ( Result, Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), GoFn, MatchFn, Konts(..), FunEnv, Konts',
              EvalState', varEnvToBuilder, funEnvToBuilder, nameToBuilder, nameParser, evaluateExp', applyKonts, expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage, messageParser',
@@ -247,6 +247,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                             msg' <- liftIO $ relabelMessage ctxt =<< normalize ctxt msg
                             liftIO $ sendAnswer ctxt False workspaceId msg' -- TODO: Can I clean out workspaceVariablesRef a bit now?
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
+                        -- processEvent (Send ws msg) = -- Intentionally incomplete pattern match. Should never get here.
                         processEvent Submit = do
                             workspace <- liftIO $ getWorkspace ctxt workspaceId -- Refresh workspace.
                             -- Get unanswered questions.
@@ -255,9 +256,11 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                 g <- liftIO $ newFunction autoCtxt
                                 let args = map (\q -> primToCall (matchPrim q) q) qs
                                 return (M.empty, LetFun g (Call g args))
-                        -- processEvent (Send ws msg) = -- Intentionally incomplete pattern match. Should never get here.
+                        processEvent Init = error "processEvent Init: Shouldn't happen."
+
                         primToCall (Just p) q = Prim p (Value $ renumberMessage' globalToLocal q)
                         primToCall Nothing q = Call ANSWER [Value $ renumberMessage' globalToLocal q]
+
                     (extraBindings, e) <- loop False
                     liftIO $ addCaseFor autoCtxt f patterns e
                     liftIO $ debugCode
@@ -269,31 +272,30 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     let !ctxt = schedulerContext autoCtxt
 
     requestChan <- liftIO (newChan :: IO (Chan (Maybe WorkspaceId)))
-    initResponseMVar <- liftIO (newEmptyMVar :: IO (MVar Event)) -- This gets leaked but who cares.
-    responseMVarsRef <- liftIO $ newIORef (M.singleton initWorkspaceId initResponseMVar)
+    responseMVarsRef <- liftIO $ newIORef (M.empty :: M.Map WorkspaceId (MVar Event))
 
     let blockOnUser _ workspaceId = liftIO $ do
             responseMVar <- newEmptyMVar
             modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
             writeChan requestChan (Just workspaceId)
             takeMVar responseMVar -- BLOCK
-        replyFromUser workspaceId evt = do
-            Just responseMVar <- liftIO $ atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
-            liftIO $ putMVar responseMVar evt
-            liftIO $ readChan requestChan
+        replyFromUser workspaceId Init = liftIO $ do
+            readChan requestChan
+        replyFromUser workspaceId evt = liftIO $ do
+            Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
+            putMVar responseMVar evt
+            readChan requestChan
         begin = liftIO $ do
-            Create msg <- takeMVar initResponseMVar -- TODO: Better error handling.
-            pattern <- relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
-            firstWorkspaceId <- createWorkspace ctxt False initWorkspaceId msg pattern
-            return (firstWorkspaceId, LetFun ANSWER (Call ANSWER [Value msg]))
+            initWorkspace <- getWorkspace ctxt initWorkspaceId
+            return (initWorkspaceId, LetFun ANSWER (Call ANSWER [Value (question initWorkspace)]))
 
     spawnInterpreter blockOnUser begin (liftIO $ writeChan requestChan Nothing) isSequential autoCtxt
 
-    let scheduler _ workspace (Send ws msg) = do
+    let scheduler _ workspace (Send ws msg) = liftIO $ do
             -- TODO: Think about this and support it if it makes sense.
             -- sendMessage ctxt workspace ws msg
-            liftIO $ putStrLn "makeInterpreterScheduler: Message sending not supported."
-            liftIO $ Just <$> getWorkspace ctxt (identity workspace)
+            putStrLn "makeInterpreterScheduler: Message sending not supported."
+            Just <$> getWorkspace ctxt (identity workspace)
         scheduler _ workspace evt = do
             mWorkspaceId <- replyFromUser (identity workspace) evt
             case mWorkspaceId of
@@ -314,9 +316,9 @@ concurrentlyK :: (MonadIO m, MonadFork m)
 concurrentlyK match autoCtxt varEnv funEnv ss es k@(CallKont _ f workspaceId _) = do
     let kId = (workspaceId, f)
         !n = length ss -- should equal length es, TODO: Add assertion.
-    forM_ (zip3 [0..] ss es) $ \(i, s, e) -> do
-        pId <- liftIO (newProcess autoCtxt)
-        liftIO $ recordState autoCtxt pId (varEnv, funEnv, s, e, NotifyKont i n kId)
+    liftIO $ forM_ (zip3 [0..] ss es) $ \(i, s, e) -> do
+        pId <- newProcess autoCtxt
+        recordState autoCtxt pId (varEnv, funEnv, s, e, NotifyKont i n kId)
     liftIO . terminate autoCtxt =<< myProcessId -- TODO: Alternatively, have this process handle one of the e's.
     return Nothing
 
@@ -347,7 +349,7 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                 liftIO $ recordState autoCtxt initProcessId (M.empty, M.empty, firstWorkspaceId, startExp, Done)
                 return [initProcessId]
               else do
-                return q -- TODO: Think through what needs to be done for initialization.
+                return q -- TODO: Think through what needs to be done for initialization, if anything.
 
         let execMany varEnv funEnv workspaceId es k@(CallKont _ f s _) = do
                 let kId = (s, f)
@@ -359,29 +361,41 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                         [e] -> concurrentlyK match autoCtxt varEnv funEnv [workspaceId] es k
                         -- Intentionally omitting length es > 1 case which shouldn't happen.
                   else do -- we have precreated workspaces for the Call ANSWER or Prim case.
-                        concurrentlyK match autoCtxt varEnv funEnv qIds es k
+                    concurrentlyK match autoCtxt varEnv funEnv qIds es k
 
-            record s = do pId <- myProcessId; liftIO $ recordState autoCtxt pId s
+            record s = do
+                pId <- myProcessId
+                liftIO $ recordState autoCtxt pId s
 
             match = match' (\varEnv funEnv s e k -> do record (varEnv, funEnv, s, e, k); return Nothing)
 
+            die = do
+                liftIO . terminate autoCtxt =<< myProcessId
+                return Nothing
+
             notifyKont kId 0 1 v = do
-                liftIO $ addContinuationArgument autoCtxt kId 0 v
-                k <- liftIO $ loadContinuation autoCtxt kId
-                applyKonts match k [v]
+                r <- liftIO $ addContinuationArgument autoCtxt kId 0 v
+                case r of
+                    SAME -> die
+                    -- REPLACED -> undefined -- TODO XXX
+                    _ -> do
+                        k <- liftIO $ loadContinuation autoCtxt kId
+                        applyKonts match k [v]
             notifyKont kId argNumber numArgs v = do
                 -- Check to see if all the arguments are available for the continuation
                 -- that kId refers to, and if so, continue with it, else terminate.
-                liftIO $ addContinuationArgument autoCtxt kId argNumber v
-                (k, vs) <- liftIO $ continuationArguments autoCtxt kId -- TODO: This could be more efficient.
-                if length vs == numArgs then do
-                    applyKonts match k vs
-                  else do
-                    liftIO . terminate autoCtxt =<< myProcessId
-                    return Nothing
+                r <- liftIO $ addContinuationArgument autoCtxt kId argNumber v
+                case r of
+                    SAME -> die
+                    -- REPLACED -> undefined -- TODO XXX
+                    _ -> do
+                        (k, vs) <- liftIO $ continuationArguments autoCtxt kId -- TODO: This could be more efficient.
+                        if length vs == numArgs then applyKonts match k vs else die
 
             eval = evaluateExp' record execMany match notifyKont substitute primEnv
 
+            -- TODO: These effectively do the scheduling currently. We could make these functions parameters
+            -- to allow a more thoughtful choice.
             consumeConcurrent [] = do
                 q <- liftIO $ runQueue autoCtxt
                 if null q then return (error "AutoInterpreter.hs:consumeConcurrent: Should this happen?") -- TODO
@@ -395,8 +409,12 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                     [(pId, v)] -> do
                         liftIO $ terminate autoCtxt pId
                         return v
-                    -- Intentionally incomplete -- TODO: This right?
+                    -- Intentionally incomplete -- TODO: This right? Maybe not with revisits.
 
+            -- NOTE: I think the way this is implemented will produce something like a breadth-first traversal.
+            -- A more depth-first traversal should be able to be produced by reading the RunQueue every step and
+            -- always executing the most recently added process. To that end, we'd probably want to add tasks in
+            -- reverse order or it will be depth-first, right-to-left order.
             consumeSequential [] = do
                 q <- liftIO $ runQueue autoCtxt
                 if null q then return (error "AutoInterpreter.hs:consumeSequential: Should this happen?") -- TODO
@@ -404,7 +422,7 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
             consumeSequential (pId:pIds) = do
                 state@(varEnv, funEnv, s, e, k) <- liftIO $ currentState autoCtxt pId
                 mv <- withProcessId pId $ eval varEnv funEnv s e k
-                case mv of -- TODO: XXX This is effectively where the scheduling decision is being made.
+                case mv of
                     Nothing -> consumeSequential pIds
                     Just v -> do
                         liftIO $ terminate autoCtxt pId

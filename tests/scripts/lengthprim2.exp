@@ -8,15 +8,11 @@ set timeout -1
 spawn stack exec affable
 match_max 100000
 
-expect -re {Question: What is your question\?\r
-> $}
-
-send -- "ask commit cf0f596ad71dda7e4cf00338d91b6a882a11d354\r"
-expect -re {Question: \[\x24(\d+)\|commit cf0f596ad71dda7e4cf00338d91b6a882a11d354\]\r
+expect -re {Question: \[\x24(\d+)\|What is your question\x3F\]\r
 > $}
 
 send -- "ask length \[cons \[1\] \[cons \[2\] \[nil\]\]\]\r"
-expect -re {Question: \[\x24(\d+)\|commit cf0f596ad71dda7e4cf00338d91b6a882a11d354\]\r
+expect -re {Question: \[\x24(\d+)\|What is your question\x3F\]\r
 Subquestions:\r
   1. length \[cons \[1\] \[cons \[2\] \[nil\]\]\]\r
 > $}
@@ -64,14 +60,14 @@ Subquestions:\r
 > $}
 
 send -- "reply \x24$expect_out(7,string)\r"
-expect -re {Question: \[\x24(\d+)\|commit cf0f596ad71dda7e4cf00338d91b6a882a11d354\]\r
+expect -re {Question: \[\x24(\d+)\|What is your question\x3F\]\r
 Subquestions:\r
   1. length \[cons \[1\] \[cons \[2\] \[nil\]\]\]\r
     Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
 > $}
 
 send -- "ask length \[cons \[1\] \[cons \[2\] \[cons \[3\] \[cons \[4\] \[cons \[5\] \[nil\]\]\]\]\]\]\r"
-expect -re {Question: \[\x24(\d+)\|commit cf0f596ad71dda7e4cf00338d91b6a882a11d354\]\r
+expect -re {Question: \[\x24(\d+)\|What is your question\x3F\]\r
 Subquestions:\r
   1. length \[cons \[1\] \[cons \[2\] \[nil\]\]\]\r
     Answer: \[\x24(\d+)\|result \x24(\d+)\]\r
@@ -79,7 +75,7 @@ Subquestions:\r
 > $}
 
 send -- "wait\r"
-expect -re {Question: \[\x24(\d+)\|commit cf0f596ad71dda7e4cf00338d91b6a882a11d354\]\r
+expect -re {Question: \[\x24(\d+)\|What is your question\x3F\]\r
 Subquestions:\r
   1. length \[cons \[1\] \[cons \[2\] \[nil\]\]\]\r
     Answer: \[\x24(\d+)\|result \x24(\d+)\]\r

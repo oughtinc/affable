@@ -12,6 +12,7 @@ data Event
     | Expand Pointer -- view
     | Send WorkspaceId Message -- send
     | Submit -- wait
+    | Init
   deriving ( Eq, Ord, Show )
 
 type UserId = Int
@@ -68,5 +69,7 @@ makeSingleUserScheduler ctxt = do
             Just <$> getWorkspace ctxt (identity workspace)
 
         scheduler user workspace Submit = return $ Just workspace
+
+        scheduler user workspace Init = return $ Just workspace
 
     return scheduler

@@ -141,44 +141,51 @@ insertGeneralizedMessagePointers lock conn msg = do
 
 labelMessageSqlite :: Lock -> Connection -> Message -> IO Message
 labelMessageSqlite lock conn msg@(Structured ms) = do
+    let !msgText = toText (messageToBuilderDB msg)
     withLock lock $ do
-        execute conn "INSERT INTO Pointers (content) VALUES (?)" [toText (messageToBuilderDB msg)]
+        execute conn "INSERT INTO Pointers (content) VALUES (?)" [msgText]
         p <- fromIntegral <$> lastInsertRowId conn
         return (LabeledStructured p ms)
 labelMessageSqlite lock conn msg = do
+    let !msgText = toText (messageToBuilderDB msg)
     withLock lock $ do
-        execute conn "INSERT INTO Pointers (content) VALUES (?)" [toText (messageToBuilderDB msg)]
+        execute conn "INSERT INTO Pointers (content) VALUES (?)" [msgText]
         p <- fromIntegral <$> lastInsertRowId conn
         return (LabeledStructured p [msg])
 
 insertCommand :: Lock -> Connection -> WorkspaceId -> Command -> IO ()
 insertCommand lock conn workspaceId cmd = do
+    let !cmdText = toText (commandToBuilder cmd)
     withLock lock $ do
         mt <- query conn "SELECT localTime FROM Commands WHERE workspaceId = ? ORDER BY localTime DESC LIMIT 1" (Only workspaceId)
         let t = case mt of [] -> 0; [Only t'] -> t'+1
         executeNamed conn "INSERT INTO Commands (workspaceId, localTime, command) VALUES (:workspace, :time, :cmd)" [
                             ":workspace" := workspaceId,
                             ":time" := (t :: Int64),
-                            ":cmd" := toText (commandToBuilder cmd)]
+                            ":cmd" := cmdText]
 
 createInitialWorkspaceSqlite :: Lock -> Connection -> IO WorkspaceId
 createInitialWorkspaceSqlite lock conn = do
+    msg <- labelMessageSqlite lock conn (Text "What is your question?")
+    let !msgText = toText (messageToBuilder msg)
     withLock lock $ do
         executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) VALUES (:time, :parent, :question, :question)" [
                             ":time" := (0 :: LogicalTime),
                             ":parent" := (Nothing :: Maybe WorkspaceId),
-                            ":question" := ("What is your question?" :: Text)]
+                            ":question" := msgText]
         lastInsertRowId conn
 
 createWorkspaceSqlite :: Lock -> Connection -> Bool -> WorkspaceId -> Message -> Message -> IO WorkspaceId
 createWorkspaceSqlite lock conn doNormalize workspaceId qAsAsked qAsAnswered = do
     qAsAnswered' <- if doNormalize then insertMessagePointers lock conn qAsAnswered else return qAsAnswered
+    let !qAsAskedText = toText (messageToBuilder qAsAsked)
+        !qAsAnsweredText = toText (messageToBuilder qAsAnswered')
     newWorkspaceId <- withLock lock $ do
         executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) VALUES (:time, :parent, :asAsked, :asAnswered)" [
                             ":time" := (0 :: LogicalTime), -- TODO
                             ":parent" := Just workspaceId,
-                            ":asAsked" := toText (messageToBuilder qAsAsked),
-                            ":asAnswered" := toText (messageToBuilder qAsAnswered')]
+                            ":asAsked" := qAsAskedText,
+                            ":asAnswered" := qAsAnsweredText]
         lastInsertRowId conn
     insertCommand lock conn workspaceId (Ask qAsAsked)
     return newWorkspaceId
@@ -186,22 +193,27 @@ createWorkspaceSqlite lock conn doNormalize workspaceId qAsAsked qAsAnswered = d
 sendAnswerSqlite :: Lock -> Connection -> Bool -> WorkspaceId -> Message -> IO ()
 sendAnswerSqlite lock conn doNormalize workspaceId msg = do
     msg' <- if doNormalize then insertMessagePointers lock conn msg else return msg
+    let !msgText = toText (messageToBuilder msg')
     withLock lock $ do
-        executeNamed conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (:workspace, :time, :answer)" [
+        -- TODO: XXX If we revisit, and thus change an answer, this will need to be an INSERT OR REPLACE or we'll need to start
+        -- actually using this time parameter. If this is all that is changed, then we'll get a model of edits where we see
+        -- the following questions upon return, possibly referring to pointers in an answer that no longer exist.
+        executeNamed conn "INSERT OR REPLACE INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (:workspace, :time, :answer)" [
                             ":workspace" := workspaceId,
                             ":time" := (0 :: LogicalTime), -- TODO
-                            ":answer" := toText (messageToBuilder msg')]
+                            ":answer" := msgText]
     insertCommand lock conn workspaceId (Reply msg)
 
 sendMessageSqlite :: Lock -> Connection -> Bool -> WorkspaceId -> WorkspaceId -> Message -> IO ()
 sendMessageSqlite lock conn doNormalize srcId tgtId msg = do
     msg' <- if doNormalize then insertMessagePointers lock conn msg else return msg
+    let !msgText = toText (messageToBuilder msg')
     withLock lock $ do
         executeNamed conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (:source, :target, :time, :content)" [
                             ":source" := srcId,
                             ":target" := tgtId,
                             ":time" := (0 :: LogicalTime), -- TODO
-                            ":content" := toText (messageToBuilder msg')]
+                            ":content" := msgText]
     insertCommand lock conn srcId (Send (fromIntegral tgtId) msg)
 
 -- TODO: Bulkify this.

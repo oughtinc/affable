@@ -1,4 +1,3 @@
-ask commit cf0f596ad71dda7e4cf00338d91b6a882a11d354
 ask evaluate [App [Lam [Var [Z]]] [Lam [Var [Z]]]]
 wait
 ask {$1 [Nil] [Done]}

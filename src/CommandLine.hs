@@ -68,8 +68,12 @@ completionFunc = completeWord Nothing "" $ \s -> return $ map simpleCompletion $
 commandLineInteraction :: Workspace -> SchedulerFn -> IO ()
 commandLineInteraction initWorkspace scheduler = do
     runInputT (setComplete completionFunc defaultSettings) $ do
-        mapping <- renderWorkspace initWorkspace
-        go mapping initWorkspace
+        mWorkspace <- liftIO $ scheduler userId initWorkspace Event.Init
+        case mWorkspace of
+            Nothing -> return ()
+            Just ws -> do
+                mapping' <- renderWorkspace ws
+                go mapping' ws
   where userId = 0 :: UserId
         go mapping ws = do
           eCmd <- readCommand

@@ -5,7 +5,7 @@ import qualified Data.Map as M -- containers
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), withTransaction,
                                 query, query_, queryNamed, executeMany, executeNamed, execute_, lastInsertRowId ) -- sqlite-simple
 
-import AutoScheduler ( AutoSchedulerContext(..), ProcessId )
+import AutoScheduler ( AutoSchedulerContext(..), ProcessId, AddContinuationResult(..) )
 import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsId', Konts(..),
              parseVarEnv, parseFunEnv,
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
@@ -84,7 +84,9 @@ addCaseForSqlite :: Lock -> Connection -> FunctionId -> Name -> [Pattern] -> Exp
 addCaseForSqlite lock conn answerId f patterns e = do
     let !fId = nameToId answerId f
     withLock lock $ do
-        executeNamed conn "INSERT INTO Alternatives (function, pattern, body) VALUES (:function, :patterns, :body)" [
+        -- TODO: XXX This will also need to change to an INSERT OR REPLACE if we just naively have revisits update
+        -- the answer and automation. Or maybe we'd need to remove the alternative ahead of time.
+        executeNamed conn "INSERT INTO Alternatives ( function, pattern, body ) VALUES (:function, :patterns, :body)" [
                             ":function" := fId,
                             ":patterns" := toText (patternsToBuilder patterns),
                             ":body" := toText (expToBuilderDB e)]
@@ -94,7 +96,9 @@ saveContinuationSqlite lock conn answerId (CallKont funEnv f workspaceId k) = do
     let !fId = nameToId answerId f
     withLock lock $ do
         withTransaction conn $ do
-            executeNamed conn "INSERT INTO Continuations ( workspaceId, function, next ) VALUES (:workspaceId, :function, :k)" [
+            -- TODO: XXX This will probably need to change to an INSERT OR REPLACE (or maybe an INSERT OR IGNORE) if we just
+            -- naively have revisits update the answer and automation.
+            executeNamed conn "INSERT OR REPLACE INTO Continuations ( workspaceId, function, next ) VALUES (:workspaceId, :function, :k)" [
                                 ":workspaceId" := workspaceId,
                                 ":function" := fId,
                                 ":k" := toText (kont1ToBuilderDB k)]
@@ -102,8 +106,8 @@ saveContinuationSqlite lock conn answerId (CallKont funEnv f workspaceId k) = do
             -- all the ContinuationEnvironments associated with this Workspace?
             -- TODO: This also doesn't store any entries with empty VarEnvs. For now, when I consume funEnv, I'll just assume a
             -- lookup that fails means an empty VarEnv.
-            executeMany conn "INSERT INTO ContinuationEnvironments ( workspaceId, function, variable, value ) VALUES (?, ?, ?, ?)"
-                (map (\(x, v) -> (workspaceId, fId, x, toText (messageToBuilder v)))
+            executeMany conn "INSERT OR REPLACE INTO ContinuationEnvironments ( workspaceId, function, variable, value ) VALUES (?, ?, ?, ?)"
+                (map (\(x, v) -> (workspaceId, fId, x, toText (messageToBuilder v))) -- TODO: Do this outside of the critical section.
                      (M.toList (maybe M.empty id $ M.lookup f funEnv)))
 
 -- CACHEABLE
@@ -122,16 +126,42 @@ loadContinuationSqlite lock conn answerId (workspaceId, f) = do
         return (CallKont funEnv f workspaceId (parseKont1UnsafeDB k))
 
 recordStateSqlite :: Lock -> Connection -> ProcessId -> EvalState' -> IO ()
-recordStateSqlite lock conn processId (varEnv, funEnv, s, e, k) = do
-    withLock lock $ do
-        executeNamed conn "INSERT INTO Trace ( processId, varEnv, funEnv, workspaceId, expression, continuation ) \
-                          \VALUES (:processId, :varEnv, :funEnv, :workspaceId, :expression, :continuation)" [
-                            ":processId" := processId,
-                            ":varEnv" := toText (varEnvToBuilder varEnv), -- TODO: Seems like the varEnv will also be in funEnv
-                            ":funEnv" := toText (funEnvToBuilder funEnv), -- and so doesn't need to be stored separately.
-                            ":workspaceId" := s,
-                            ":expression" := toText (expToBuilderDB e),
-                            ":continuation" := toText (kont1ToBuilderDB k)]
+recordStateSqlite lock conn processId (varEnv, funEnv, s, e, k) = do {
+    -- To support brute-force revisit, we can add a check here that checks if the state is already in Trace, and if so terminates
+    -- processId.
+    let { !varEnvText = toText (varEnvToBuilder varEnv);
+          !funEnvText = toText (funEnvToBuilder funEnv);
+          !expText = toText (expToBuilderDB e);
+          !continuationText = toText (kont1ToBuilderDB k) };
+
+    {--
+    seen <- withLock lock $ do {
+        rs <- queryNamed conn "SELECT 1 \
+                              \FROM Trace \
+                              \WHERE varEnv = :varEnv AND funEnv = :funEnv AND workspaceId = :workspaceId \
+                              \  AND expression = :expression AND continuation = :continuation \
+                              \LIMIT 1" [
+                                ":varEnv" := varEnvText,
+                                ":funEnv" := funEnvText,
+                                ":workspaceId" := s,
+                                ":expression" := expText,
+                                ":continuation" := continuationText];
+        return (not (null (rs :: [Only Int64]))) };
+
+    if seen then do
+        terminateSqlite lock conn processId
+      else do
+    -- -}
+        withLock lock $ do
+            executeNamed conn "INSERT INTO Trace ( processId, varEnv, funEnv, workspaceId, expression, continuation ) \
+                              \VALUES (:processId, :varEnv, :funEnv, :workspaceId, :expression, :continuation)" [
+                                ":processId" := processId,
+                                ":varEnv" := varEnvText, -- TODO: Seems like the varEnv will also be in funEnv
+                                ":funEnv" := funEnvText, -- and so doesn't need to be stored separately.
+                                ":workspaceId" := s,
+                                ":expression" := expText,
+                                ":continuation" := continuationText]
+    }
 
 currentStateSqlite :: Lock -> Connection -> ProcessId -> IO EvalState'
 currentStateSqlite lock conn pId = do
@@ -159,17 +189,41 @@ terminateSqlite lock conn processId = do
     withLock lock $ do
         executeNamed conn "DELETE FROM RunQueue WHERE processId = :processId" [":processId" := processId]
 
-addContinuationArgumentSqlite :: Lock -> Connection -> FunctionId -> KontsId' -> Int -> Value -> IO ()
+addContinuationArgumentSqlite :: Lock -> Connection -> FunctionId -> KontsId' -> Int -> Value -> IO AddContinuationResult
 addContinuationArgumentSqlite lock conn answerId (workspaceId, f) argNumber v = do
     let !fId = nameToId answerId f
+    let !vText = toText (messageToBuilder v)
     withLock lock $ do
-        withTransaction conn $ do -- TODO: The 'OR REPLACE' case should only come up when revisiting and we may want to handel it a different way.
-            executeNamed conn "INSERT OR REPLACE INTO ContinuationArguments ( workspaceId, function, argNumber, value ) \
-                              \VALUES (:workspaceId, :function, :argNumber, :value)" [
-                                ":workspaceId" := workspaceId,
-                                ":function" := fId,
-                                ":argNumber" := argNumber,
-                                ":value" := toText (messageToBuilder v)]
+        {-
+        vs <- queryNamed conn "SELECT value \
+                              \FROM ContinuationArguments \
+                              \WHERE workspaceId = :workspaceId AND function = :function AND argNumber = :argNumber \
+                              \LIMIT 1" [
+                            ":workspaceId" := workspaceId,
+                            ":function" := fId,
+                            ":argNumber" := argNumber]
+        case vs of
+            [] -> do
+        -}
+                -- TODO: Can remove the 'OR REPLACE' if the other code is uncommented.
+                executeNamed conn "INSERT OR REPLACE INTO ContinuationArguments ( workspaceId, function, argNumber, value ) \
+                                  \VALUES (:workspaceId, :function, :argNumber, :value)" [
+                                    ":workspaceId" := workspaceId,
+                                    ":function" := fId,
+                                    ":argNumber" := argNumber,
+                                    ":value" := vText]
+                return NEW
+        {-
+            [Only v'] | vText == v' -> return SAME
+                      | otherwise -> do -- TODO: Formulate an approach that doesn't involve in-place updates.
+                            executeNamed conn "UPDATE ContinuationArguments SET value = :value \
+                                              \WHERE workspaceId =  :workspaceId AND function = :function AND argNumber = :argNumber" [
+                                                ":workspaceId" := workspaceId,
+                                                ":function" := fId,
+                                                ":argNumber" := argNumber,
+                                                ":value" := vText]
+                            return REPLACED
+        -}
 
 -- NOT CACHEABLE
 continuationArgumentsSqlite :: Lock -> Connection -> FunctionId -> KontsId' -> IO (Konts', [Value])
