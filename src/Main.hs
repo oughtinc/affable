@@ -160,6 +160,7 @@ initSqlite conn = do
        \CREATE TABLE IF NOT EXISTS Commands (\n\
        \    workspaceId INTEGER NOT NULL,\n\
        \    localTime INTEGER NOT NULL,\n\
+       \    userId INTEGER NOT NULL,\n\
        \    command TEXT NOT NULL,\n\
        \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
        \    PRIMARY KEY ( workspaceId ASC, localTime ASC )\n\

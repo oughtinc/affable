@@ -11,7 +11,7 @@ import Data.Text.Read ( signed, decimal ) -- text
 
 import Exp ( Primitive, PrimEnv, Pattern, Value )
 import Message ( Message(..), matchMessage )
-import Scheduler ( SchedulerContext(..), relabelMessage, fullyExpand )
+import Scheduler ( SchedulerContext(..), autoUserId, relabelMessage, fullyExpand )
 import Workspace ( WorkspaceId, parentId )
 
 type PrimFunc extra = SchedulerContext extra -> WorkspaceId -> [Value] -> IO Value
@@ -24,7 +24,7 @@ makePrimitive :: SchedulerContext extra -> Pattern -> PrimFunc extra -> (Workspa
 makePrimitive ctxt pattern body workspaceId msg = do
     answer <- maybe (return don'tKnow) (body ctxt workspaceId . M.elems) . matchMessage pattern =<< fullyExpand ctxt msg
     answer <- relabelMessage ctxt =<< normalize ctxt answer
-    sendAnswer ctxt False workspaceId answer
+    sendAnswer ctxt False autoUserId workspaceId answer
     return answer
 
 makePrimitives :: SchedulerContext extra -> IO (PrimEnv WorkspaceId IO Primitive, Value -> Maybe Primitive)

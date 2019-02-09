@@ -19,7 +19,7 @@ import Text.Megaparsec ( ParseError, parse, parseErrorPretty ) -- megaparsec 6.5
 
 import Command ( Command(..), commandParser )
 import Message ( Message(..), PointerRemapping, messageToBuilder, expandPointers, renumberMessage, renumberAcc )
-import Scheduler ( UserId, Event, SchedulerFn )
+import Scheduler ( UserId, Event, SchedulerFn, firstUserId )
 import qualified Scheduler as Event ( Event (..) )
 import Util ( toText, invertMap )
 import Workspace ( Workspace(..), emptyWorkspace )
@@ -68,14 +68,13 @@ completionFunc = completeWord Nothing "" $ \s -> return $ map simpleCompletion $
 commandLineInteraction :: Workspace -> SchedulerFn -> IO ()
 commandLineInteraction initWorkspace scheduler = do
     runInputT (setComplete completionFunc defaultSettings) $ do
-        mWorkspace <- liftIO $ scheduler userId initWorkspace Event.Init
+        mWorkspace <- liftIO $ scheduler firstUserId initWorkspace Event.Init
         case mWorkspace of
             Nothing -> return ()
             Just ws -> do
                 mapping' <- renderWorkspace ws
                 go mapping' ws
-  where userId = 0 :: UserId
-        go mapping ws = do
+  where go mapping ws = do
           eCmd <- readCommand
           case eCmd of
               Left (line, bundle) -> do
@@ -92,7 +91,7 @@ commandLineInteraction initWorkspace scheduler = do
                         go mapping ws
                     Just evt -> do
                       -- liftIO $ clearScreen >> setCursorPosition 0 0 >> hFlush stdout
-                      mWorkspace <- liftIO $ scheduler userId ws evt
+                      mWorkspace <- liftIO $ scheduler firstUserId ws evt
                       case mWorkspace of
                           Nothing -> return ()
                           Just ws -> do

@@ -31,7 +31,7 @@ import Exp ( Result, Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pat
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage, messageParser',
                  matchPointers, expandPointers, substitute, renumberMessage' )
 import Primitive ( makePrimitives )
-import Scheduler ( Event(..), SchedulerContext(..), SchedulerFn, relabelMessage, fullyExpand )
+import Scheduler ( UserId, Event(..), SchedulerContext(..), SchedulerFn, autoUserId, relabelMessage, fullyExpand )
 import Util ( toText, invertMap )
 import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 
@@ -77,7 +77,7 @@ instance MonadFork M where
 -- concurrency.
 
 makeMatcher :: (MonadIO m, MonadFork m)
-            => (Bool -> WorkspaceId -> m Event)
+            => (Bool -> WorkspaceId -> m (UserId, Event))
             -> (Value -> Maybe Primitive)
             -> (WorkspaceId -> Message -> m ())
             -> (WorkspaceId -> m (Maybe Message))
@@ -87,7 +87,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
     let !ctxt = schedulerContext autoCtxt
 
     -- TODO: This could probably be made unnecessary if we started tracking timing, i.e. using that logicalTime field.
-    cutOffsRef <- liftIO $ newIORef (M.empty :: M.Map WorkspaceId WorkspaceId) -- TODO: XXX Store in database for restore?
+    cutOffsRef <- liftIO $ newIORef (M.empty :: M.Map WorkspaceId WorkspaceId)
 
     -- Get answers that have been answered since last time the workspace was displayed.
     let getRecentlyAnswered workspace = do
@@ -98,7 +98,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
             return $! mapMaybe (\(qId, _, ma) -> if qId > currCutOff then ma else Nothing) $ subQuestions workspace
 
     -- Mapping of pointers from replay workspace to original workspace.
-    workspaceVariablesRef <- liftIO $ newIORef (M.empty :: M.Map WorkspaceId PointerRemapping) -- TODO: XXX Store in database(?) Maybe not?
+    workspaceVariablesRef <- liftIO $ newIORef (M.empty :: M.Map WorkspaceId PointerRemapping)
 
     let linkVars workspaceId mapping = liftIO $ modifyIORef' workspaceVariablesRef $ M.insertWith M.union workspaceId mapping
         links workspaceId = liftIO $ (maybe M.empty id . M.lookup workspaceId) <$> readIORef workspaceVariablesRef
@@ -197,7 +197,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                         LetFun _ (Call _ [Var ptr]) -> do -- expand case
                                             let !p = maybe ptr id $ M.lookup ptr $ invertMap globalToLocal
                                             arg <- liftIO $ dereference ctxt p
-                                            liftIO $ expandPointer ctxt workspaceId p
+                                            liftIO $ expandPointer ctxt autoUserId workspaceId p
                                             giveArgument workspaceId arg
                                             eval (M.insert ptr arg varEnv') funEnv workspaceId e k -- TODO: Think about this.
                                         LetFun _ (Call _ args) -> do -- ask cases
@@ -206,12 +206,12 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                                 let !m = case argExp of Call ANSWER [Value m] -> m; Prim _ (Value m) -> m
                                                 let !arg = substitute bindings m
                                                 pattern <- liftIO $ relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt arg
-                                                liftIO $ createWorkspace ctxt False workspaceId (renumberMessage' localToGlobal m) pattern
+                                                liftIO $ createWorkspace ctxt False autoUserId workspaceId (renumberMessage' localToGlobal m) pattern
                                             eval varEnv' funEnv workspaceId e k -- TODO: Think about this.
                                         Value msg -> do -- reply case
                                             let !msg' = substitute bindings msg
                                             msg <- liftIO $ normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
-                                            liftIO $ sendAnswer ctxt False workspaceId msg -- TODO: Can I clean out workspaceVariablesRef a bit now?
+                                            liftIO $ sendAnswer ctxt False autoUserId workspaceId msg -- TODO: Can I clean out workspaceVariablesRef a bit now?
                                             eval varEnv' funEnv workspaceId e k -- TODO: Think about this.
                                         -- _ -> eval varEnv' funEnv workspaceId e k -- Intentionally missing this case.
                                 Nothing -> matchPending workspace
@@ -228,27 +228,27 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     globalToLocal <- links workspaceId
 
                     let loop stay = blockOnUser stay workspaceId >>= processEvent
-                        processEvent (Create msg) = do
+                        processEvent (userId, Create msg) = do
                             pattern <- liftIO $ relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
-                            liftIO $ createWorkspace ctxt False workspaceId msg pattern
+                            liftIO $ createWorkspace ctxt False userId workspaceId msg pattern
                             loop True
-                        processEvent (Expand ptr) = do -- TODO: Make this more resilient to pointers that are not in scope.
-                            liftIO $ expandPointer ctxt workspaceId ptr
+                        processEvent (userId, Expand ptr) = do -- TODO: Make this more resilient to pointers that are not in scope.
+                            liftIO $ expandPointer ctxt userId workspaceId ptr
                             arg <- liftIO $ dereference ctxt ptr
                             giveArgument workspaceId arg
                             g <- liftIO $ newFunction autoCtxt
                             let !ptr' = maybe ptr id $ M.lookup ptr globalToLocal
                             return (M.singleton ptr' arg, LetFun g (Call g [Var ptr']))
-                        processEvent (Answer msg@(Structured [Reference p])) = do -- dereference pointers -- TODO: Do this?
+                        processEvent (userId, Answer msg@(Structured [Reference p])) = do -- dereference pointers -- TODO: Do this?
                             msg' <- liftIO $ dereference ctxt p
-                            liftIO $ sendAnswer ctxt False workspaceId msg' -- TODO: Can I clean out workspaceVariablesRef a bit now?
+                            liftIO $ sendAnswer ctxt False userId workspaceId msg' -- TODO: Can I clean out workspaceVariablesRef a bit now?
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
-                        processEvent (Answer msg) = do
+                        processEvent (userId, Answer msg) = do
                             msg' <- liftIO $ relabelMessage ctxt =<< normalize ctxt msg
-                            liftIO $ sendAnswer ctxt False workspaceId msg' -- TODO: Can I clean out workspaceVariablesRef a bit now?
+                            liftIO $ sendAnswer ctxt False userId workspaceId msg' -- TODO: Can I clean out workspaceVariablesRef a bit now?
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
-                        -- processEvent (Send ws msg) = -- Intentionally incomplete pattern match. Should never get here.
-                        processEvent Submit = do
+                        -- processEvent (userId, Send ws msg) = -- Intentionally incomplete pattern match. Should never get here.
+                        processEvent (userId, Submit) = do
                             workspace <- liftIO $ getWorkspace ctxt workspaceId -- Refresh workspace.
                             -- Get unanswered questions.
                             let !qs = mapMaybe (\(_, q, ma) -> maybe (Just q) (\_ -> Nothing) ma) $ subQuestions workspace
@@ -256,7 +256,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                 g <- liftIO $ newFunction autoCtxt
                                 let args = map (\q -> primToCall (matchPrim q) q) qs
                                 return (M.empty, LetFun g (Call g args))
-                        processEvent Init = error "processEvent Init: Shouldn't happen."
+                        processEvent (userId, Init) = error "processEvent Init: Shouldn't happen."
 
                         primToCall (Just p) q = Prim p (Value $ renumberMessage' globalToLocal q)
                         primToCall Nothing q = Call ANSWER [Value $ renumberMessage' globalToLocal q]
@@ -272,18 +272,18 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     let !ctxt = schedulerContext autoCtxt
 
     requestChan <- liftIO (newChan :: IO (Chan (Maybe WorkspaceId)))
-    responseMVarsRef <- liftIO $ newIORef (M.empty :: M.Map WorkspaceId (MVar Event))
+    responseMVarsRef <- liftIO $ newIORef (M.empty :: M.Map WorkspaceId (MVar (UserId, Event)))
 
     let blockOnUser _ workspaceId = liftIO $ do
             responseMVar <- newEmptyMVar
             modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
             writeChan requestChan (Just workspaceId)
             takeMVar responseMVar -- BLOCK
-        replyFromUser workspaceId Init = liftIO $ do
+        replyFromUser userId workspaceId Init = liftIO $ do
             readChan requestChan
-        replyFromUser workspaceId evt = liftIO $ do
+        replyFromUser userId workspaceId evt = liftIO $ do
             Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
-            putMVar responseMVar evt
+            putMVar responseMVar (userId, evt)
             readChan requestChan
         begin = liftIO $ do
             initWorkspace <- getWorkspace ctxt initWorkspaceId
@@ -296,8 +296,8 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
             -- sendMessage ctxt workspace ws msg
             putStrLn "makeInterpreterScheduler: Message sending not supported."
             Just <$> getWorkspace ctxt (identity workspace)
-        scheduler _ workspace evt = do
-            mWorkspaceId <- replyFromUser (identity workspace) evt
+        scheduler userId workspace evt = do
+            mWorkspaceId <- replyFromUser userId (identity workspace) evt
             case mWorkspaceId of
                 Just workspaceId -> liftIO $ Just <$> getWorkspace ctxt workspaceId
                 Nothing -> return Nothing
@@ -323,7 +323,7 @@ concurrentlyK match autoCtxt varEnv funEnv ss es k@(CallKont _ f workspaceId _) 
     return Nothing
 
 spawnInterpreter :: (MonadIO m, MonadFork m)
-                 => (Bool -> WorkspaceId -> m Event)
+                 => (Bool -> WorkspaceId -> m (UserId, Event))
                  -> m (WorkspaceId, Exp')
                  -> m ()
                  -> Bool

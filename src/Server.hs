@@ -23,7 +23,8 @@ import System.Timeout ( timeout ) -- base
 import AutoInterpreter ( runM, spawnInterpreter )
 import Exp ( Name(..), Exp(..) )
 import Message ( Message(..), Pointer )
-import Scheduler ( UserId, Event(..), getWorkspace, createInitialWorkspace, normalize, generalize, relabelMessage, createWorkspace )
+import Scheduler ( UserId, Event(..),
+                   firstUserId, getWorkspace, createInitialWorkspace, normalize, generalize, relabelMessage, createWorkspace )
 import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext' )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
@@ -74,19 +75,23 @@ nextHandler lookupWorkspace nextWorkspace (User userId) = liftIO $ do
         Just workspaceId -> Just <$> lookupWorkspace workspaceId
         Nothing -> return Nothing
 
-commandHandler :: (WorkspaceId -> [Event] -> IO ()) -> Server CommandAPI
+commandHandler :: (UserId -> WorkspaceId -> [Event] -> IO ()) -> Server CommandAPI
 commandHandler reply = viewHandler :<|> replyHandler :<|> waitHandler
     where viewHandler (User userId, workspaceId, msgs, ptr) = liftIO $ do
             print ("View", userId, workspaceId, msgs, ptr) -- DELETEME
-            OK <$ reply workspaceId (map Create msgs ++ [Expand ptr])
+            OK <$ reply userId workspaceId (map Create msgs ++ [Expand ptr])
           replyHandler (User userId, workspaceId, msg) = liftIO $ do
             print ("Reply", userId, workspaceId, msg) -- DELETEME
-            OK <$ reply workspaceId [Answer msg]
+            OK <$ reply userId workspaceId [Answer msg]
           waitHandler (User userId, workspaceId, msgs) = liftIO $ do
             print ("Wait", userId, workspaceId, msgs) -- DELETEME
-            OK <$ reply workspaceId (map Create msgs ++ [Submit])
+            OK <$ reply userId workspaceId (map Create msgs ++ [Submit])
 
-overallHandler :: IORef UserId -> IO (Maybe WorkspaceId) -> (WorkspaceId -> IO Workspace) -> (WorkspaceId -> [Event] -> IO ()) -> Server OverallAPI
+overallHandler :: IORef UserId
+               -> IO (Maybe WorkspaceId)
+               -> (WorkspaceId -> IO Workspace)
+               -> (UserId -> WorkspaceId -> [Event] -> IO ())
+               -> Server OverallAPI
 overallHandler userIdRef nextWorkspace lookupWorkspace reply
     = staticHandler :<|> commandHandler reply :<|> nextHandler lookupWorkspace nextWorkspace :<|> joinHandler userIdRef
 
@@ -101,30 +106,30 @@ initServer conn = do
     ctxt <- makeSqliteSchedulerContext conn
 
     requestChan <- newChan :: IO (Chan WorkspaceId)
-    responseMVarsRef <- newIORef (M.empty :: M.Map WorkspaceId (MVar Event))
-    drainingMVarsRef <- newIORef (M.empty :: M.Map WorkspaceId (MVar Event))
+    responseMVarsRef <- newIORef (M.empty :: M.Map WorkspaceId (MVar (UserId, Event)))
+    drainingMVarsRef <- newIORef (M.empty :: M.Map WorkspaceId (MVar (UserId, Event)))
 
     let blockOnUser True workspaceId = liftIO $ do
             Just responseMVar <- M.lookup workspaceId <$> readIORef drainingMVarsRef
-            resp <- takeMVar responseMVar
+            r@(userId, resp) <- takeMVar responseMVar
             case resp of
-                Submit -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return Submit
-                Expand _ -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return resp
-                _ -> return resp
+                Submit -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return (userId, Submit)
+                Expand _ -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return r
+                _ -> return r
         blockOnUser _ workspaceId = liftIO $ do
             responseMVar <- newEmptyMVar
             modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
             writeChan requestChan workspaceId
             takeMVar responseMVar
 
-        replyFromUser workspaceId [evt] = do
+        replyFromUser userId workspaceId [evt] = do
             Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
-            putMVar responseMVar evt
-        replyFromUser workspaceId (evt:evts) = do
+            putMVar responseMVar (userId, evt)
+        replyFromUser userId workspaceId (evt:evts) = do
             Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
             modifyIORef' drainingMVarsRef (M.insert workspaceId responseMVar)
-            putMVar responseMVar evt
-            mapM_ (putMVar responseMVar) evts -- NOTE: This assumes that a sort of protocol between the interpreter and this and will block forever if it is not met.
+            putMVar responseMVar (userId, evt)
+            mapM_ (putMVar responseMVar . (,) userId) evts -- NOTE: This assumes that a sort of protocol between the interpreter and this and will block forever if it is not met.
 
         begin = do
             initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
@@ -138,6 +143,6 @@ initServer conn = do
                 () <$ runM (spawnInterpreter blockOnUser (liftIO begin) (liftIO $ writeIORef doneRef True) False autoCtxt) 0
             timeout 10000000 (readChan requestChan) -- Timeout after 10 seconds.
 
-    userIdRef <- liftIO $ newIORef (0 :: UserId)
+    userIdRef <- liftIO $ newIORef firstUserId
 
     return $ serve (Proxy :: Proxy OverallAPI) (overallHandler userIdRef nextWorkspace (getWorkspace ctxt) replyFromUser)

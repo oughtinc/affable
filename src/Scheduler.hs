@@ -1,6 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), makeSingleUserScheduler, relabelMessage, fullyExpand ) where
+module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), 
+                   autoUserId, firstUserId, makeSingleUserScheduler, relabelMessage, fullyExpand ) where
 import qualified Data.Map as M -- containers
 
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping )
@@ -17,14 +18,20 @@ data Event
 
 type UserId = Int
 
+autoUserId :: UserId
+autoUserId = 0
+
+firstUserId :: UserId
+firstUserId = 1
+
 type SchedulerFn = UserId -> Workspace -> Event -> IO (Maybe Workspace)
 
 data SchedulerContext extra = SchedulerContext {
     createInitialWorkspace :: IO WorkspaceId,
-    createWorkspace :: Bool -> WorkspaceId -> Message -> Message -> IO WorkspaceId,
-    sendAnswer :: Bool -> WorkspaceId -> Message -> IO (),
-    sendMessage :: Bool -> WorkspaceId -> WorkspaceId -> Message -> IO (),
-    expandPointer :: WorkspaceId -> Pointer -> IO (),
+    createWorkspace :: Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId,
+    sendAnswer :: Bool -> UserId -> WorkspaceId -> Message -> IO (),
+    sendMessage :: Bool -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO (),
+    expandPointer :: UserId -> WorkspaceId -> Pointer -> IO (),
     pendingQuestions :: WorkspaceId -> IO [WorkspaceId],
     getWorkspace :: WorkspaceId -> IO Workspace,
     allWorkspaces :: IO (M.Map WorkspaceId Workspace),
@@ -49,27 +56,27 @@ fullyExpand ctxt m = return m
 
 makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeSingleUserScheduler ctxt = do
-    let scheduler user workspace (Create msg) = do
-            newWorkspaceId <- createWorkspace ctxt True (identity workspace) msg msg
+    let scheduler userId workspace (Create msg) = do
+            newWorkspaceId <- createWorkspace ctxt True userId (identity workspace) msg msg
             Just <$> getWorkspace ctxt newWorkspaceId
 
-        scheduler user workspace (Answer msg) = do
-            sendAnswer ctxt True (identity workspace) msg
+        scheduler userId workspace (Answer msg) = do
+            sendAnswer ctxt True userId (identity workspace) msg
             mNewWorkspaceId <- getNextWorkspace ctxt
             case mNewWorkspaceId of
                 Just newWorkspaceId -> Just <$> getWorkspace ctxt newWorkspaceId
                 Nothing -> return Nothing
 
-        scheduler user workspace (Send ws msg) = do
-            sendMessage ctxt True (identity workspace) ws msg
+        scheduler userId workspace (Send ws msg) = do
+            sendMessage ctxt True userId (identity workspace) ws msg
             Just <$> getWorkspace ctxt (identity workspace)
 
-        scheduler user workspace (Expand ptr) = do
-            expandPointer ctxt (identity workspace) ptr
+        scheduler userId workspace (Expand ptr) = do
+            expandPointer ctxt userId (identity workspace) ptr
             Just <$> getWorkspace ctxt (identity workspace)
 
-        scheduler user workspace Submit = return $ Just workspace
+        scheduler userId workspace Submit = return $ Just workspace
 
-        scheduler user workspace Init = return $ Just workspace
+        scheduler userId workspace Init = return $ Just workspace
 
     return scheduler
