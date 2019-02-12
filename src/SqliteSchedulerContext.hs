@@ -300,9 +300,9 @@ getNextWorkspaceSqlite :: Lock -> Connection -> IO (Maybe WorkspaceId)
 getNextWorkspaceSqlite lock conn = do
     withLock lock $ do
         -- This gets a workspace that doesn't currently have an answer.
-        result <- query conn "SELECT w.id \
-                             \FROM Workspaces w \
-                             \WHERE NOT EXISTS(SELECT * FROM Answers a WHERE a.workspaceId = w.id) ORDER BY w.id DESC LIMIT 1" ()
+        result <- query_ conn "SELECT w.id \
+                              \FROM Workspaces w \
+                              \WHERE NOT EXISTS(SELECT * FROM Answers a WHERE a.workspaceId = w.id) ORDER BY w.id DESC LIMIT 1"
         case result of
             [] -> return Nothing
-            [Only wId] -> return (Just wId)
+            [Only workspaceId] -> return (Just workspaceId)
