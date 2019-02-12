@@ -1,4 +1,3 @@
-
 var postView = function(body)
 {
   return axios({ url: '/view'
@@ -7,8 +6,6 @@ var postView = function(body)
     , responseType: 'json'
     });
 }
-
-
 
 var postReply = function(body)
 {
@@ -19,8 +16,6 @@ var postReply = function(body)
     });
 }
 
-
-
 var postWait = function(body)
 {
   return axios({ url: '/wait'
@@ -29,8 +24,6 @@ var postWait = function(body)
     , responseType: 'json'
     });
 }
-
-
 
 var postNext = function(body)
 {
@@ -41,11 +34,16 @@ var postNext = function(body)
     });
 }
 
-
-
 var getJoin = function()
 {
   return axios({ url: '/join'
+    , method: 'get'
+    });
+}
+
+var getPointer = function(p)
+{
+  return axios({ url: '/pointer/' + encodeURIComponent(p) + ''
     , method: 'get'
     });
 }

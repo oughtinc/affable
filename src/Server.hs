@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DataKinds #-}
@@ -11,19 +12,19 @@ import Data.Aeson ( ToJSON, FromJSON ) -- aeson
 import Data.Either ( partitionEithers ) -- base
 import Data.IORef ( IORef, newIORef, readIORef, writeIORef, atomicModifyIORef', modifyIORef' ) -- base
 import qualified Data.Map as M -- containers
+import Data.String ( fromString ) -- base
 import qualified Data.Text as T -- text
 import Data.Tuple ( swap ) -- base
-import Data.String ( fromString ) -- base
 import Database.SQLite.Simple ( Connection ) -- sqlite-simple
 import GHC.Generics ( Generic ) -- ghc
-import Servant ( (:<|>)(..), (:>), Server, Get, Post, Proxy(..), ReqBody, JSON, Raw, serveDirectoryWebApp ) -- servant-server
+import Servant ( (:<|>)(..), (:>), Capture, Server, Get, Post, Proxy(..), ReqBody, JSON, Raw, serveDirectoryWebApp ) -- servant-server
 import Servant.Server ( serve, Application ) -- servant-server
 import System.Timeout ( timeout ) -- base
 
 import AutoInterpreter ( runM, spawnInterpreter )
 import Exp ( Name(..), Exp(..) )
 import Message ( Message(..), Pointer )
-import Scheduler ( UserId, Event(..),
+import Scheduler ( UserId, Event(..), SchedulerFn, SchedulerContext(..),
                    firstUserId, getWorkspace, createInitialWorkspace, normalize, generalize, relabelMessage, createWorkspace )
 import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext' )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
@@ -41,17 +42,23 @@ instance ToJSON User
 
 type StaticAPI = "static" :> Raw
 type CommandAPI = "view" :> ReqBody '[JSON] (User, WorkspaceId, [Message], Pointer) :> Post '[JSON] Result
-             :<|> "reply" :> ReqBody '[JSON] (User, WorkspaceId, Message) :> Post '[JSON] Result
-             :<|> "wait" :> ReqBody '[JSON] (User, WorkspaceId, [Message]) :> Post '[JSON] Result
+             :<|> "reply" :> ReqBody '[JSON] (User, WorkspaceId, [Either Message Pointer], Message) :> Post '[JSON] Result
+             :<|> "wait" :> ReqBody '[JSON] (User, WorkspaceId, [Either Message Pointer]) :> Post '[JSON] Result
+type PointerAPI = "pointer" :> Capture "p" Pointer :> Get '[JSON] (Maybe Message)
 type NextAPI = "next" :> ReqBody '[JSON] User :> Post '[JSON] (Maybe Workspace)
 type JoinAPI = "join" :> Get '[JSON] User
 
-type API = CommandAPI :<|> NextAPI :<|> JoinAPI
+type API = CommandAPI :<|> NextAPI :<|> JoinAPI :<|> PointerAPI
 
 type OverallAPI = StaticAPI :<|> API
 
 staticHandler :: Server StaticAPI
 staticHandler = serveDirectoryWebApp "static"
+
+pointerHandler :: (Pointer -> IO Message) -> Server PointerAPI
+pointerHandler deref ptr = liftIO $ do
+    print ("Pointer", ptr) -- DELETEME
+    Just <$> deref ptr -- TODO: Catch error and return Nothing.
 
 -- TODO: Track users that have joined and only accept requests from previously seen users.
 -- This will allow us to trivially ignore requests from users who've been falsely suspected
@@ -80,20 +87,25 @@ commandHandler reply = viewHandler :<|> replyHandler :<|> waitHandler
     where viewHandler (User userId, workspaceId, msgs, ptr) = liftIO $ do
             print ("View", userId, workspaceId, msgs, ptr) -- DELETEME
             OK <$ reply userId workspaceId (map Create msgs ++ [Expand ptr])
-          replyHandler (User userId, workspaceId, msg) = liftIO $ do
-            print ("Reply", userId, workspaceId, msg) -- DELETEME
-            OK <$ reply userId workspaceId [Answer msg]
-          waitHandler (User userId, workspaceId, msgs) = liftIO $ do
-            print ("Wait", userId, workspaceId, msgs) -- DELETEME
-            OK <$ reply userId workspaceId (map Create msgs ++ [Submit])
+          replyHandler (User userId, workspaceId, msgOrPtrs, msg) = liftIO $ do
+            print ("Reply", userId, workspaceId, msgOrPtrs, msg) -- DELETEME
+            OK <$ reply userId workspaceId (map (either Create Expand) msgOrPtrs ++ [Answer msg])
+          waitHandler (User userId, workspaceId, msgOrPtrs) = liftIO $ do
+            print ("Wait", userId, workspaceId, msgOrPtrs) -- DELETEME
+            OK <$ reply userId workspaceId (map (either Create Expand) msgOrPtrs ++ [Submit])
 
 overallHandler :: IORef UserId
                -> IO (Maybe WorkspaceId)
+               -> (Pointer -> IO Message)
                -> (WorkspaceId -> IO Workspace)
                -> (UserId -> WorkspaceId -> [Event] -> IO ())
                -> Server OverallAPI
-overallHandler userIdRef nextWorkspace lookupWorkspace reply
-    = staticHandler :<|> commandHandler reply :<|> nextHandler lookupWorkspace nextWorkspace :<|> joinHandler userIdRef
+overallHandler userIdRef nextWorkspace deref lookupWorkspace reply
+    = staticHandler
+ :<|> commandHandler reply
+ :<|> nextHandler lookupWorkspace nextWorkspace
+ :<|> joinHandler userIdRef
+ :<|> pointerHandler deref
 
 -- For a web service, we're going to want to separate reading from the channel from giving a response.
 -- Basically, when a web request comes in, we'll attempt to read a workspace to display from the channel (using
@@ -109,18 +121,20 @@ initServer conn = do
     responseMVarsRef <- newIORef (M.empty :: M.Map WorkspaceId (MVar (UserId, Event)))
     drainingMVarsRef <- newIORef (M.empty :: M.Map WorkspaceId (MVar (UserId, Event)))
 
-    let blockOnUser True workspaceId = liftIO $ do
-            Just responseMVar <- M.lookup workspaceId <$> readIORef drainingMVarsRef
-            r@(userId, resp) <- takeMVar responseMVar
-            case resp of
-                Submit -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return (userId, Submit)
-                Expand _ -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return r
-                _ -> return r
-        blockOnUser _ workspaceId = liftIO $ do
-            responseMVar <- newEmptyMVar
-            modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
-            writeChan requestChan workspaceId
-            takeMVar responseMVar
+    let blockOnUser workspaceId = liftIO $ do
+            mResponseMVar <- M.lookup workspaceId <$> readIORef drainingMVarsRef
+            case mResponseMVar of
+                Nothing -> do
+                    responseMVar <- newEmptyMVar
+                    modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
+                    writeChan requestChan workspaceId
+                    takeMVar responseMVar
+                Just responseMVar -> do
+                    r@(_, resp) <- takeMVar responseMVar
+                    case resp of
+                        Submit -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return r
+                        Answer _ -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return r
+                        _ -> return r
 
         replyFromUser userId workspaceId [evt] = do
             Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
@@ -145,4 +159,4 @@ initServer conn = do
 
     userIdRef <- liftIO $ newIORef firstUserId
 
-    return $ serve (Proxy :: Proxy OverallAPI) (overallHandler userIdRef nextWorkspace (getWorkspace ctxt) replyFromUser)
+    return $ serve (Proxy :: Proxy OverallAPI) (overallHandler userIdRef nextWorkspace (dereference ctxt) (getWorkspace ctxt) replyFromUser)

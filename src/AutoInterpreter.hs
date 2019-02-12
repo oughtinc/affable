@@ -77,7 +77,7 @@ instance MonadFork M where
 -- concurrency.
 
 makeMatcher :: (MonadIO m, MonadFork m)
-            => (Bool -> WorkspaceId -> m (UserId, Event))
+            => (WorkspaceId -> m (UserId, Event))
             -> (Value -> Maybe Primitive)
             -> (WorkspaceId -> Message -> m ())
             -> (WorkspaceId -> m (Maybe Message))
@@ -227,11 +227,11 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     linkPointers f workspace patterns
                     globalToLocal <- links workspaceId
 
-                    let loop stay = blockOnUser stay workspaceId >>= processEvent
+                    let loop = blockOnUser workspaceId >>= processEvent
                         processEvent (userId, Create msg) = do
                             pattern <- liftIO $ relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
                             liftIO $ createWorkspace ctxt False userId workspaceId msg pattern
-                            loop True
+                            loop
                         processEvent (userId, Expand ptr) = do -- TODO: Make this more resilient to pointers that are not in scope.
                             liftIO $ expandPointer ctxt userId workspaceId ptr
                             arg <- liftIO $ dereference ctxt ptr
@@ -252,7 +252,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                             workspace <- liftIO $ getWorkspace ctxt workspaceId -- Refresh workspace.
                             -- Get unanswered questions.
                             let !qs = mapMaybe (\(_, q, ma) -> maybe (Just q) (\_ -> Nothing) ma) $ subQuestions workspace
-                            if null qs then loop False else do -- If qs is empty there's nothing to wait on so just do nothing.
+                            if null qs then loop else do -- If qs is empty there's nothing to wait on so just do nothing.
                                 g <- liftIO $ newFunction autoCtxt
                                 let args = map (\q -> primToCall (matchPrim q) q) qs
                                 return (M.empty, LetFun g (Call g args))
@@ -261,7 +261,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                         primToCall (Just p) q = Prim p (Value $ renumberMessage' globalToLocal q)
                         primToCall Nothing q = Call ANSWER [Value $ renumberMessage' globalToLocal q]
 
-                    (extraBindings, e) <- loop False
+                    (extraBindings, e) <- loop
                     liftIO $ addCaseFor autoCtxt f patterns e
                     liftIO $ debugCode
                     eval (M.union extraBindings varEnv') funEnv workspaceId e k
@@ -274,7 +274,7 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     requestChan <- liftIO (newChan :: IO (Chan (Maybe WorkspaceId)))
     responseMVarsRef <- liftIO $ newIORef (M.empty :: M.Map WorkspaceId (MVar (UserId, Event)))
 
-    let blockOnUser _ workspaceId = liftIO $ do
+    let blockOnUser workspaceId = liftIO $ do
             responseMVar <- newEmptyMVar
             modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
             writeChan requestChan (Just workspaceId)
@@ -323,7 +323,7 @@ concurrentlyK match autoCtxt varEnv funEnv ss es k@(CallKont _ f workspaceId _) 
     return Nothing
 
 spawnInterpreter :: (MonadIO m, MonadFork m)
-                 => (Bool -> WorkspaceId -> m (UserId, Event))
+                 => (WorkspaceId -> m (UserId, Event))
                  -> m (WorkspaceId, Exp')
                  -> m ()
                  -> Bool

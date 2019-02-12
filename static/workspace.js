@@ -120,6 +120,13 @@ class User {
     get mapping() { return this.mapping_; }
     get workspaceId() { return this.workspace.identity; }
 
+    updateInverseMapping() {
+        for(const k in this.mapping) {
+            if(k === 'nextPointer') continue;
+            this.inverseMapping_[this.mapping[k]] = parseInt(k, 10);
+        }
+    }
+
     postProcess(r) {
         switch(r.tag) {
             case 'OK':
@@ -136,16 +143,27 @@ class User {
 
     ask(msg) {
         const msg2 = renumberMessage(this.inverseMapping_, msg);
-        this.pending_.push(msg2);
+        this.pending_.push({Left: msg2});
         this.workspace.subQuestions.push([null, msg2, null]);
     }
 
     reply(msg) {
-        return postReply([{userId:this.userId}, this.workspaceId, renumberMessage(this.inverseMapping_, msg)]).then(r => this.postProcess(r.data));
+        return postReply([{userId:this.userId}, this.workspaceId, this.pending_, renumberMessage(this.inverseMapping_, msg)]).then(r => this.postProcess(r.data));
     }
 
     view(ptr) {
-        return postView([{userId:this.userId}, this.workspaceId, this.pending_, ptr]).then(r => this.postProcess(r.data));
+        return getPointer(ptr).then(r => {
+            const msg = r.data;
+            if(msg !== null) {
+                this.pending_.push({Right: ptr});
+                const expansion = this.workspace.expandedPointers;
+                expansion[ptr] = msg;
+                mappingFromMessage(this.mapping, expansion, msg);
+                this.updateInverseMapping();
+                return {tag: 'OK'}
+            }
+            return msg;
+        });
     }
 
     wait() {
@@ -157,10 +175,7 @@ class User {
             if(response.data === null) return null;
             this.workspace_ = response.data;
             mappingFromWorkspace(this.mapping, this.workspace);
-            for(const k in this.mapping) {
-                if(k === 'nextPointer') continue;
-                this.inverseMapping_[this.mapping[k]] = parseInt(k, 10);
-            }
+            this.updateInverseMapping();
             return response.data;
         });
     }
@@ -172,9 +187,7 @@ getJoin().then(joinResponse => {
         if(evt.target.classList.contains('pointer')) {
             user.view(parseInt(evt.target.dataset.original, 10)).then(r => {
                 if(r.tag === 'OK') {
-                    workspaceContainerDiv.style.display = 'none';
-                    nextBtn.style.display = 'inline';
-                    inputTxt.value = '';
+                    renderWorkspace(user.mapping, user.workspace);
                 } else {
                     console.log(r);
                 }
