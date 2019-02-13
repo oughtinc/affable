@@ -287,7 +287,8 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
             readChan requestChan
         begin = liftIO $ do
             initWorkspace <- getWorkspace ctxt initWorkspaceId
-            return (initWorkspaceId, LetFun ANSWER (Call ANSWER [Value (question initWorkspace)]))
+            let !q = case question initWorkspace of LabeledStructured _ ms -> Structured ms; m -> m
+            return (initWorkspaceId, LetFun ANSWER (Call ANSWER [Value q]))
 
     spawnInterpreter blockOnUser begin (liftIO $ writeChan requestChan Nothing) isSequential autoCtxt
 
@@ -316,10 +317,11 @@ concurrentlyK :: (MonadIO m, MonadFork m)
 concurrentlyK match autoCtxt varEnv funEnv ss es k@(CallKont _ f workspaceId _) = do
     let kId = (workspaceId, f)
         !n = length ss -- should equal length es, TODO: Add assertion.
+    processId <- myProcessId
     liftIO $ forM_ (zip3 [0..] ss es) $ \(i, s, e) -> do
         pId <- newProcess autoCtxt
         recordState autoCtxt pId (varEnv, funEnv, s, e, NotifyKont i n kId)
-    liftIO . terminate autoCtxt =<< myProcessId -- TODO: Alternatively, have this process handle one of the e's.
+    liftIO $ terminate autoCtxt processId-- TODO: Alternatively, have this process handle one of the e's.
     return Nothing
 
 spawnInterpreter :: (MonadIO m, MonadFork m)
