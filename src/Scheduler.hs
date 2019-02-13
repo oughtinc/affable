@@ -1,7 +1,8 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), 
+module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), SessionId,
                    autoUserId, firstUserId, makeSingleUserScheduler, relabelMessage, fullyExpand ) where
+import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping )
@@ -16,7 +17,8 @@ data Event
     | Init
   deriving ( Eq, Ord, Show )
 
-type UserId = Int
+type UserId = Int64
+type SessionId = Int64
 
 autoUserId :: UserId
 autoUserId = 0
@@ -28,6 +30,7 @@ type SchedulerFn = UserId -> Workspace -> Event -> IO (Maybe Workspace)
 
 data SchedulerContext extra = SchedulerContext {
     createInitialWorkspace :: IO WorkspaceId,
+    newSession :: IO SessionId,
     createWorkspace :: Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId,
     sendAnswer :: Bool -> UserId -> WorkspaceId -> Message -> IO (),
     sendMessage :: Bool -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO (),

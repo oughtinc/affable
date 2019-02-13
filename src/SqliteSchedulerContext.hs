@@ -11,7 +11,7 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
 import Command ( Command(..), commandToBuilder )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB )
-import Scheduler ( SchedulerContext(..), UserId )
+import Scheduler ( SchedulerContext(..), UserId, SessionId )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Lock, newLock, withLock )
 import Workspace ( Workspace(..), WorkspaceId )
@@ -22,6 +22,7 @@ makeSqliteSchedulerContext conn = do
     return $
         SchedulerContext {
             createInitialWorkspace = createInitialWorkspaceSqlite lock conn,
+            newSession = newSessionSqlite lock conn,
             createWorkspace = createWorkspaceSqlite lock conn,
             sendAnswer = sendAnswerSqlite lock conn,
             sendMessage = sendMessageSqlite lock conn,
@@ -167,13 +168,23 @@ insertCommand lock conn userId workspaceId cmd = do
 
 createInitialWorkspaceSqlite :: Lock -> Connection -> IO WorkspaceId
 createInitialWorkspaceSqlite lock conn = do
-    msg <- labelMessageSqlite lock conn (Text "What is your question?")
+    let msg = Text "What is your question?"
+    msg' <- labelMessageSqlite lock conn msg
     let !msgText = toText (messageToBuilder msg)
+        !msgText' = toText (messageToBuilder msg')
     withLock lock $ do
-        executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) VALUES (:time, :parent, :question, :question)" [
+        executeNamed conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
+                          \VALUES (:time, :parent, :questionAsAsked, :questionAsAnswered)" [
                             ":time" := (0 :: LogicalTime),
                             ":parent" := (Nothing :: Maybe WorkspaceId),
-                            ":question" := msgText]
+                            ":questionAsAsked" := msgText,
+                            ":questionAsAnswered" := msgText']
+        lastInsertRowId conn
+
+newSessionSqlite :: Lock -> Connection -> IO SessionId
+newSessionSqlite lock conn = do
+    withLock lock $ do
+        execute_ conn "INSERT INTO Sessions DEFAULT VALUES"
         lastInsertRowId conn
 
 createWorkspaceSqlite :: Lock -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
