@@ -1,6 +1,10 @@
 dist/
+dist-newstyle/
+**/node_modules/
+**/.rpt2_cache/
 cabal.sandbox.config
 .stack-work/
 .cabal-sandbox/
 **/*.db
 **/*.sw?
+.ignore

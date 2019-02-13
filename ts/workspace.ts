@@ -1,12 +1,14 @@
-"use strict";
+import { postView, postReply, postWait, postNext, getJoin, getPointer } from "./command-api";
+import { messageParser } from "./parser";
+import { Mapping, Expansion, Message, Workspace, Either, Result, Pointer } from "./types";
 
-const workspaceDiv = document.getElementById('workspace');
-const inputTxt = document.getElementById('inputTxt');
-const nextBtn = document.getElementById('nextBtn');
-const workspaceContainerDiv = document.getElementById('workspaceContainer');
-const askBtn = document.getElementById('askBtn');
-const replyBtn = document.getElementById('replyBtn');
-const waitBtn = document.getElementById('waitBtn');
+const workspaceDiv: HTMLElement = <HTMLElement>document.getElementById('workspace');
+const inputTxt: HTMLInputElement = <HTMLInputElement>document.getElementById('inputTxt');
+const nextBtn: HTMLButtonElement = <HTMLButtonElement>document.getElementById('nextBtn');
+const workspaceContainerDiv: HTMLElement = <HTMLElement>document.getElementById('workspaceContainer');
+const askBtn: HTMLButtonElement = <HTMLButtonElement>document.getElementById('askBtn');
+const replyBtn: HTMLButtonElement = <HTMLButtonElement>document.getElementById('replyBtn');
+const waitBtn: HTMLButtonElement = <HTMLButtonElement>document.getElementById('waitBtn');
 
 /* PEG.js parser input
 Top "message"
@@ -21,13 +23,13 @@ Pointer "pointer"
   = "$" digits:[0-9]+ { return {tag: 'Reference', contents: parseInt(digits.join(''), 10)}; }
 */
 
-const dummy = document.createElement('textarea');
-function escapeHTML(html) {
+const dummy: Element = document.createElement('textarea');
+function escapeHTML(html: string): string {
     dummy.textContent = html;
     return dummy.innerHTML;
 }
 
-function renderMessage(mapping, expansion, msg, isSubmessage) {
+function renderMessage(mapping: Mapping, expansion: Expansion, msg: Message, isSubmessage = false): string {
     switch(msg.tag) {
         case 'Text':
             return escapeHTML(msg.contents);
@@ -39,28 +41,31 @@ function renderMessage(mapping, expansion, msg, isSubmessage) {
                 return '<span class="pointer" data-original="'+p+'">$' + mapping[p] + '</span>';
             }
         case 'Structured': {
-            const msgs = msg.contents.map(m => renderMessage(mapping, expansion, m, true));
+            const msgs = msg.contents.map((m: Message) => renderMessage(mapping, expansion, m, true));
             return isSubmessage ? '[' + msgs.join('') + ']' : msgs.join(''); }
         case 'LabeledStructured': {
-            const label = msg.contents[0];
-            const msgs = msg.contents[1].map(m => renderMessage(mapping, expansion, m, true));
+            const label: Pointer = msg.contents[0];
+            const msgs = msg.contents[1].map((m: Message) => renderMessage(mapping, expansion, m, true));
             return '[$' + mapping[label] + '|' + msgs.join('') + ']'; }
         default:
             throw "Something's wrong";
     }
 }
 
-function renderWorkspace(mapping, workspace) {
+function renderWorkspace(mapping: Mapping, workspace: Workspace): void {
     console.log(workspace);
     const expansion = workspace.expandedPointers;
     const questionText = 'Question: ' + renderMessage(mapping, expansion, workspace.question);
-    const subquestionText = workspace.subQuestions.map((q, i) => '<br/>' + (i+1) + '. ' + renderMessage(mapping, expansion, q[1])
-                                                               + (q[2] !== null ? '<br/>Answer: ' + renderMessage(mapping, expansion, q[2]) : '' )).join('<br/>');
+    const subquestionText = workspace.subQuestions.map((q, i) => {
+        const answer = q[2];
+        return '<br/>' + (i+1) + '. ' + renderMessage(mapping, expansion, q[1])
+                       + (answer !== null ? '<br/>Answer: ' + renderMessage(mapping, expansion, answer) : '')
+    }).join('<br/>');
 
     workspaceDiv.innerHTML = questionText + '<br/>' + subquestionText + '<br/>';
 }
 
-function mappingFromMessage(mapping, expansion, msg) {
+function mappingFromMessage(mapping: {nextPointer: number} & Mapping, expansion: Expansion, msg: Message): void {
     switch(msg.tag) {
         case 'Text':
             return; // Nothing to do.
@@ -74,60 +79,62 @@ function mappingFromMessage(mapping, expansion, msg) {
             }
             return;
         case 'Structured':
-            msg.contents.forEach(m => mappingFromMessage(mapping, expansion, m));
+            msg.contents.forEach((m: Message) => mappingFromMessage(mapping, expansion, m));
             return;
         case 'LabeledStructured':
             const label = msg.contents[0];
             if(!(label in mapping)) {
                 mapping[label] = mapping.nextPointer++;
             }
-            msg.contents[1].forEach(m => mappingFromMessage(mapping, expansion, m));
+            msg.contents[1].forEach((m: Message) => mappingFromMessage(mapping, expansion, m));
             return;
         default:
             throw "Something's wrong";
     }
 }
 
-function mappingFromWorkspace(mapping, workspace) {
+function mappingFromWorkspace(mapping: {nextPointer: number} & Mapping, workspace: Workspace): void {
     const expansion = workspace.expandedPointers;
     mappingFromMessage(mapping, expansion, workspace.question);
-    workspace.subQuestions.forEach(q => { mappingFromMessage(mapping, expansion, q[1]); if(q[2] !== null) mappingFromMessage(mapping, expansion, q[2]); });
+    workspace.subQuestions.forEach(q => { 
+        const answer = q[2];
+        mappingFromMessage(mapping, expansion, q[1]);
+        if(answer !== null) mappingFromMessage(mapping, expansion, answer); });
 }
 
-function renumberMessage(mapping, msg) {
+function renumberMessage(mapping: Mapping, msg: Message): Message {
     switch(msg.tag) {
         case 'Text':
             return msg;
         case 'Reference':
             return {tag: 'Reference', contents: mapping[msg.contents]};
         case 'Structured':
-            return {tag: 'Structured', contents: msg.contents.map(m => renumberMessage(mapping, m))};
+            return {tag: 'Structured', contents: msg.contents.map((m: Message) => renumberMessage(mapping, m))};
         default:
             throw "Something's wrong";
     }
 }
 
 class User {
-    constructor(userId) {
-        this.userId = userId;
-        this.pending_ = [];
-        this.workspace_ = null;
-        this.mapping_ = {nextPointer: 0};
-        this.inverseMapping_ = {};
-    }
+    private pending_: Array<Either<Message, Pointer>> = [];
+    private workspace_: Workspace | null = null;
+    private mapping_: {nextPointer: number} & Mapping = {nextPointer: 0};
+    private inverseMapping_: {[ptr: number]: Pointer} = {};
 
-    get workspace() { return this.workspace_; } // TODO: Make this an Rx-style Observable.
-    get mapping() { return this.mapping_; }
-    get workspaceId() { return this.workspace.identity; }
+    constructor(private readonly userId: number) { }
 
-    updateInverseMapping() {
+    get workspace(): Workspace | null { return this.workspace_; } // TODO: Make this an Rx-style Observable.
+    get mapping(): {nextPointer: number} & Mapping { return this.mapping_; }
+    get workspaceId(): number | null { const ws = this.workspace; return ws === null ? null : ws.identity; }
+
+    private updateInverseMapping(): void {
         for(const k in this.mapping) {
             if(k === 'nextPointer') continue;
             this.inverseMapping_[this.mapping[k]] = parseInt(k, 10);
         }
     }
 
-    postProcess(r) {
+    private postProcess(r: Result): Result {
         switch(r.tag) {
             case 'OK':
                 this.pending_ = [];
@@ -141,42 +148,44 @@ class User {
          }
     }
 
-    ask(msg) {
+    ask(msg: Message): void {
         const msg2 = renumberMessage(this.inverseMapping_, msg);
         this.pending_.push({Left: msg2});
-        this.workspace.subQuestions.push([null, msg2, null]);
+        (<Workspace>this.workspace).subQuestions.push([null, msg2, null]);
     }
 
-    reply(msg) {
-        return postReply([{userId:this.userId}, this.workspaceId, this.pending_, renumberMessage(this.inverseMapping_, msg)]).then(r => this.postProcess(r.data));
+    reply(msg: Message): Promise<Result> {
+        return postReply([{userId:this.userId}, <number>this.workspaceId, this.pending_, renumberMessage(this.inverseMapping_, msg)])
+               .then(r => this.postProcess(r.data));
     }
 
-    view(ptr) {
+    view(ptr: Pointer): Promise<Result> {
         return getPointer(ptr).then(r => {
-            const msg = r.data;
+            const msg: Message | null = r.data;
             if(msg !== null) {
                 this.pending_.push({Right: ptr});
-                const expansion = this.workspace.expandedPointers;
+                const expansion = (<Workspace>this.workspace).expandedPointers;
                 expansion[ptr] = msg;
                 mappingFromMessage(this.mapping, expansion, msg);
                 this.updateInverseMapping();
-                return {tag: 'OK'}
+                return <Result>{tag: 'OK'}
             }
-            return msg;
+            return <Result>{tag: 'Error'};
         });
     }
 
-    wait() {
-        return postWait([{userId:this.userId}, this.workspaceId, this.pending_]).then(r => this.postProcess(r.data));
+    wait(): Promise<Result> {
+        return postWait([{userId:this.userId}, <number>this.workspaceId, this.pending_]).then(r => this.postProcess(r.data));
     }
 
-    next() {
+    next(): Promise<Workspace | null> {
         return postNext({userId:this.userId}).then(response => {
-            if(response.data === null) return null;
-            this.workspace_ = response.data;
-            mappingFromWorkspace(this.mapping, this.workspace);
+            const ws = response.data;
+            if(ws === null) return null;
+            this.workspace_ = ws;
+            mappingFromWorkspace(this.mapping, ws);
             this.updateInverseMapping();
-            return response.data;
+            return ws;
         });
     }
 }
@@ -184,10 +193,11 @@ class User {
 getJoin().then(joinResponse => {
     const user = new User(joinResponse.data.userId);
     workspaceDiv.addEventListener('click', evt => {
-        if(evt.target.classList.contains('pointer')) {
-            user.view(parseInt(evt.target.dataset.original, 10)).then(r => {
+        const target = <HTMLElement | null>evt.target;
+        if(target !== null && target.classList.contains('pointer')) {
+            user.view(parseInt(<string>target.dataset.original, 10)).then(r => {
                 if(r.tag === 'OK') {
-                    renderWorkspace(user.mapping, user.workspace);
+                    renderWorkspace(user.mapping, <Workspace>user.workspace);
                 } else {
                     console.log(r);
                 }
@@ -198,11 +208,11 @@ getJoin().then(joinResponse => {
         }
     }, true);
     nextBtn.addEventListener('click', evt => {
-        return user.next().then(r => {
-            if(r === null) {
+        return user.next().then(ws => {
+            if(ws === null) {
                 // Do nothing but probably want to tell the user that.
             } else {
-                renderWorkspace(user.mapping, user.workspace);
+                renderWorkspace(user.mapping, ws);
                 workspaceContainerDiv.style.display = 'block';
                 nextBtn.style.display = 'none';
             }
@@ -211,7 +221,7 @@ getJoin().then(joinResponse => {
     askBtn.addEventListener('click', evt => {
         const msg = messageParser(inputTxt.value);
         user.ask(msg);
-        renderWorkspace(user.mapping, user.workspace);
+        renderWorkspace(user.mapping, <Workspace>user.workspace);
         inputTxt.value = '';
     });
     replyBtn.addEventListener('click', evt => {

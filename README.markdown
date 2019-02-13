@@ -2,8 +2,21 @@
 
 ## Building
 
+### Haskell
+
 Install [stack](https://docs.haskellstack.org/en/stable/install_and_upgrade/), and then `stack build` should be all
 that's required to build the code. `stack run` or `stack exec affable` will then run the executable.
+
+### Front-end
+
+There's a pre-built copy of the Javascript files for the front-end, but if you want to modify the front-end, you can
+build it via the following.
+
+Install [npm](https://www.npmjs.com/get-npm) and [rollup](https://rollupjs.org/guide/en#quick-start).
+
+Run `npm install` to install the dependencies.
+
+Run `rollup -c` to create the new `bundle.js`.
 
 ## Command Line Options
 
