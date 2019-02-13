@@ -1568,8 +1568,8 @@
           responseType: 'json'
       });
   }
-  function getJoin() {
-      return axios$1({ url: '/join',
+  function getJoin(sessionId) {
+      return axios$1({ url: '/join' + (sessionId === undefined ? '' : '?sessionId=' + encodeURIComponent('' + sessionId)),
           method: 'get'
       });
   }
@@ -2252,8 +2252,9 @@
       }
   }
   var User = (function () {
-      function User(userId) {
+      function User(userId, sessionId) {
           this.userId = userId;
+          this.sessionId = sessionId;
           this.pending_ = [];
           this.workspace_ = null;
           this.mapping_ = { nextPointer: 0 };
@@ -2325,7 +2326,7 @@
       };
       User.prototype.next = function () {
           var _this = this;
-          return postNext({ userId: this.userId }).then(function (response) {
+          return postNext([{ userId: this.userId }, this.sessionId]).then(function (response) {
               var ws = response.data;
               if (ws === null)
                   return null;
@@ -2337,8 +2338,12 @@
       };
       return User;
   }());
-  getJoin().then(function (joinResponse) {
-      var user = new User(joinResponse.data.userId);
+  var maybeSessionId = parseInt(location.hash.slice(1), 10);
+  (isNaN(maybeSessionId) ? getJoin() : getJoin(maybeSessionId)).then(function (joinResponse) {
+      var userId = joinResponse.data[0].userId;
+      var sessionId = joinResponse.data[1];
+      location.hash = '#' + sessionId;
+      var user = new User(userId, sessionId);
       workspaceDiv.addEventListener('click', function (evt) {
           var target = evt.target;
           if (target !== null && target.classList.contains('pointer')) {

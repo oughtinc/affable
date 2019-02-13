@@ -121,7 +121,7 @@ class User {
     private mapping_: {nextPointer: number} & Mapping = {nextPointer: 0};
     private inverseMapping_: {[ptr: number]: Pointer} = {};
 
-    constructor(private readonly userId: number) { }
+    constructor(private readonly userId: number, private readonly sessionId: number) { }
 
     get workspace(): Workspace | null { return this.workspace_; } // TODO: Make this an Rx-style Observable.
     get mapping(): {nextPointer: number} & Mapping { return this.mapping_; }
@@ -179,7 +179,7 @@ class User {
     }
 
     next(): Promise<Workspace | null> {
-        return postNext({userId:this.userId}).then(response => {
+        return postNext([{userId:this.userId}, this.sessionId]).then(response => {
             const ws = response.data;
             if(ws === null) return null;
             this.workspace_ = ws;
@@ -190,8 +190,13 @@ class User {
     }
 }
 
-getJoin().then(joinResponse => {
-    const user = new User(joinResponse.data.userId);
+const maybeSessionId = parseInt(location.hash.slice(1), 10);
+
+(isNaN(maybeSessionId) ? getJoin() : getJoin(maybeSessionId)).then(joinResponse => {
+    const userId = joinResponse.data[0].userId;
+    const sessionId = joinResponse.data[1];
+    location.hash = '#' + sessionId;
+    const user = new User(userId, sessionId);
     workspaceDiv.addEventListener('click', evt => {
         const target = <HTMLElement | null>evt.target;
         if(target !== null && target.classList.contains('pointer')) {

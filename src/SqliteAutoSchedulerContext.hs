@@ -10,41 +10,46 @@ import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsI
              parseVarEnv, parseFunEnv,
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
 import Message ( messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
-import Scheduler ( SchedulerContext(..) )
+import Scheduler ( SchedulerContext(..), SessionId )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Util ( toText, Lock, withLock, parseUnsafe )
 
 type FunctionId = Int64
 
-makeSqliteAutoSchedulerContext :: Connection -> IO (AutoSchedulerContext (Connection, Lock))
-makeSqliteAutoSchedulerContext conn = do
+makeSqliteAutoSchedulerContext :: SessionId -> Connection -> IO (AutoSchedulerContext (Connection, Lock))
+makeSqliteAutoSchedulerContext sessionId conn = do
     ctxt <- makeSqliteSchedulerContext conn
-    makeSqliteAutoSchedulerContext' ctxt
+    makeSqliteAutoSchedulerContext' sessionId ctxt
 
-makeSqliteAutoSchedulerContext' :: SchedulerContext (Connection, Lock) -> IO (AutoSchedulerContext (Connection, Lock))
-makeSqliteAutoSchedulerContext' ctxt = do
+makeSqliteAutoSchedulerContext' :: SessionId -> SchedulerContext (Connection, Lock) -> IO (AutoSchedulerContext (Connection, Lock))
+makeSqliteAutoSchedulerContext' sessionId ctxt = do
     let (conn, lock) = extraContent ctxt
 
-    q <- runQueueSqlite lock conn -- TODO: This should really be controllable.
-    answerId <- withLock lock $ do
-        if null q then do
-            execute_ conn "INSERT INTO Functions ( isAnswer ) VALUES (1)"
-            lastInsertRowId conn
-          else do
-            [Only fId] <- query_ conn "SELECT id FROM Functions WHERE isAnswer = 1 ORDER BY id DESC LIMIT 1"
-            return fId
+    ss <- queryNamed conn "SELECT f.id \
+                          \FROM Functions f \
+                          \INNER JOIN Continuations c ON c.function = f.id \
+                          \INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
+                          \INNER JOIN SessionProcesses s ON s.processId = t.processId \
+                          \WHERE s.sessionId = :sessionId AND f.isAnswer = 1 \
+                          \LIMIT 1" [":sessionId" := sessionId]
+
+    answerId <- case ss of
+                    [] -> do
+                        execute_ conn "INSERT INTO Functions ( isAnswer ) VALUES (1)"
+                        lastInsertRowId conn
+                    [Only fId] -> return fId
 
     return $ AutoSchedulerContext {
                     alternativesFor = alternativesForSqlite lock conn answerId,
-                    allAlternatives = allAlternativesSqlite lock conn answerId,
+                    allAlternatives = allAlternativesSqlite lock conn answerId sessionId,
                     addCaseFor = addCaseForSqlite lock conn answerId,
                     newFunction = newFunctionSqlite lock conn,
                     saveContinuation = saveContinuationSqlite lock conn answerId,
                     loadContinuation = loadContinuationSqlite lock conn answerId,
                     recordState = recordStateSqlite lock conn,
                     currentState = currentStateSqlite lock conn,
-                    newProcess = newProcessSqlite lock conn,
-                    runQueue = runQueueSqlite lock conn,
+                    newProcess = newProcessSqlite lock conn sessionId,
+                    runQueue = runQueueSqlite lock conn sessionId,
                     terminate = terminateSqlite lock conn,
                     addContinuationArgument = addContinuationArgumentSqlite lock conn answerId,
                     continuationArguments = continuationArgumentsSqlite lock conn answerId,
@@ -68,10 +73,17 @@ alternativesForSqlite lock conn answerId f = do
         return $ map (\(ps, e) -> (parsePatternsUnsafe ps, expFromDB e)) alts
 
 -- NOT CACHEABLE
-allAlternativesSqlite :: Lock -> Connection -> FunctionId -> IO (M.Map Name [([Pattern], Exp')])
-allAlternativesSqlite lock conn answerId = do
+allAlternativesSqlite :: Lock -> Connection -> FunctionId -> SessionId -> IO (M.Map Name [([Pattern], Exp')])
+allAlternativesSqlite lock conn answerId sessionId = do
     withLock lock $ do
-        alts <- query_ conn "SELECT function, pattern, body FROM Alternatives"
+        alts <- queryNamed conn "SELECT function, pattern, body \
+                                \FROM Alternatives \
+                                \WHERE function IN (SELECT c.function \
+                                \                   FROM Continuations c \
+                                \                   INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
+                                \                   INNER JOIN SessionProcesses s ON s.processId = t.processId \
+                                \                   WHERE s.sessionId = :sessionId) \
+                                \ORDER BY rowid ASC" [":sessionId" := sessionId]
         return $ M.fromListWith (++) $ map (\(f, ps, e) -> (idToName answerId f, [(parsePatternsUnsafe ps, expFromDB e)])) alts
 
 newFunctionSqlite :: Lock -> Connection -> IO Name
@@ -173,16 +185,24 @@ currentStateSqlite lock conn pId = do
                                                        \LIMIT 1" [":processId" := pId]
         return (parseUnsafe parseVarEnv varEnv, parseUnsafe parseFunEnv funEnv, s, expFromDB e, parseKont1UnsafeDB k)
 
-newProcessSqlite :: Lock -> Connection -> IO ProcessId
-newProcessSqlite lock conn = do
+newProcessSqlite :: Lock -> Connection -> SessionId -> IO ProcessId
+newProcessSqlite lock conn sessionId = do
     withLock lock $ do
-        execute_ conn "INSERT INTO RunQueue DEFAULT VALUES"
-        lastInsertRowId conn
+        withTransaction conn $ do
+            execute_ conn "INSERT INTO RunQueue DEFAULT VALUES"
+            processId <- lastInsertRowId conn
+            executeNamed conn "INSERT INTO SessionProcesses ( sessionId, processId ) VALUES (:sessionId, :processId)" [
+                                ":sessionId" := sessionId,
+                                ":processId" := processId]
+            return processId
 
-runQueueSqlite :: Lock -> Connection -> IO [ProcessId]
-runQueueSqlite lock conn = do
+runQueueSqlite :: Lock -> Connection -> SessionId -> IO [ProcessId]
+runQueueSqlite lock conn sessionId = do
     withLock lock $ do
-        map (\(Only pId) -> pId) <$> query_ conn "SELECT processId FROM RunQueue"
+        map (\(Only pId) -> pId) <$> queryNamed conn "SELECT processId \
+                                                     \FROM RunQueue q \
+                                                     \WHERE processId IN (SELECT processId FROM SessionProcesses WHERE sessionId = :sessionId)" [
+                                                        ":sessionId" := sessionId]
 
 terminateSqlite :: Lock -> Connection -> ProcessId -> IO ()
 terminateSqlite lock conn processId = do

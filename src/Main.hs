@@ -16,8 +16,8 @@ import CommandLine ( commandLineInteraction )
 import Exp ( Exp(..), Name(..), expToHaskell )
 import Message ( messageToHaskell, messageToBuilderDB, messageToPattern, parseMessageUnsafe )
 import Primitive ( primitives )
-import Scheduler ( getWorkspace, createInitialWorkspace, makeSingleUserScheduler, fullyExpand )
-import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext )
+import Scheduler ( SessionId, newSession, getWorkspace, createInitialWorkspace, makeSingleUserScheduler, fullyExpand )
+import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext' )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Server ( API, initServer )
 import Util ( toText )
@@ -26,7 +26,7 @@ import Workspace ( identity )
 main :: IO ()
 main = do
     args <- getArgs
-    case args of
+    case args of -- TODO: XXX The time has come to switch to a real option parser.
         ["help"] -> putStrLn "\
             \affable gen-api                - Generate static/command-api.js.\n\
             \affable serve [DB]             - Start concurrent web server, optionally storing to DB.\n\
@@ -34,7 +34,7 @@ main = do
             \affable export DB FUNCTIONID   - Print automation code identified by FUNCTIONID in DB as Haskell.\n\
             \affable concurrent [DB]        - Start concurrent command-line execution, optionally storing to DB.\n\
             \affable [DB]                   - Start sequential command-line execution, optionally storing to DB."
-        ["gen-api"] -> writeJSForAPI (Proxy :: Proxy API) (axios defAxiosOptions) "static/command-api.js"
+        ["gen-api"] -> writeJSForAPI (Proxy :: Proxy API) (axios defAxiosOptions) "ts/command-api.js"
         ("serve":args) -> do
             withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn
@@ -48,15 +48,15 @@ main = do
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
                 scheduler <- makeSingleUserScheduler ctxt
                 commandLineInteraction initWorkspace scheduler
-        ["export", dbFile, fIdString] -> do
+        ["export", dbFile, sessionIdString] -> do
             withConnection dbFile $ \conn -> do
-                autoCtxt <- makeSqliteAutoSchedulerContext conn
+                let !sessionId = read sessionIdString :: SessionId
+                ctxt <- makeSqliteSchedulerContext conn
+                autoCtxt <- makeSqliteAutoSchedulerContext' sessionId ctxt
                 alts <- fmap reverse <$> allAlternatives autoCtxt
-                let !fId = LOCAL (read fIdString)
-                    localLookup ANSWER = maybe [] id $ M.lookup fId alts
-                    localLookup f = maybe [] id $ M.lookup f alts
-                case M.lookup fId alts of
-                    Nothing -> putStrLn ("Function ID " ++ fIdString ++ " not found.")
+                let localLookup f = maybe [] id $ M.lookup f alts
+                case M.lookup ANSWER alts of
+                    Nothing -> putStrLn $ "Session " ++ sessionIdString ++ " not found."
                     Just root@(([topArg], _):_) -> do
                         putStrLn "{-# LANGUAGE OverloadedStrings #-}"
                         putStrLn "import Data.String ( IsString(..) )"
@@ -75,7 +75,9 @@ main = do
             withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn
                 initPrimitives conn
-                autoCtxt <- makeSqliteAutoSchedulerContext conn
+                ctxt <- makeSqliteSchedulerContext conn
+                sessionId <- newSession ctxt -- TODO: Get from optional argument.
+                autoCtxt <- makeSqliteAutoSchedulerContext' sessionId ctxt
                 let !ctxt = schedulerContext autoCtxt
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
                 scheduler <- runM (makeInterpreterScheduler False autoCtxt $! identity initWorkspace) 0
@@ -84,7 +86,9 @@ main = do
             withConnection (fileOrMemory args) $ \conn -> do
                 initSqlite conn
                 initPrimitives conn
-                autoCtxt <- makeSqliteAutoSchedulerContext conn
+                ctxt <- makeSqliteSchedulerContext conn
+                sessionId <- newSession ctxt -- TODO: Get from optional argument.
+                autoCtxt <- makeSqliteAutoSchedulerContext' sessionId ctxt
                 let !ctxt = schedulerContext autoCtxt
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
                 scheduler <- runM (makeInterpreterScheduler True autoCtxt $! identity initWorkspace) 0
@@ -222,6 +226,17 @@ initSqlite conn = do
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS RunQueue (\n\
        \    processId INTEGER PRIMARY KEY ASC\n\
+       \);"
+    execute_ conn "\
+       \CREATE TABLE IF NOT EXISTS Sessions (\n\
+       \    sessionId INTEGER PRIMARY KEY ASC\n\
+       \);"
+    execute_ conn "\
+       \CREATE TABLE IF NOT EXISTS SessionProcesses (\n\
+       \    sessionId INTEGER NOT NULL,\n\
+       \    processId INTEGER UNIQUE NOT NULL,\n\
+       \    FOREIGN KEY ( sessionId ) REFERENCES Sessions ( sessionId ) ON DELETE CASCADE\n\
+       \    PRIMARY KEY ( sessionId ASC, processId ASC )\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Primitives (\n\
