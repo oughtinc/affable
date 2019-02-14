@@ -1,11 +1,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
+import Control.Applicative ( optional, (<|>) ) -- base
 import Data.Foldable ( forM_ ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Text as T -- text
 import qualified Data.Text.IO as T -- text
 import Database.SQLite.Simple ( Connection, withConnection, execute_, executeMany, query_ ) -- sqlite-simple
 import Network.Wai.Handler.Warp ( run ) -- warp
+import Options.Applicative ( Parser, command, hsubparser, auto, execParser, info, progDesc, switch, str, helper,
+                             long, option, footer, argument, help, metavar, value, internal ) -- optparse-applicative
 import Servant ( Proxy(..) ) -- servant-server
 import Servant.JS ( writeJSForAPI, axios, defAxiosOptions ) -- servant-js
 import System.Environment ( getArgs ) -- base
@@ -23,40 +26,52 @@ import Server ( API, initServer )
 import Util ( toText )
 import Workspace ( identity )
 
+data Options
+    = GenAPI
+    | Serve Bool FilePath
+    | CommandLine Bool Bool (Maybe SessionId) FilePath
+    | Export FilePath SessionId
+  deriving ( Show )
+
+noAutoOption :: Parser Bool
+noAutoOption = switch (long "no-auto" <> help "Disable automation")
+
+concurrentOption :: Parser Bool
+concurrentOption = switch (long "concurrent" <> help "Allow concurrent execution.")
+
+dbFileOption :: Parser FilePath
+dbFileOption = argument str (metavar "DB" <> value ":memory:" <> help "Database file")
+
+sessionOption :: Parser SessionId
+sessionOption = argument auto (metavar "SESSIONID" <> help "Session ID")
+
+sessionIdOption :: Parser SessionId
+sessionIdOption = option auto (long "session-id" <> metavar "SESSIONID" <> help "Session ID")
+
+optionsParser :: Parser Options
+optionsParser = hsubparser $ mconcat [
+    command "gen-api" (info (pure GenAPI)
+                      ({-internal <> -}progDesc "Generate ts/command-api.js")),
+    command "serve" (info (Serve <$> noAutoOption <*> dbFileOption)
+                    (progDesc "Start webserver.")),
+    command "export" (info (Export <$> dbFileOption <*> sessionOption)
+                     (progDesc "Print automation code as Haskell.")),
+    command "start" (info (CommandLine <$> noAutoOption <*> concurrentOption <*> optional sessionIdOption <*> dbFileOption)
+                    (progDesc "Start command-line interaction."))]
+
 main :: IO ()
 main = do
-    args <- getArgs
-    case args of -- TODO: XXX The time has come to switch to a real option parser.
-        ["help"] -> putStrLn "\
-            \affable gen-api                - Generate static/command-api.js.\n\
-            \affable serve [DB]             - Start concurrent web server, optionally storing to DB.\n\
-            \affable noauto [DB]            - Start sequential command-line execution with no automation, optionally storing to DB.\n\
-            \affable export DB FUNCTIONID   - Print automation code identified by FUNCTIONID in DB as Haskell.\n\
-            \affable concurrent [DB]        - Start concurrent command-line execution, optionally storing to DB.\n\
-            \affable [DB]                   - Start sequential command-line execution, optionally storing to DB."
-        ["gen-api"] -> writeJSForAPI (Proxy :: Proxy API) (axios defAxiosOptions) "ts/command-api.js"
-        ("serve":args) -> do
-            withConnection (fileOrMemory args) $ \conn -> do
-                initSqlite conn
-                initPrimitives conn
-                putStrLn "Navigate to http://localhost:8081/static/index.html ..."
-                run 8081 =<< initServer conn
-        ("noauto":args) -> do
-            withConnection (fileOrMemory args) $ \conn -> do
-                initSqlite conn
-                ctxt <- makeSqliteSchedulerContext conn
-                initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
-                scheduler <- makeSingleUserScheduler ctxt
-                commandLineInteraction initWorkspace scheduler
-        ["export", dbFile, sessionIdString] -> do
+    options <- execParser (info (helper <*> optionsParser) (footer "Run COMMAND --help for help on each command."))
+    case options of
+        GenAPI -> writeJSForAPI (Proxy :: Proxy API) (axios defAxiosOptions) "ts/command-api.js"
+        Export dbFile sessionId -> do
             withConnection dbFile $ \conn -> do
-                let !sessionId = read sessionIdString :: SessionId
                 ctxt <- makeSqliteSchedulerContext conn
                 autoCtxt <- makeSqliteAutoSchedulerContext' sessionId ctxt
                 alts <- fmap reverse <$> allAlternatives autoCtxt
                 let localLookup f = maybe [] id $ M.lookup f alts
                 case M.lookup ANSWER alts of
-                    Nothing -> putStrLn $ "Session " ++ sessionIdString ++ " not found."
+                    Nothing -> putStrLn $ "Session " ++ show sessionId ++ " not found."
                     Just root@(([topArg], _):_) -> do
                         putStrLn "{-# LANGUAGE OverloadedStrings #-}"
                         putStrLn "import Data.String ( IsString(..) )"
@@ -71,32 +86,31 @@ main = do
                         putStr "\nmain = print $ "
                         topArg <- fullyExpand (schedulerContext autoCtxt) topArg
                         T.putStrLn (toText (expToHaskell localLookup (LetFun ANSWER (Call ANSWER [Value topArg]))))
-        ("concurrent":args) -> do
-            withConnection (fileOrMemory args) $ \conn -> do
+        Serve noAuto dbFile -> do
+            withConnection dbFile $ \conn -> do
+                initSqlite conn
+                initPrimitives conn
+                putStrLn "Navigate to http://localhost:8081/static/index.html ..."
+                run 8081 =<< ({-if noAuto then initServerNoAutomation else-} initServer) conn
+        CommandLine True _ mSessionId dbFile -> do -- TODO: Use session ID.
+            withConnection dbFile $ \conn -> do
+                initSqlite conn
+                ctxt <- makeSqliteSchedulerContext conn
+                initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
+                scheduler <- makeSingleUserScheduler ctxt
+                commandLineInteraction initWorkspace scheduler
+        CommandLine False concurrent mSessionId dbFile -> do
+            withConnection dbFile $ \conn -> do
                 initSqlite conn
                 initPrimitives conn
                 ctxt <- makeSqliteSchedulerContext conn
-                sessionId <- newSession ctxt -- TODO: Get from optional argument.
+                sessionId <- maybe (newSession ctxt) return mSessionId
+                putStrLn ("Session ID: " ++ show sessionId)
                 autoCtxt <- makeSqliteAutoSchedulerContext' sessionId ctxt
                 let !ctxt = schedulerContext autoCtxt
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
-                scheduler <- runM (makeInterpreterScheduler False autoCtxt $! identity initWorkspace) 0
+                scheduler <- runM (makeInterpreterScheduler (not concurrent) autoCtxt $! identity initWorkspace) 0
                 commandLineInteraction initWorkspace scheduler
-        _ -> do
-            withConnection (fileOrMemory args) $ \conn -> do
-                initSqlite conn
-                initPrimitives conn
-                ctxt <- makeSqliteSchedulerContext conn
-                sessionId <- newSession ctxt -- TODO: Get from optional argument.
-                autoCtxt <- makeSqliteAutoSchedulerContext' sessionId ctxt
-                let !ctxt = schedulerContext autoCtxt
-                initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
-                scheduler <- runM (makeInterpreterScheduler True autoCtxt $! identity initWorkspace) 0
-                commandLineInteraction initWorkspace scheduler
-
-fileOrMemory :: [String] -> String
-fileOrMemory [file] = file
-fileOrMemory _ = ":memory:"
 
 -- TODO: Move this elsewhere.
 initPrimitives :: Connection -> IO ()

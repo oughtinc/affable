@@ -48,19 +48,20 @@ flag test-properties
 common deps
   -- Other library packages from which modules are imported.
   build-depends:
-    base                >= 4.11 && < 4.13,
-    containers          >= 0.5.11 && < 0.6,
-    text                >= 1.2.3 && < 1.3,
-    megaparsec          >= 6.5.0 && < 7.0,
-    aeson               >= 1.3.1 && < 1.5,
-    servant-server      >= 0.14.1 && < 0.15,
-    servant-js          >= 0.9.3 && < 0.10,
-    warp                >= 3.2.25 && < 3.3,
-    sqlite-simple       >= 0.4.16 && < 0.5,
-    async               >= 2.2.1 && < 2.3,
-    async-pool          >= 0.9.0 && < 0.10,
-    haskeline           >= 0.7.4 && < 0.8,
-    ansi-terminal       >= 0.8.2 && < 0.9
+    base                    >= 4.11 && < 4.13,
+    containers              >= 0.5.11 && < 0.6,
+    text                    >= 1.2.3 && < 1.3,
+    megaparsec              >= 6.5.0 && < 7.0,
+    aeson                   >= 1.3.1 && < 1.5,
+    servant-server          >= 0.14.1 && < 0.15,
+    servant-js              >= 0.9.3 && < 0.10,
+    warp                    >= 3.2.25 && < 3.3,
+    sqlite-simple           >= 0.4.16 && < 0.5,
+    async                   >= 2.2.1 && < 2.3,
+    async-pool              >= 0.9.0 && < 0.10,
+    optparse-applicative    >= 0.14.3 && < 0.14.4,
+    haskeline               >= 0.7.4 && < 0.8,
+    ansi-terminal           >= 0.8.2 && < 0.9
 
   -- Modules included in this executable, other than Main.
   other-modules:
