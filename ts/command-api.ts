@@ -1,7 +1,7 @@
 import axios from "axios";
-import { Workspace, Message, Either, Pointer, FetchResult, Result } from "./types";
+import { WorkspaceRaw, Message, Either, Pointer, FetchResult, Result } from "./types";
 
-export function postView(body: [{userId: number}, number, Array<Message>, Pointer]): Promise<FetchResult<Result>>
+export function postView(body: [{userId: number}, number, Array<Message>, Pointer]): Promise<FetchResult<Result<void>>>
 {
   return axios({ url: '/view'
     , method: 'post'
@@ -10,7 +10,7 @@ export function postView(body: [{userId: number}, number, Array<Message>, Pointe
     });
 }
 
-export function postReply(body: [{userId: number}, number, Array<Either<Message, Pointer>>, Message]): Promise<FetchResult<Result>>
+export function postReply(body: [{userId: number}, number, Array<Either<Message, Pointer>>, Message]): Promise<FetchResult<Result<void>>>
 {
   return axios({ url: '/reply'
     , method: 'post'
@@ -19,7 +19,7 @@ export function postReply(body: [{userId: number}, number, Array<Either<Message,
     });
 }
 
-export function postWait(body: [{userId: number}, number, Array<Either<Message, Pointer>>]): Promise<FetchResult<Result>>
+export function postWait(body: [{userId: number}, number, Array<Either<Message, Pointer>>]): Promise<FetchResult<Result<void>>>
 {
   return axios({ url: '/wait'
     , method: 'post'
@@ -28,7 +28,7 @@ export function postWait(body: [{userId: number}, number, Array<Either<Message, 
     });
 }
 
-export function postNext(body: [{userId: number}, number]): Promise<FetchResult<Workspace | null>>
+export function postNext(body: [{userId: number}, number]): Promise<FetchResult<WorkspaceRaw | null>>
 {
   return axios({ url: '/next'
     , method: 'post'

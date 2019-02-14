@@ -6,7 +6,7 @@ import commonjs from 'rollup-plugin-commonjs';
 import typescript from 'rollup-plugin-typescript2';
 
 export default {
-    input: 'ts/workspace.ts',
+    input: 'ts/workspace.tsx',
     output: {
         file: 'static/bundle.js',
         format: 'iife',
@@ -14,7 +14,13 @@ export default {
     },
     plugins: [
         resolve({jsnext: true, preferBuiltins: true, browser: true}),
-        commonjs({include: 'node_modules/**'}),
+        commonjs({
+            include: 'node_modules/**',
+            namedExports: {
+                'node_modules/react/index.js': ['Children', 'Component', 'PropTypes', 'createElement'],
+                'node_modules/react-dom/index.js': ['render'],
+            }
+        }),
         globals(),
         builtins(),
         json(),
