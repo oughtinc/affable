@@ -20,20 +20,11 @@ Run `rollup -c` to create the new `bundle.js`.
 
 ## Command Line Options
 
-  - `gen-api` - Generate the client-side code for the web API into `static/command-api.js`.
-  - `serve [<dbfile>]` - Start a web server optionally storing state in the Sqlite database `dbfile`.
-  - `noauto [<dbfile>]` - Create an interaction with no automation optionally storing state in the Sqlite database `dbfile`.
-  - `export <dbfile> <id>` - Print the automation as Haskell code for the function with ID `id` stored in the Sqlite database `dbfile`.
-  - `concurrent [<dbfile>]` - Same as next option but schedule questions concurrently.
-  - `[<dbfile>]` - Create an interaction with automation optionally storing state in the Sqlite database `dbfile`.
-
-For example, `stack run foo.db` (or `stack exec affable foo.db`) will start a session supporting automation and storing
-the results into the Sqlite database `foo.db`. This does *not* reuse the automation from prior runs.
+Use `stack run -- --help` to list the usage. Typically, `stack run start` or `stack run serve` will be a good place to start.
 
 Once you've completed (whether by answering the top-level question, or using Ctrl-D/Ctrl-Z/Ctrl-C to terminate early),
-you can export the code via `stack run export foo.db 1 > t.hs`. `1` should be replaced by the ID of the top-level function you
-want to export which you'd need to get by looking in the database, though it will likely be `1` if you started with an
-empty database. Querying the database with `SELECT id FROM Functions WHERE isAnswer = 1` should given you appropiate IDs.
+you can export the code via `stack run -- export foo.db 1 > t.hs`. `1` should be replaced by the ID of the session you
+want to export which will likely be `1` if you started with an empty database.
 `t.hs` is now a self-contained Haskell program which is can be compiled and executed, e.g. via `runhaskell t.hs`.
 
 ## Interactions
