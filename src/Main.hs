@@ -248,7 +248,7 @@ initSqlite conn = do
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS SessionProcesses (\n\
        \    sessionId INTEGER NOT NULL,\n\
-       \    processId INTEGER UNIQUE NOT NULL,\n\
+       \    processId INTEGER NOT NULL,\n\
        \    FOREIGN KEY ( sessionId ) REFERENCES Sessions ( sessionId ) ON DELETE CASCADE\n\
        \    PRIMARY KEY ( sessionId ASC, processId ASC )\n\
        \);"
