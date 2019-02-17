@@ -181,11 +181,15 @@ createInitialWorkspaceSqlite lock conn = do
                             ":questionAsAnswered" := msgText']
         lastInsertRowId conn
 
-newSessionSqlite :: Lock -> Connection -> IO SessionId
-newSessionSqlite lock conn = do
+newSessionSqlite :: Lock -> Connection -> Maybe SessionId -> IO SessionId
+newSessionSqlite lock conn Nothing = do
     withLock lock $ do
         execute_ conn "INSERT INTO Sessions DEFAULT VALUES"
         lastInsertRowId conn
+newSessionSqlite lock conn (Just sessionId) = do
+    withLock lock $ do
+        execute conn "INSERT OR IGNORE INTO Sessions VALUES (?)" (Only sessionId)
+        return sessionId
 
 createWorkspaceSqlite :: Lock -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
 createWorkspaceSqlite lock conn doNormalize userId workspaceId qAsAsked qAsAnswered = do

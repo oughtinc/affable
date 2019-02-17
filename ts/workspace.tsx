@@ -6,78 +6,6 @@ import { Mapping, Expansion, Message, Workspace, Either, Result, Pointer } from 
 import { messageParser } from './parser';
 import { postView, postReply, postWait, postNext, getJoin, getPointer } from './command-api';
 
-const dummy: Element = document.createElement('textarea');
-function escapeHTML(html: string): string {
-    dummy.textContent = html;
-    return dummy.innerHTML;
-}
-
-interface MessageProps {
-    mapping: Mapping,
-    expansion: Expansion,
-    message: Message,
-    isSubmessage?: boolean
-}
-
-const MessageComponent: React.FunctionComponent<MessageProps> = (props) => {
-    const mapping = props.mapping;
-    const expansion = props.expansion;
-    const msg = props.message;
-    switch(msg.tag) {
-        case 'Text':
-            return <span>{escapeHTML(msg.contents)}</span>;
-        case 'Reference':
-            const p = msg.contents;
-            if(expansion.has(p)) {
-                return <MessageComponent mapping={mapping} expansion={expansion} message={expansion.get(p) as Message} isSubmessage={true} />;
-            } else {
-                return <span className="pointer" data-original={p}>${mapping.get(p)}</span>;
-            }
-        case 'Structured':
-            if(props.isSubmessage) {
-                return <span>[{msg.contents.map((m: Message) =>
-                                <MessageComponent mapping={mapping} expansion={expansion} message={m} isSubmessage={true} />)}]
-                       </span>;
-            } else {
-                return <span>{msg.contents.map((m: Message) =>
-                                <MessageComponent mapping={mapping} expansion={expansion} message={m} isSubmessage={true} />)}
-                       </span>;
-            }
-        case 'LabeledStructured':
-            const label: Pointer = msg.contents[0];
-            return <span>[${mapping.get(label)}|{msg.contents[1].map((m: Message) =>
-                            <MessageComponent mapping={mapping} expansion={expansion} message={m} isSubmessage={true} />)}]
-                   </span>;
-    }
-};
-
-interface WorkspaceProps {
-    mapping: Mapping,
-    workspace: Workspace
-}
-
-const WorkspaceComponent: React.FunctionComponent<WorkspaceProps> = (props) => {
-    const mapping = props.mapping;
-    const workspace = props.workspace;
-    const expansion = workspace.expandedPointers;
-    console.log(workspace);
-
-    // TODO: Improve this.
-    return <div>
-               Question: <MessageComponent mapping={mapping} expansion={expansion} message={workspace.question} />;
-               <br/>
-               {workspace.subQuestions.map((q, i) => {
-                   const answer = q[2];
-                   if(answer === null) {
-                       return [<br/>, (i+1)+'. ', <MessageComponent mapping={mapping} expansion={expansion} message={q[1]} />];
-                   } else {
-                       return [<br/>, (i+1)+'. ', <MessageComponent mapping={mapping} expansion={expansion} message={q[1]} />,
-                               <br/>, 'Answer: ', <MessageComponent mapping={mapping} expansion={expansion} message={answer} />];
-                   }
-               })}
-           </div>;
-};
-
 /* PEG.js parser input
 Top "message"
   = msgs:Msg+ { return {tag: 'Structured', contents: msgs}; }
@@ -142,9 +70,88 @@ function renumberMessage(mapping: Mapping, msg: Message): Message {
     }
 }
 
+const dummy: Element = document.createElement('textarea');
+function escapeHTML(html: string): string {
+    dummy.textContent = html;
+    return dummy.innerHTML;
+}
+
+interface MessageProps {
+    mapping: Mapping,
+    expansion: Expansion,
+    message: Message,
+    isSubmessage?: boolean
+}
+
+const MessageComponent: React.FunctionComponent<MessageProps> = (props) => {
+    const mapping = props.mapping;
+    const expansion = props.expansion;
+    const msg = props.message;
+    switch(msg.tag) {
+        case 'Text':
+            return <span>{escapeHTML(msg.contents)}</span>;
+        case 'Reference':
+            const p = msg.contents;
+            if(expansion.has(p)) {
+                return <MessageComponent mapping={mapping} expansion={expansion} message={expansion.get(p) as Message} isSubmessage={true} />;
+            } else {
+                return <span className="pointer" data-original={p}>${mapping.get(p)}</span>;
+            }
+        case 'Structured':
+            if(props.isSubmessage) {
+                return <span>[{msg.contents.map((m: Message, i: number) =>
+                                <MessageComponent key={i} mapping={mapping} expansion={expansion} message={m} isSubmessage={true} />)}]
+                       </span>;
+            } else {
+                return <span>{msg.contents.map((m: Message, i: number) =>
+                                <MessageComponent key={i} mapping={mapping} expansion={expansion} message={m} isSubmessage={true} />)}
+                       </span>;
+            }
+        case 'LabeledStructured':
+            const label: Pointer = msg.contents[0];
+            return <span>[${mapping.get(label)}|{msg.contents[1].map((m: Message, i: number) =>
+                            <MessageComponent key={i} mapping={mapping} expansion={expansion} message={m} isSubmessage={true} />)}]
+                   </span>;
+    }
+};
+
+interface QuestionProps {
+    mapping: Mapping,
+    expansion: Expansion,
+    question: Message
+}
+
+const QuestionComponent: React.FunctionComponent<QuestionProps> = (props) =>
+    <div className="topLevelQuestion cell">
+        <h2>
+            <MessageComponent mapping={props.mapping} expansion={props.expansion} message={props.question} />
+        </h2>
+    </div>;
+
+interface SubQuestionProps extends QuestionProps {
+    answer: Message | null
+}
+
+const SubQuestionComponent: React.FunctionComponent<SubQuestionProps> = (props) => {
+    const mapping = props.mapping;
+    const expansion = props.expansion;
+    const question = props.question;
+    const answer = props.answer;
+    if(answer === null) {
+       return <div className="subQuestion unanswered">
+                <div className="question"><MessageComponent mapping={mapping} expansion={expansion} message={question} /></div>
+              </div>;
+    } else {
+       return <div className="subQuestion answered">
+                <div className="question"><MessageComponent mapping={mapping} expansion={expansion} message={question} /></div>
+                <div className="answer"><MessageComponent mapping={mapping} expansion={expansion} message={answer} /></div>
+              </div>;
+    }
+};
+
 class User {
     constructor(private readonly userId: number,
-                private readonly sessionId: number,
+                readonly sessionId: number | null,
                 private readonly pending = List<Either<Message, Pointer>>(),
                 readonly workspace: Workspace | null = null,
                 readonly mapping: Mapping = Map<Pointer, Pointer>(),
@@ -233,8 +240,10 @@ class User {
 
     next(): Promise<User | null> {
         return postNext([{userId:this.userId}, this.sessionId]).then(response => {
-            const ws = response.data;
-            if(ws === null) return null;
+            const workspaceSession = response.data;
+            if(workspaceSession === null) return null;
+            const ws = workspaceSession[0];
+            const sessionId = workspaceSession[1];
             const expansion = ws.expandedPointers;
             const ep: Array<[Pointer, Message]> = [];
             for(const k in expansion) {
@@ -252,7 +261,7 @@ class User {
             const mappings = User.updateInverseMapping(transientMapping);
 
             const user = new User(this.userId,
-                                  this.sessionId,
+                                  sessionId,
                                   List<Either<Message, Pointer>>(),
                                   ws2,
                                   mappings[0],
@@ -262,14 +271,67 @@ class User {
     }
 }
 
+interface ButtonProps {
+    label: string,
+    onClick: (evt: React.MouseEvent) => void
+}
+
+const ButtonComponent: React.FunctionComponent<ButtonProps> = (props) =>
+    <button className="btn btn-default" onClick={props.onClick}>{props.label}</button>;
+
+interface TextInputProps extends ButtonProps {
+    className: string,
+    inputText: string,
+    onChange: (evt: React.ChangeEvent) => void
+}
+
+const TextInputComponent: React.FunctionComponent<TextInputProps> = (props) => {
+    return <div className={props.className}>
+            <input className="form-control" type="text" value={props.inputText} onChange={props.onChange}></input>
+            <ButtonComponent onClick={props.onClick} label={props.label} />
+           </div>;
+};
+
+interface NewQuestionProps {
+    inputText: string,
+    onClick: (evt: React.MouseEvent) => void,
+    onChange: (evt: React.ChangeEvent) => void
+}
+
+const NewQuestionComponent: React.FunctionComponent<NewQuestionProps> = (props) =>
+    <form className="form-inline newQuestion cell">
+        <TextInputComponent className="form-group" inputText={props.inputText} onChange={props.onChange} label="Ask" onClick={props.onClick} />
+    </form>;
+
+interface ReplyProps {
+    inputText: string,
+    onClick: (evt: React.MouseEvent) => void,
+    onChange: (evt: React.ChangeEvent) => void
+}
+
+const ReplyComponent: React.FunctionComponent<ReplyProps> = (props) =>
+    <form className="form-inline reply cell">
+        <TextInputComponent className="form-group" inputText={props.inputText} onChange={props.onChange} label="Reply" onClick={props.onClick} />
+    </form>;
+
+interface WaitProps {
+    onClick: (evt: React.MouseEvent) => void
+}
+
+const WaitComponent: React.FunctionComponent<WaitProps> = (props) =>
+    <form className="form-inline wait cell">
+        <div className="form-group"><ButtonComponent label="Wait" onClick={props.onClick} /></div>
+    </form>;
+
 interface MainProps {
     userId: number,
-    sessionId: number
+    sessionId: number | null
 }
 
 interface MainState {
     user: User,
-    inputText: string
+    askInputText: string,
+    replyInputText: string
 }
 
 class MainComponent extends React.Component<MainProps, MainState> {
@@ -277,27 +339,40 @@ class MainComponent extends React.Component<MainProps, MainState> {
 
     constructor(props: MainProps) {
         super(props);
-        this.state = {user: new User(props.userId, props.sessionId), inputText: ''};
+        this.state = {user: new User(props.userId, props.sessionId), askInputText: '', replyInputText: ''};
     }
 
     render() {
         const workspace = this.state.user.workspace;
         if(workspace === null) {
-            return <button onClick={this.nextClick}>Next</button>;
+            return <div className="nextContainer"><ButtonComponent label="Next" onClick={this.nextClick} /></div>;
         } else {
-            return [<div onClick={this.pointerClick}>
-                       <WorkspaceComponent mapping={this.state.user.mapping} workspace={workspace} />
-                    </div>,
-                    <input type="text" value={this.state.inputText} onChange={this.inputChange}></input>,
-                    <button onClick={this.askClick}>Ask</button>,
-                    <button onClick={this.replyClick}>Reply</button>,
-                    <button onClick={this.waitClick}>Wait</button>];
+            const sessionId = this.state.user.sessionId;
+            location.hash = sessionId === null ? '' : '#' + sessionId;
+            const mapping = this.state.user.mapping;
+            const expansion = workspace.expandedPointers;
+            console.log(workspace);
+            return <div className="mainContainer" onClick={this.pointerClick}>
+                       <QuestionComponent mapping={mapping} expansion={expansion} question={workspace.question} />
+                       <div className="subQuestions cell">
+                           {workspace.subQuestions.map((q, i) => // Using index-based keying is reasonable here.
+                                <SubQuestionComponent key={i} mapping={mapping} expansion={expansion} question={q[1]} answer={q[2]} />)}
+                       </div>
+                       <NewQuestionComponent inputText={this.state.askInputText} onClick={this.askClick} onChange={this.askInputChange} />
+                       <WaitComponent onClick={this.waitClick} />
+                       <ReplyComponent inputText={this.state.replyInputText} onClick={this.replyClick} onChange={this.replyInputChange} />
+                   </div>;
         }
     }
 
-    inputChange = (evt: React.ChangeEvent) => {
+    askInputChange = (evt: React.ChangeEvent) => {
         const target = evt.target as HTMLInputElement;
-        this.setState({user: this.state.user, inputText: target.value});
+        this.setState({user: this.state.user, askInputText: target.value, replyInputText: this.state.replyInputText});
+    };
+
+    replyInputChange = (evt: React.ChangeEvent) => {
+        const target = evt.target as HTMLInputElement;
+        this.setState({user: this.state.user, askInputText: this.state.askInputText, replyInputText: target.value});
     };
 
     pointerClick = (evt: React.MouseEvent) => {
@@ -305,7 +380,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
         if(target !== null && target.classList.contains('pointer')) {
             this.state.user.view(parseInt(target.dataset.original as string, 10)).then(r => {
                 if(r.tag === 'OK') {
-                    this.setState({user: r.contents, inputText: this.state.inputText});
+                    this.setState({user: r.contents, askInputText: this.state.askInputText, replyInputText: this.state.replyInputText});
                 } else {
                     console.log(r);
                 }
@@ -321,23 +396,23 @@ class MainComponent extends React.Component<MainProps, MainState> {
             if(user === null) {
                 // Do nothing but probably want to tell the user that.
             } else {
-                this.setState({user: user, inputText: ''});
+                this.setState({user: user, askInputText: '', replyInputText: ''});
             }
         });
     };
 
     askClick = (evt: React.MouseEvent) => {
-        const msg = messageParser(this.state.inputText);
+        const msg = messageParser(this.state.askInputText);
         this.state.user.ask(msg).then(user => {
-            this.setState({user: user, inputText: ''});
+            this.setState({user: user, askInputText: '', replyInputText: this.state.replyInputText});
         });
     };
 
     replyClick = (evt: React.MouseEvent) => {
-        const msg = messageParser(this.state.inputText);
+        const msg = messageParser(this.state.replyInputText);
         this.state.user.reply(msg).then(r => {
             if(r.tag === 'OK') {
-                this.setState({user: r.contents, inputText: ''});
+                this.setState({user: r.contents, askInputText: '', replyInputText: ''});
             } else {
                 console.log(r);
             }
@@ -347,7 +422,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
     waitClick = (evt: React.MouseEvent) => {
         this.state.user.wait().then(r => {
             if(r.tag === 'OK') {
-                this.setState({user: r.contents, inputText: ''});
+                this.setState({user: r.contents, askInputText: '', replyInputText: ''});
             } else {
                 console.log(r);
             }
@@ -356,10 +431,8 @@ class MainComponent extends React.Component<MainProps, MainState> {
 }
 
 const mainDiv: HTMLElement = document.getElementById('main') as HTMLElement;
-const maybeSessionId = parseInt(location.hash.slice(1), 10);
-(isNaN(maybeSessionId) ? getJoin() : getJoin(maybeSessionId)).then(joinResponse => {
-    const userId = joinResponse.data[0].userId;
-    const sessionId = joinResponse.data[1];
-    location.hash = '#' + sessionId;
-    render(<MainComponent userId={userId} sessionId={sessionId} />, mainDiv);
+getJoin().then(joinResponse => {
+    const userId = joinResponse.data.userId;
+    const maybeSessionId = parseInt(location.hash.slice(1), 10);
+    render(<MainComponent userId={userId} sessionId={isNaN(maybeSessionId) ? null : maybeSessionId} />, mainDiv);
 }).catch(e => console.log(e));

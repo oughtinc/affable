@@ -28,7 +28,7 @@ export function postWait(body: [{userId: number}, number, Array<Either<Message, 
     });
 }
 
-export function postNext(body: [{userId: number}, number]): Promise<FetchResult<WorkspaceRaw | null>>
+export function postNext(body: [{userId: number}, number | null]): Promise<FetchResult<[WorkspaceRaw, number] | null>>
 {
   return axios({ url: '/next'
     , method: 'post'
@@ -37,9 +37,9 @@ export function postNext(body: [{userId: number}, number]): Promise<FetchResult<
     });
 }
 
-export function getJoin(sessionId?: number): Promise<FetchResult<[{userId: number}, number]>>
+export function getJoin(): Promise<FetchResult<{userId: number}>>
 {
-  return axios({ url: '/join' + (sessionId === undefined ? '' : '?sessionId=' + encodeURIComponent(''+sessionId))
+  return axios({ url: '/join'
     , method: 'get'
     });
 }

@@ -104,7 +104,7 @@ main = do
                 initSqlite conn
                 initPrimitives conn
                 ctxt <- makeSqliteSchedulerContext conn
-                sessionId <- maybe (newSession ctxt) return mSessionId
+                sessionId <- newSession ctxt mSessionId
                 putStrLn ("Session ID: " ++ show sessionId)
                 autoCtxt <- makeSqliteAutoSchedulerContext' sessionId ctxt
                 let !ctxt = schedulerContext autoCtxt

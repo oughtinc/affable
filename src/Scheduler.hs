@@ -30,7 +30,7 @@ type SchedulerFn = UserId -> Workspace -> Event -> IO (Maybe Workspace)
 
 data SchedulerContext extra = SchedulerContext {
     createInitialWorkspace :: IO WorkspaceId,
-    newSession :: IO SessionId,
+    newSession :: Maybe SessionId -> IO SessionId,
     createWorkspace :: Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId,
     sendAnswer :: Bool -> UserId -> WorkspaceId -> Message -> IO (),
     sendMessage :: Bool -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO (),

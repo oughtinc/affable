@@ -31451,8 +31451,8 @@
             responseType: 'json'
         });
     }
-    function getJoin(sessionId) {
-        return axios$1({ url: '/join' + (sessionId === undefined ? '' : '?sessionId=' + encodeURIComponent('' + sessionId)),
+    function getJoin() {
+        return axios$1({ url: '/join',
             method: 'get'
         });
     }
@@ -31462,75 +31462,6 @@
         });
     }
 
-    var dummy = document.createElement('textarea');
-    function escapeHTML(html) {
-        dummy.textContent = html;
-        return dummy.innerHTML;
-    }
-    var MessageComponent = function (props) {
-        var mapping = props.mapping;
-        var expansion = props.expansion;
-        var msg = props.message;
-        switch (msg.tag) {
-            case 'Text':
-                return react_4("span", null, escapeHTML(msg.contents));
-            case 'Reference':
-                var p = msg.contents;
-                if (expansion.has(p)) {
-                    return react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: expansion.get(p), isSubmessage: true });
-                }
-                else {
-                    return react_4("span", { className: "pointer", "data-original": p },
-                        "$",
-                        mapping.get(p));
-                }
-            case 'Structured':
-                if (props.isSubmessage) {
-                    return react_4("span", null,
-                        "[",
-                        msg.contents.map(function (m) {
-                            return react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: m, isSubmessage: true });
-                        }),
-                        "]");
-                }
-                else {
-                    return react_4("span", null, msg.contents.map(function (m) {
-                        return react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: m, isSubmessage: true });
-                    }));
-                }
-            case 'LabeledStructured':
-                var label = msg.contents[0];
-                return react_4("span", null,
-                    "[$",
-                    mapping.get(label),
-                    "|",
-                    msg.contents[1].map(function (m) {
-                        return react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: m, isSubmessage: true });
-                    }),
-                    "]");
-        }
-    };
-    var WorkspaceComponent = function (props) {
-        var mapping = props.mapping;
-        var workspace = props.workspace;
-        var expansion = workspace.expandedPointers;
-        console.log(workspace);
-        return react_4("div", null,
-            "Question: ",
-            react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: workspace.question }),
-            ";",
-            react_4("br", null),
-            workspace.subQuestions.map(function (q, i) {
-                var answer = q[2];
-                if (answer === null) {
-                    return [react_4("br", null), (i + 1) + '. ', react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: q[1] })];
-                }
-                else {
-                    return [react_4("br", null), (i + 1) + '. ', react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: q[1] }),
-                        react_4("br", null), 'Answer: ', react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: answer })];
-                }
-            }));
-    };
     function mappingFromMessage(mapping, expansion, msg) {
         switch (msg.tag) {
             case 'Text':
@@ -31580,6 +31511,77 @@
                 throw "Something's wrong";
         }
     }
+    var dummy = document.createElement('textarea');
+    function escapeHTML(html) {
+        dummy.textContent = html;
+        return dummy.innerHTML;
+    }
+    var MessageComponent = function (props) {
+        var mapping = props.mapping;
+        var expansion = props.expansion;
+        var msg = props.message;
+        switch (msg.tag) {
+            case 'Text':
+                return react_4("span", null, escapeHTML(msg.contents));
+            case 'Reference':
+                var p = msg.contents;
+                if (expansion.has(p)) {
+                    return react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: expansion.get(p), isSubmessage: true });
+                }
+                else {
+                    return react_4("span", { className: "pointer", "data-original": p },
+                        "$",
+                        mapping.get(p));
+                }
+            case 'Structured':
+                if (props.isSubmessage) {
+                    return react_4("span", null,
+                        "[",
+                        msg.contents.map(function (m, i) {
+                            return react_4(MessageComponent, { key: i, mapping: mapping, expansion: expansion, message: m, isSubmessage: true });
+                        }),
+                        "]");
+                }
+                else {
+                    return react_4("span", null, msg.contents.map(function (m, i) {
+                        return react_4(MessageComponent, { key: i, mapping: mapping, expansion: expansion, message: m, isSubmessage: true });
+                    }));
+                }
+            case 'LabeledStructured':
+                var label = msg.contents[0];
+                return react_4("span", null,
+                    "[$",
+                    mapping.get(label),
+                    "|",
+                    msg.contents[1].map(function (m, i) {
+                        return react_4(MessageComponent, { key: i, mapping: mapping, expansion: expansion, message: m, isSubmessage: true });
+                    }),
+                    "]");
+        }
+    };
+    var QuestionComponent = function (props) {
+        return react_4("div", { className: "topLevelQuestion cell" },
+            react_4("h2", null,
+                react_4(MessageComponent, { mapping: props.mapping, expansion: props.expansion, message: props.question })));
+    };
+    var SubQuestionComponent = function (props) {
+        var mapping = props.mapping;
+        var expansion = props.expansion;
+        var question = props.question;
+        var answer = props.answer;
+        if (answer === null) {
+            return react_4("div", { className: "subQuestion unanswered" },
+                react_4("div", { className: "question" },
+                    react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: question })));
+        }
+        else {
+            return react_4("div", { className: "subQuestion answered" },
+                react_4("div", { className: "question" },
+                    react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: question })),
+                react_4("div", { className: "answer" },
+                    react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: answer })));
+        }
+    };
     var User = (function () {
         function User(userId, sessionId, pending, workspace, mapping, inverseMapping) {
             if (pending === void 0) { pending = List(); }
@@ -31667,9 +31669,11 @@
         User.prototype.next = function () {
             var _this = this;
             return postNext([{ userId: this.userId }, this.sessionId]).then(function (response) {
-                var ws = response.data;
-                if (ws === null)
+                var workspaceSession = response.data;
+                if (workspaceSession === null)
                     return null;
+                var ws = workspaceSession[0];
+                var sessionId = workspaceSession[1];
                 var expansion = ws.expandedPointers;
                 var ep = [];
                 for (var k in expansion) {
@@ -31685,26 +31689,51 @@
                 var transientMapping = { nextPointer: 0 };
                 mappingFromWorkspace(transientMapping, ws2);
                 var mappings = User.updateInverseMapping(transientMapping);
-                var user = new User(_this.userId, _this.sessionId, List(), ws2, mappings[0], mappings[1]);
+                var user = new User(_this.userId, sessionId, List(), ws2, mappings[0], mappings[1]);
                 return user;
             });
         };
         return User;
     }());
+    var ButtonComponent = function (props) {
+        return react_4("button", { className: "btn btn-default", onClick: props.onClick }, props.label);
+    };
+    var TextInputComponent = function (props) {
+        return react_4("div", { className: props.className },
+            react_4("input", { className: "form-control", type: "text", value: props.inputText, onChange: props.onChange }),
+            react_4(ButtonComponent, { onClick: props.onClick, label: props.label }));
+    };
+    var NewQuestionComponent = function (props) {
+        return react_4("form", { className: "form-inline newQuestion cell" },
+            react_4(TextInputComponent, { className: "form-group", inputText: props.inputText, onChange: props.onChange, label: "Ask", onClick: props.onClick }));
+    };
+    var ReplyComponent = function (props) {
+        return react_4("form", { className: "form-inline reply cell" },
+            react_4(TextInputComponent, { className: "form-group", inputText: props.inputText, onChange: props.onChange, label: "Reply", onClick: props.onClick }));
+    };
+    var WaitComponent = function (props) {
+        return react_4("form", { className: "form-inline wait cell" },
+            react_4("div", { className: "form-group" },
+                react_4(ButtonComponent, { label: "Wait", onClick: props.onClick })));
+    };
     var MainComponent = (function (_super) {
         __extends(MainComponent, _super);
         function MainComponent(props) {
             var _this = _super.call(this, props) || this;
-            _this.inputChange = function (evt) {
+            _this.askInputChange = function (evt) {
                 var target = evt.target;
-                _this.setState({ user: _this.state.user, inputText: target.value });
+                _this.setState({ user: _this.state.user, askInputText: target.value, replyInputText: _this.state.replyInputText });
+            };
+            _this.replyInputChange = function (evt) {
+                var target = evt.target;
+                _this.setState({ user: _this.state.user, askInputText: _this.state.askInputText, replyInputText: target.value });
             };
             _this.pointerClick = function (evt) {
                 var target = evt.target;
                 if (target !== null && target.classList.contains('pointer')) {
                     _this.state.user.view(parseInt(target.dataset.original, 10)).then(function (r) {
                         if (r.tag === 'OK') {
-                            _this.setState({ user: r.contents, inputText: _this.state.inputText });
+                            _this.setState({ user: r.contents, askInputText: _this.state.askInputText, replyInputText: _this.state.replyInputText });
                         }
                         else {
                             console.log(r);
@@ -31717,21 +31746,21 @@
                 return _this.state.user.next().then(function (user) {
                     if (user === null) ;
                     else {
-                        _this.setState({ user: user, inputText: '' });
+                        _this.setState({ user: user, askInputText: '', replyInputText: '' });
                     }
                 });
             };
             _this.askClick = function (evt) {
-                var msg = messageParser(_this.state.inputText);
+                var msg = messageParser(_this.state.askInputText);
                 _this.state.user.ask(msg).then(function (user) {
-                    _this.setState({ user: user, inputText: '' });
+                    _this.setState({ user: user, askInputText: '', replyInputText: _this.state.replyInputText });
                 });
             };
             _this.replyClick = function (evt) {
-                var msg = messageParser(_this.state.inputText);
+                var msg = messageParser(_this.state.replyInputText);
                 _this.state.user.reply(msg).then(function (r) {
                     if (r.tag === 'OK') {
-                        _this.setState({ user: r.contents, inputText: '' });
+                        _this.setState({ user: r.contents, askInputText: '', replyInputText: '' });
                     }
                     else {
                         console.log(r);
@@ -31741,39 +31770,45 @@
             _this.waitClick = function (evt) {
                 _this.state.user.wait().then(function (r) {
                     if (r.tag === 'OK') {
-                        _this.setState({ user: r.contents, inputText: '' });
+                        _this.setState({ user: r.contents, askInputText: '', replyInputText: '' });
                     }
                     else {
                         console.log(r);
                     }
                 });
             };
-            _this.state = { user: new User(props.userId, props.sessionId), inputText: '' };
+            _this.state = { user: new User(props.userId, props.sessionId), askInputText: '', replyInputText: '' };
             return _this;
         }
         MainComponent.prototype.render = function () {
             var workspace = this.state.user.workspace;
             if (workspace === null) {
-                return react_4("button", { onClick: this.nextClick }, "Next");
+                return react_4("div", { className: "nextContainer" },
+                    react_4(ButtonComponent, { label: "Next", onClick: this.nextClick }));
             }
             else {
-                return [react_4("div", { onClick: this.pointerClick },
-                        react_4(WorkspaceComponent, { mapping: this.state.user.mapping, workspace: workspace })),
-                    react_4("input", { type: "text", value: this.state.inputText, onChange: this.inputChange }),
-                    react_4("button", { onClick: this.askClick }, "Ask"),
-                    react_4("button", { onClick: this.replyClick }, "Reply"),
-                    react_4("button", { onClick: this.waitClick }, "Wait")];
+                var sessionId = this.state.user.sessionId;
+                location.hash = sessionId === null ? '' : '#' + sessionId;
+                var mapping_1 = this.state.user.mapping;
+                var expansion_1 = workspace.expandedPointers;
+                console.log(workspace);
+                return react_4("div", { className: "mainContainer", onClick: this.pointerClick },
+                    react_4(QuestionComponent, { mapping: mapping_1, expansion: expansion_1, question: workspace.question }),
+                    react_4("div", { className: "subQuestions cell" }, workspace.subQuestions.map(function (q, i) {
+                        return react_4(SubQuestionComponent, { key: i, mapping: mapping_1, expansion: expansion_1, question: q[1], answer: q[2] });
+                    })),
+                    react_4(NewQuestionComponent, { inputText: this.state.askInputText, onClick: this.askClick, onChange: this.askInputChange }),
+                    react_4(WaitComponent, { onClick: this.waitClick }),
+                    react_4(ReplyComponent, { inputText: this.state.replyInputText, onClick: this.replyClick, onChange: this.replyInputChange }));
             }
         };
         return MainComponent;
     }(react_2));
     var mainDiv = document.getElementById('main');
-    var maybeSessionId = parseInt(location.hash.slice(1), 10);
-    (isNaN(maybeSessionId) ? getJoin() : getJoin(maybeSessionId)).then(function (joinResponse) {
-        var userId = joinResponse.data[0].userId;
-        var sessionId = joinResponse.data[1];
-        location.hash = '#' + sessionId;
-        reactDom_1(react_4(MainComponent, { userId: userId, sessionId: sessionId }), mainDiv);
+    getJoin().then(function (joinResponse) {
+        var userId = joinResponse.data.userId;
+        var maybeSessionId = parseInt(location.hash.slice(1), 10);
+        reactDom_1(react_4(MainComponent, { userId: userId, sessionId: isNaN(maybeSessionId) ? null : maybeSessionId }), mainDiv);
     }).catch(function (e) { return console.log(e); });
 
 }());

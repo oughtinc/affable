@@ -6,7 +6,6 @@
 module Server where
 import Control.Concurrent.Chan ( Chan, newChan, readChan, writeChan ) -- base
 import Control.Concurrent.MVar ( MVar, newEmptyMVar, putMVar, takeMVar ) -- base
-import Control.Monad ( join, when ) -- base
 import Control.Monad.IO.Class ( liftIO ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
 import Data.Either ( partitionEithers ) -- base
@@ -45,8 +44,8 @@ type CommandAPI = "view" :> ReqBody '[JSON] (User, WorkspaceId, [Message], Point
              :<|> "reply" :> ReqBody '[JSON] (User, WorkspaceId, [Either Message Pointer], Message) :> Post '[JSON] Result
              :<|> "wait" :> ReqBody '[JSON] (User, WorkspaceId, [Either Message Pointer]) :> Post '[JSON] Result
 type PointerAPI = "pointer" :> Capture "p" Pointer :> Get '[JSON] (Maybe Message)
-type NextAPI = "next" :> ReqBody '[JSON] (User, SessionId) :> Post '[JSON] (Maybe Workspace)
-type JoinAPI = "join" :> QueryParam "sessionId" SessionId :> Get '[JSON] (User, SessionId)
+type NextAPI = "next" :> ReqBody '[JSON] (User, Maybe SessionId) :> Post '[JSON] (Maybe (Workspace, SessionId))
+type JoinAPI = "join" :> Get '[JSON] User
 
 type API = CommandAPI :<|> NextAPI :<|> JoinAPI :<|> PointerAPI
 
@@ -66,20 +65,20 @@ pointerHandler deref ptr = liftIO $ do
 -- work of a previous instance. (This is admittedly not a very seamless transition, but it's
 -- simple and should suffice for our purposes assuming it ever even becomes an issue. This
 -- would require user IDs to be unique across instances, e.g. UUIDs.)
-joinHandler :: (Maybe SessionId -> IO (User, SessionId)) -> Server JoinAPI
-joinHandler makeUser mSessionId = liftIO $ do
-    print ("Join", mSessionId) -- DELETEME
-    makeUser mSessionId
+joinHandler :: IO User -> Server JoinAPI
+joinHandler makeUser = liftIO $ do
+    putStrLn "Join" -- DELETEME
+    makeUser
 
 -- TODO: Cache the user's workspace for a time so refreshing and clicking next doesn't lose the workspace.
 -- Then determine a policy for giving up on a user response and writing the workspace back into the channel
 -- for someone else.
-nextHandler :: (WorkspaceId -> IO Workspace) -> (SessionId -> IO (Maybe WorkspaceId)) -> Server NextAPI
-nextHandler lookupWorkspace nextWorkspace (User userId, sessionId) = liftIO $ do
-    print ("Next", userId, sessionId) -- DELETEME
-    mWorkspaceId <- nextWorkspace sessionId
+nextHandler :: (WorkspaceId -> IO Workspace) -> (User -> Maybe SessionId -> IO (Maybe (WorkspaceId, SessionId))) -> Server NextAPI
+nextHandler lookupWorkspace nextWorkspace (user@(User userId), mSessionId) = liftIO $ do
+    print ("Next", userId, mSessionId) -- DELETEME
+    mWorkspaceId <- nextWorkspace user mSessionId
     case mWorkspaceId of
-        Just workspaceId -> Just <$> lookupWorkspace workspaceId
+        Just (workspaceId, sessionId) -> fmap (\ws -> Just (ws, sessionId)) (lookupWorkspace workspaceId)
         Nothing -> return Nothing
 
 commandHandler :: (UserId -> WorkspaceId -> [Event] -> IO ()) -> Server CommandAPI
@@ -94,8 +93,8 @@ commandHandler reply = viewHandler :<|> replyHandler :<|> waitHandler
             print ("Wait", userId, workspaceId, msgOrPtrs) -- DELETEME
             OK <$ reply userId workspaceId (map (either Create Expand) msgOrPtrs ++ [Submit])
 
-overallHandler :: (Maybe SessionId -> IO (User, SessionId))
-               -> (SessionId -> IO (Maybe WorkspaceId))
+overallHandler :: IO User
+               -> (User -> Maybe SessionId -> IO (Maybe (WorkspaceId, SessionId)))
                -> (Pointer -> IO Message)
                -> (WorkspaceId -> IO Workspace)
                -> (UserId -> WorkspaceId -> [Event] -> IO ())
@@ -127,19 +126,24 @@ initServer conn = do
     sessionMapRef <- newIORef (M.empty :: M.Map SessionId SessionState)
     userSessionMapRef <- newIORef (M.empty :: M.Map UserId SessionId)
 
-    let newSessionState = SessionState <$> newChan <*> newIORef M.empty <*> newIORef M.empty <*> newIORef True
+    let newSessionState = SessionState <$> newChan <*> newIORef M.empty <*> newIORef M.empty <*> newIORef False
 
         userSessionState userId = do
             userSessionMap  <- readIORef userSessionMapRef
             let !sessionId = case M.lookup userId userSessionMap of Just sessionId -> sessionId
-            sessionState sessionId
+            fst <$> sessionState sessionId
 
         sessionState sessionId = do
             sessionMap <- readIORef sessionMapRef
-            return $! case M.lookup sessionId sessionMap of Just ss -> ss
+            case M.lookup sessionId sessionMap of
+                Just ss -> return (ss, False)
+                Nothing -> do
+                    ss <- newSessionState
+                    modifyIORef' sessionMapRef (M.insertWith (\_ old -> old) sessionId ss) -- Keep the existing SessionState if it already exists.
+                    return (ss, True)
 
         blockOnUser sessionId workspaceId = liftIO $ do
-            ss <- sessionState sessionId
+            (ss, False) <- sessionState sessionId -- Should never be a new SessionState.
             let !responseMVarsRef = sessionResponseMVarsRef ss
                 !drainingMVarsRef = sessionDrainingMVarsRef ss
                 !requestChan = sessionRequestChan ss
@@ -176,24 +180,29 @@ initServer conn = do
             let !q = case question initWorkspace of LabeledStructured _ ms -> Structured ms; m -> m
             return (identity initWorkspace, LetFun ANSWER (Call ANSWER [Value q]))
 
-        nextWorkspace sessionId = do
-            ss <- sessionState sessionId
-            let !doneRef = sessionDoneRef ss
-                !requestChan = sessionRequestChan ss
-            isDone <- atomicModifyIORef' doneRef (\d -> (False, d))
-            when isDone $ do -- TODO: Allocate a new SessionId and send this back to the user somehow.
+        nextWorkspace user mSessionId = do
+            sessionId <- makeSession user mSessionId
+            (ss, isNew) <- sessionState sessionId
+            if isNew then do
+                let !doneRef = sessionDoneRef ss
+                    !requestChan = sessionRequestChan ss
                 autoCtxt <- makeSqliteAutoSchedulerContext' sessionId ctxt
-                () <$ runM (spawnInterpreter (blockOnUser sessionId) (liftIO begin) (liftIO $ writeIORef doneRef True) False autoCtxt) 0
-            timeout 10000000 (readChan requestChan) -- Timeout after 10 seconds.
+                runM (spawnInterpreter (blockOnUser sessionId) (liftIO begin) (liftIO $ writeIORef doneRef True) False autoCtxt) 0
+                fmap (\wsId -> (wsId, sessionId)) <$> timeout 10000000 (readChan requestChan) -- Timeout after 10 seconds.
+              else do
+                let !doneRef = sessionDoneRef ss
+                isDone <- readIORef doneRef
+                if isDone then do -- TODO: We can clear out the session state for the old session ID now.
+                    nextWorkspace user Nothing
+                  else do
+                    let !requestChan = sessionRequestChan ss
+                    fmap (\wsId -> (wsId, sessionId)) <$> timeout 10000000 (readChan requestChan) -- Timeout after 10 seconds.
 
-        makeUser Nothing = do
-            sessionId <- newSession ctxt
-            makeUser (Just sessionId)
-        makeUser (Just sessionId) = do
-            u@(User userId) <- atomicModifyIORef' userIdRef (\n -> (n+1, User n))
-            ss <- newSessionState
+        makeUser = atomicModifyIORef' userIdRef (\n -> (n+1, User n))
+
+        makeSession u@(User userId) mSessionId = do
+            sessionId <- newSession ctxt mSessionId
             modifyIORef' userSessionMapRef (M.insert userId sessionId)
-            modifyIORef' sessionMapRef (M.insertWith (\_ old -> old) sessionId ss) -- Keep the existing SessionState if it already exists.
-            return (u, sessionId)
+            return sessionId
 
     return $ serve (Proxy :: Proxy OverallAPI) (overallHandler makeUser nextWorkspace (dereference ctxt) (getWorkspace ctxt) replyFromUser)

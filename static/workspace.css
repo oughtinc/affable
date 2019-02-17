@@ -1,0 +1,57 @@
+.pointer {
+    color: white;
+    background-color: blue;
+    border-radius: 4px;
+    padding-left: 4px;
+    padding-right: 4px;
+    cursor: pointer;
+}
+
+.question::before {
+    content: 'Q ';
+}
+
+.answer::before {
+    content: 'A ';
+}
+
+.main {
+    width: 100%;
+}
+
+.mainContainer {
+    display: grid;
+    grid-template: "q q"
+                   "x s"
+                   "x n"
+                   "r w";
+    grid-column-gap: 1em;
+    grid-row-gap: 1ex;
+}
+
+.nextContainer > button {
+    margin-top: 3ex;
+    margin-left: auto;
+    margin-right: auto;
+    display: block;
+}
+
+.topLevelQuestion {
+    grid-area: q;
+}
+
+.subQuestions {
+    grid-area: s;
+}
+
+.reply {
+    grid-area: r;
+}
+
+.newQuestion {
+    grid-area: n;
+}
+
+.wait {
+    grid-area: w;
+}
