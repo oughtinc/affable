@@ -239,7 +239,7 @@ initSqlite conn = do
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS RunQueue (\n\
-       \    processId INTEGER PRIMARY KEY ASC\n\
+       \    processId INTEGER PRIMARY KEY AUTOINCREMENT\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Sessions (\n\
