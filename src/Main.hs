@@ -6,8 +6,9 @@ import qualified Data.Map as M -- containers
 import qualified Data.Text as T -- text
 import qualified Data.Text.IO as T -- text
 import Database.SQLite.Simple ( Connection, withConnection, execute_, executeMany, query_ ) -- sqlite-simple
-import Network.Wai.Handler.Warp ( run ) -- warp
-import Options.Applicative ( Parser, command, hsubparser, auto, execParser, info, progDesc, switch, str, helper,
+import Network.Wai.Handler.Warp ( Port, run, defaultSettings, setPort ) -- warp
+import Network.Wai.Handler.WarpTLS ( runTLS, tlsSettings ) -- warp-tls
+import Options.Applicative ( Parser, command, hsubparser, auto, execParser, info, progDesc, switch, str, helper, strOption,
                              long, option, footer, argument, help, metavar, value, internal ) -- optparse-applicative
 import Servant ( Proxy(..) ) -- servant-server
 import Servant.JS ( writeJSForAPI, axios, defAxiosOptions ) -- servant-js
@@ -28,7 +29,7 @@ import Workspace ( identity )
 
 data Options
     = GenAPI
-    | Serve Bool FilePath
+    | Serve Bool FilePath Port (Maybe FilePath) (Maybe FilePath)
     | CommandLine Bool Bool (Maybe SessionId) FilePath
     | Export FilePath SessionId
   deriving ( Show )
@@ -42,6 +43,15 @@ concurrentOption = switch (long "concurrent" <> help "Allow concurrent execution
 dbFileOption :: Parser FilePath
 dbFileOption = argument str (metavar "DB" <> value ":memory:" <> help "Database file")
 
+portOption :: Parser Port
+portOption = option auto (long "port" <> metavar "PORT" <> value 8081 <> help "Port for web server to listen on")
+
+certFileOption :: Parser FilePath
+certFileOption = strOption (long "cert" <> metavar "FILE" <> help "HTTPS Certificate")
+
+keyFileOption :: Parser FilePath
+keyFileOption = strOption (long "key" <> metavar "FILE" <> help "HTTPS Private Key")
+
 sessionOption :: Parser SessionId
 sessionOption = argument auto (metavar "SESSIONID" <> help "Session ID")
 
@@ -52,7 +62,7 @@ optionsParser :: Parser Options
 optionsParser = hsubparser $ mconcat [
     command "gen-api" (info (pure GenAPI)
                       ({-internal <> -}progDesc "Generate ts/command-api.js")),
-    command "serve" (info (Serve <$> noAutoOption <*> dbFileOption)
+    command "serve" (info (Serve <$> noAutoOption <*> dbFileOption <*> portOption <*> optional certFileOption <*> optional keyFileOption)
                     (progDesc "Start webserver.")),
     command "export" (info (Export <$> dbFileOption <*> sessionOption)
                      (progDesc "Print automation code as Haskell.")),
@@ -86,12 +96,20 @@ main = do
                         putStr "\nmain = print $ "
                         topArg <- fullyExpand (schedulerContext autoCtxt) topArg
                         T.putStrLn (toText (expToHaskell localLookup (LetFun ANSWER (Call ANSWER [Value topArg]))))
-        Serve noAuto dbFile -> do
+        Serve noAuto dbFile port mCertFile mKeyFile -> do
             withConnection dbFile $ \conn -> do
                 initSqlite conn
                 initPrimitives conn
-                putStrLn "Navigate to http://localhost:8081/static/index.html ..."
-                run 8081 =<< ({-if noAuto then initServerNoAutomation else-} initServer) conn
+                case (mCertFile, mKeyFile) of
+                    (Nothing, Nothing) -> do
+                        putStrLn $ "Navigate to http://localhost:"++show port++"/static/index.html ..."
+                        run port =<< ({-if noAuto then initServerNoAutomation else-} initServer) conn
+                    (Just certFile, Just keyFile) -> do
+                        let !tlsOpts = tlsSettings certFile keyFile
+                            !warpOpts = setPort port defaultSettings
+                        putStrLn $ "Navigate to https://localhost:"++show port++"/static/index.html ..."
+                        runTLS tlsOpts warpOpts =<< ({-if noAuto then initServerNoAutomation else-} initServer) conn
+                    _ -> putStrLn "Both a certificate and a key are needed to enable TLS."
         CommandLine True _ mSessionId dbFile -> do -- TODO: Use session ID.
             withConnection dbFile $ \conn -> do
                 initSqlite conn

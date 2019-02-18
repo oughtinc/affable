@@ -56,6 +56,7 @@ common deps
     servant-server          >= 0.14.1 && < 0.15,
     servant-js              >= 0.9.3 && < 0.10,
     warp                    >= 3.2.25 && < 3.3,
+    warp-tls                >= 3.2.4 && < 3.3,
     sqlite-simple           >= 0.4.16 && < 0.5,
     async                   >= 2.2.1 && < 2.3,
     async-pool              >= 0.9.0 && < 0.10,
