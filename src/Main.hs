@@ -44,13 +44,13 @@ dbFileOption :: Parser FilePath
 dbFileOption = argument str (metavar "DB" <> value ":memory:" <> help "Database file")
 
 portOption :: Parser Port
-portOption = option auto (long "port" <> metavar "PORT" <> value 8081 <> help "Port for web server to listen on")
+portOption = option auto (long "port" <> metavar "PORT" <> value 8081 <> help "Port for web server to listen on (default: 8081)")
 
 certFileOption :: Parser FilePath
-certFileOption = strOption (long "cert" <> metavar "FILE" <> help "HTTPS Certificate")
+certFileOption = strOption (long "certificate" <> metavar "FILE" <> help "Path to server certificate")
 
 keyFileOption :: Parser FilePath
-keyFileOption = strOption (long "key" <> metavar "FILE" <> help "HTTPS Private Key")
+keyFileOption = strOption (long "key-file" <> metavar "FILE" <> help "Path to certificate's private key")
 
 sessionOption :: Parser SessionId
 sessionOption = argument auto (metavar "SESSIONID" <> help "Session ID")
