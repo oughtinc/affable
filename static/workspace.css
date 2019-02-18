@@ -1,10 +1,17 @@
-.pointer {
+.pointer.locked {
     color: white;
-    background-color: blue;
+    background-color: #007bff;
     border-radius: 4px;
     padding-left: 4px;
     padding-right: 4px;
     cursor: pointer;
+}
+
+.pointer.expanded {
+    color: white;
+    background-color: #007bff;
+    border-radius: 4px 0px 0px 4px;
+    padding: 0px 3px;
 }
 
 .question::before {
@@ -21,9 +28,17 @@
     width: 100%;
 }
 
+.subQuestion.answered {
+    margin-bottom: 2ex;
+}
 
-/* Small devices (landscape phones, 576px and up) */
-@media (min-width: 576px) {
+.pointer-bracket {
+    font-weight: bold;
+    font-size: 1.55em; /* HACK */
+    color: #007bff;
+}
+
+@media (max-width: 767px) {
     .mainContainer {
         display: grid;
         grid-template: "q"
@@ -44,6 +59,9 @@
                        "r w";
     }
 }
+
+/* Small devices (landscape phones, 576px and up) /
+@media (min-width: 576px) { ... }
 
 /* Large devices (desktops, 992px and up) /
 @media (min-width: 992px) { ... }

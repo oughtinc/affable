@@ -95,7 +95,7 @@ const MessageComponent: React.FunctionComponent<MessageProps> = (props) => {
             if(expansion.has(p)) {
                 return <MessageComponent mapping={mapping} expansion={expansion} message={expansion.get(p) as Message} isSubmessage={true} />;
             } else {
-                return <span className="pointer" data-original={p}>${mapping.get(p)}</span>;
+                return <span className="pointer locked unexpanded" data-original={p}>${mapping.get(p)}</span>;
             }
         case 'Structured':
             if(props.isSubmessage) {
@@ -109,8 +109,12 @@ const MessageComponent: React.FunctionComponent<MessageProps> = (props) => {
             }
         case 'LabeledStructured':
             const label: Pointer = msg.contents[0];
-            return <span>[${mapping.get(label)}|{msg.contents[1].map((m: Message, i: number) =>
-                            <MessageComponent key={i} mapping={mapping} expansion={expansion} message={m} isSubmessage={true} />)}]
+            return <span>
+                    <span className="pointer expanded">{mapping.get(label)}</span>
+                    <span className="pointer-bracket left">[</span>
+                    {msg.contents[1].map((m: Message, i: number) =>
+                            <MessageComponent key={i} mapping={mapping} expansion={expansion} message={m} isSubmessage={true} />)}
+                    <span className="pointer-bracket right">]</span>
                    </span>;
     }
 };
@@ -377,7 +381,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
 
     pointerClick = (evt: React.MouseEvent) => {
         const target = evt.target as HTMLElement | null;
-        if(target !== null && target.classList.contains('pointer')) {
+        if(target !== null && target.classList.contains('pointer') && target.classList.contains('locked')) {
             this.state.user.view(parseInt(target.dataset.original as string, 10)).then(r => {
                 if(r.tag === 'OK') {
                     this.setState({user: r.contents, askInputText: this.state.askInputText, replyInputText: this.state.replyInputText});

@@ -31529,7 +31529,7 @@
                     return react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: expansion.get(p), isSubmessage: true });
                 }
                 else {
-                    return react_4("span", { className: "pointer", "data-original": p },
+                    return react_4("span", { className: "pointer locked unexpanded", "data-original": p },
                         "$",
                         mapping.get(p));
                 }
@@ -31550,13 +31550,12 @@
             case 'LabeledStructured':
                 var label = msg.contents[0];
                 return react_4("span", null,
-                    "[$",
-                    mapping.get(label),
-                    "|",
+                    react_4("span", { className: "pointer expanded" }, mapping.get(label)),
+                    react_4("span", { className: "pointer-bracket left" }, "["),
                     msg.contents[1].map(function (m, i) {
                         return react_4(MessageComponent, { key: i, mapping: mapping, expansion: expansion, message: m, isSubmessage: true });
                     }),
-                    "]");
+                    react_4("span", { className: "pointer-bracket right" }, "]"));
         }
     };
     var QuestionComponent = function (props) {
@@ -31730,7 +31729,7 @@
             };
             _this.pointerClick = function (evt) {
                 var target = evt.target;
-                if (target !== null && target.classList.contains('pointer')) {
+                if (target !== null && target.classList.contains('pointer') && target.classList.contains('locked')) {
                     _this.state.user.view(parseInt(target.dataset.original, 10)).then(function (r) {
                         if (r.tag === 'OK') {
                             _this.setState({ user: r.contents, askInputText: _this.state.askInputText, replyInputText: _this.state.replyInputText });
