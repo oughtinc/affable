@@ -277,7 +277,7 @@ interface ButtonProps {
 }
 
 const ButtonComponent: React.FunctionComponent<ButtonProps> = (props) =>
-    <button className="btn btn-default" onClick={props.onClick}>{props.label}</button>;
+    <button type="submit" className="btn btn-outline-primary btn-default" onClick={props.onClick}>{props.label}</button>;
 
 interface TextInputProps extends ButtonProps {
     className: string,
@@ -288,7 +288,9 @@ interface TextInputProps extends ButtonProps {
 const TextInputComponent: React.FunctionComponent<TextInputProps> = (props) => {
     return <div className={props.className}>
             <input className="form-control" type="text" value={props.inputText} onChange={props.onChange}></input>
-            <ButtonComponent onClick={props.onClick} label={props.label} />
+            <div className="input-group-append">
+                <ButtonComponent onClick={props.onClick} label={props.label} />
+            </div>
            </div>;
 };
 
@@ -299,8 +301,8 @@ interface NewQuestionProps {
 }
 
 const NewQuestionComponent: React.FunctionComponent<NewQuestionProps> = (props) =>
-    <form className="form-inline newQuestion cell">
-        <TextInputComponent className="form-group" inputText={props.inputText} onChange={props.onChange} label="Ask" onClick={props.onClick} />
+    <form className="newQuestion cell">
+        <TextInputComponent className="input-group" inputText={props.inputText} onChange={props.onChange} label="Ask" onClick={props.onClick} />
     </form>;
 
 interface ReplyProps {
@@ -310,8 +312,8 @@ interface ReplyProps {
 }
 
 const ReplyComponent: React.FunctionComponent<ReplyProps> = (props) =>
-    <form className="form-inline reply cell">
-        <TextInputComponent className="form-group" inputText={props.inputText} onChange={props.onChange} label="Reply" onClick={props.onClick} />
+    <form className="reply cell">
+        <TextInputComponent className="input-group" inputText={props.inputText} onChange={props.onChange} label="Reply" onClick={props.onClick} />
     </form>;
 
 interface WaitProps {
@@ -319,9 +321,7 @@ interface WaitProps {
 }
 
 const WaitComponent: React.FunctionComponent<WaitProps> = (props) =>
-    <form className="form-inline wait cell">
-        <div className="form-group"><ButtonComponent label="Wait" onClick={props.onClick} /></div>
-    </form>;
+    <div className="wait cell"><ButtonComponent label="Wait" onClick={props.onClick} /></div>;
 
 interface MainProps {
     userId: number,

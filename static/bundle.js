@@ -31696,25 +31696,25 @@
         return User;
     }());
     var ButtonComponent = function (props) {
-        return react_4("button", { className: "btn btn-default", onClick: props.onClick }, props.label);
+        return react_4("button", { type: "submit", className: "btn btn-outline-primary btn-default", onClick: props.onClick }, props.label);
     };
     var TextInputComponent = function (props) {
         return react_4("div", { className: props.className },
             react_4("input", { className: "form-control", type: "text", value: props.inputText, onChange: props.onChange }),
-            react_4(ButtonComponent, { onClick: props.onClick, label: props.label }));
+            react_4("div", { className: "input-group-append" },
+                react_4(ButtonComponent, { onClick: props.onClick, label: props.label })));
     };
     var NewQuestionComponent = function (props) {
-        return react_4("form", { className: "form-inline newQuestion cell" },
-            react_4(TextInputComponent, { className: "form-group", inputText: props.inputText, onChange: props.onChange, label: "Ask", onClick: props.onClick }));
+        return react_4("form", { className: "newQuestion cell" },
+            react_4(TextInputComponent, { className: "input-group", inputText: props.inputText, onChange: props.onChange, label: "Ask", onClick: props.onClick }));
     };
     var ReplyComponent = function (props) {
-        return react_4("form", { className: "form-inline reply cell" },
-            react_4(TextInputComponent, { className: "form-group", inputText: props.inputText, onChange: props.onChange, label: "Reply", onClick: props.onClick }));
+        return react_4("form", { className: "reply cell" },
+            react_4(TextInputComponent, { className: "input-group", inputText: props.inputText, onChange: props.onChange, label: "Reply", onClick: props.onClick }));
     };
     var WaitComponent = function (props) {
-        return react_4("form", { className: "form-inline wait cell" },
-            react_4("div", { className: "form-group" },
-                react_4(ButtonComponent, { label: "Wait", onClick: props.onClick })));
+        return react_4("div", { className: "wait cell" },
+            react_4(ButtonComponent, { label: "Wait", onClick: props.onClick }));
     };
     var MainComponent = (function (_super) {
         __extends(MainComponent, _super);
