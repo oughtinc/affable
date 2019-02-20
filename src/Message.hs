@@ -25,7 +25,7 @@ import qualified Data.Text.Lazy.Builder.Int as T ( decimal ) -- text
 import Data.Void ( Void ) -- base
 import GHC.Generics ( Generic ) -- ghc
 import Text.Megaparsec ( Parsec, parse, many, some, takeWhile1P, (<|>), (<?>) ) -- megaparsec
-import Text.Megaparsec.Char ( char ) -- megaparsec
+import Text.Megaparsec.Char ( char, string ) -- megaparsec
 import Text.Megaparsec.Char.Lexer ( decimal ) -- megaparsec
 
 type Pointer = Int
@@ -52,8 +52,11 @@ Msg ::= Pointer
       | Address
       | [^\]\[]+
       | "[" Msg* "]"
-      | "[" Pointer "|" Msg* "]"
+      | "[" Pointer ": " Msg* "]"
 -}
+
+labelSeparator :: Text
+labelSeparator = ": "
 
 pointerParser :: Parsec Void Text Pointer
 pointerParser =  (char '$' *> decimal) <?> "pointer"
@@ -85,7 +88,7 @@ messageParser' = do
               <|> (Location <$> addressParser)
               <|> ((char '[' *> (mParser >>= structuredTail)) <?> "submessage")
               <|> (Text <$> takeWhile1P Nothing (\c -> c `notElem` ("[]$@" :: String)) <?> "text")
-        structuredTail m@(Reference p) = (LabeledStructured p <$> (char '|' *> some mParser <* char ']'))
+        structuredTail m@(Reference p) = (LabeledStructured p <$> (string labelSeparator *> some mParser <* char ']'))
                                      <|> (Structured . (m:) <$> many mParser <* char ']')
         structuredTail m = (Structured . (m:) <$> many mParser) <* char ']'
 
@@ -130,7 +133,7 @@ messageToBuilder :: Message -> Builder
 messageToBuilder = go True
     where go  True (Structured ms) = foldMap (go False) ms
           go False (Structured ms) = singleton '[' <> foldMap (go False) ms <> singleton ']'
-          go     _ (LabeledStructured p ms) = singleton '[' <> pointerToBuilder p <> singleton '|' <> foldMap (go False) ms <> singleton ']'
+          go     _ (LabeledStructured p ms) = singleton '[' <> pointerToBuilder p <> fromText labelSeparator <> foldMap (go False) ms <> singleton ']'
           go     _ (Text t) = fromText t
           go     _ (Reference p) = pointerToBuilder p
           go     _ (Location a) = addressToBuilder a
@@ -141,7 +144,7 @@ messageToBuilderDB = go True
     where go  True (Structured ms) = foldMap (go False) ms
           go  True (LabeledStructured p ms) = foldMap (go False) ms
           go False (Structured ms) = singleton '[' <> foldMap (go False) ms <> singleton ']'
-          go     _ (LabeledStructured p ms) = singleton '[' <> pointerToBuilder p <> singleton '|' <> foldMap (go False) ms <> singleton ']'
+          go     _ (LabeledStructured p ms) = singleton '[' <> pointerToBuilder p <> fromText labelSeparator <> foldMap (go False) ms <> singleton ']'
           go     _ (Text t) = fromText t
           go     _ (Reference p) = pointerToBuilder p
           go     _ (Location a) = addressToBuilder a
