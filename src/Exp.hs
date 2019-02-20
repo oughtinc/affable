@@ -59,8 +59,7 @@ data Konts s p f v
 --    | JoinKont (FunEnv f v) f s (Kont1 s p f v) -- TODO
 
 applyKont1 :: (Monad m, Ord p, Ord f)
-           => GoFn m s p f v
-           -> MatchFn m s p f v
+           => MatchFn m s p f v
            -> (KontsId s f -> Int -> Int -> Value -> m Result)
            -> PrimEnv s m p
            -> VarEnv v
@@ -68,11 +67,11 @@ applyKont1 :: (Monad m, Ord p, Ord f)
            -> Kont1 s p f v
            -> Value
            -> m Result
-applyKont1 eval match notifyKont primEnv varEnv funEnv Done v = return (Just v)
-applyKont1 eval match notifyKont primEnv varEnv funEnv (PrimKont p s k) v = do
+applyKont1 match notifyKont primEnv varEnv funEnv Done v = return (Just v)
+applyKont1 match notifyKont primEnv varEnv funEnv (PrimKont p s k) v = do
     result <- (case M.lookup p primEnv of Just p' -> p') s v
-    applyKont1 eval match notifyKont primEnv varEnv funEnv k result
-applyKont1 eval match notifyKont primEnv varEnv funEnv (NotifyKont argNumber numArgs kId) v = do
+    applyKont1 match notifyKont primEnv varEnv funEnv k result
+applyKont1 match notifyKont primEnv varEnv funEnv (NotifyKont argNumber numArgs kId) v = do
     notifyKont kId argNumber numArgs v
 
 applyKonts :: (Monad m, Ord f) => MatchFn m s p f v -> Konts s p f v -> [Value] -> m Result
@@ -109,8 +108,8 @@ evaluateExp' :: (Ord p, Ord f, Ord v, Monad m)
              -> Kont1 s p f v                                    -- +
              -> m Result
 evaluateExp' record execMany match notifyKont subst primEnv = eval
-    where eval varEnv funEnv s (Var x) k = applyKont1 eval' match notifyKont primEnv varEnv funEnv k $! case M.lookup x varEnv of Just v -> v
-          eval varEnv funEnv s (Value v) k = applyKont1 eval' match notifyKont primEnv varEnv funEnv k $ subst varEnv v
+    where eval varEnv funEnv s (Var x) k = applyKont1 match notifyKont primEnv varEnv funEnv k $! case M.lookup x varEnv of Just v -> v
+          eval varEnv funEnv s (Value v) k = applyKont1 match notifyKont primEnv varEnv funEnv k $ subst varEnv v
           eval varEnv funEnv s (Prim p e) k = eval' varEnv funEnv s e (PrimKont p s k)
           eval varEnv funEnv s (Call f es) k = execMany varEnv funEnv s es (CallKont funEnv f s k)
           eval varEnv funEnv s (LetFun f body) k = eval' varEnv (M.insert f varEnv funEnv) s body k
