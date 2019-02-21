@@ -53,10 +53,8 @@ data Kont1 s p f v
   deriving ( Show )
 
 -- TODO: Have sequential or concurrent be a matter of using threads versus sequentially pulling continuations from a queue.
-data Konts s p f v
-    = CallKont (FunEnv f v) f s (Kont1 s p f v)
+data Konts s p f v = CallKont (FunEnv f v) f s (Kont1 s p f v)
   deriving ( Show )
---    | JoinKont (FunEnv f v) f s (Kont1 s p f v) -- TODO
 
 applyKont1 :: (Monad m, Ord p, Ord f)
            => MatchFn m s p f v a
@@ -94,16 +92,16 @@ type EvalState s p f v  = (VarEnv v, FunEnv f v, s, Exp p f v, Kont1 s p f v)
 
 evaluateExp' :: (Ord p, Ord f, Ord v, Monad m)
              => (EvalState s p f v -> m ())
-             -> ExecManyFn m s p f v a                                  -- TODO: Perhaps collect these arguments into a "context" parameter.
-             -> MatchFn m s p f v a                                     -- |
-             -> (KontsId s f -> Int -> Int -> Value -> m (Result a))    -- |
-             -> (VarEnv v -> Value -> Value)                            -- |
-             -> PrimEnv s m p                                           -- +
-             -> VarEnv v                                                -- + State
-             -> FunEnv f v                                              -- |
-             -> s                                                       -- |
-             -> Exp p f v                                               -- |
-             -> Kont1 s p f v                                           -- +
+             -> ExecManyFn m s p f v a                               -- TODO: Perhaps collect these arguments into a "context" parameter.
+             -> MatchFn m s p f v a                                  -- |
+             -> (KontsId s f -> Int -> Int -> Value -> m (Result a)) -- |
+             -> (VarEnv v -> Value -> Value)                         -- |
+             -> PrimEnv s m p                                        -- +
+             -> VarEnv v                                             -- + State
+             -> FunEnv f v                                           -- |
+             -> s                                                    -- |
+             -> Exp p f v                                            -- |
+             -> Kont1 s p f v                                        -- +
              -> m (Result a)
 evaluateExp' record execMany match notifyKont subst primEnv = eval
     where eval varEnv funEnv s (Var x) k = applyKont1 match notifyKont primEnv k $! case M.lookup x varEnv of Just v -> v

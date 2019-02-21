@@ -5,7 +5,9 @@ import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 
 import Exp ( Pattern, Name, Value, Exp', EvalState', Konts', KontsId' )
+import Message ( PointerRemapping )
 import Scheduler ( SchedulerContext )
+import Workspace ( WorkspaceId )
 
 type ProcessId = Int64
 
@@ -17,6 +19,8 @@ data AutoSchedulerContext extra = AutoSchedulerContext {
     allAlternatives :: IO (M.Map Name [([Pattern], Exp')]),
     addCaseFor :: Name -> [Pattern] -> Exp' -> IO (),
     newFunction :: IO Name,
+    linkVars :: WorkspaceId -> PointerRemapping -> IO (),
+    links :: WorkspaceId -> IO PointerRemapping,
     saveContinuation :: Konts' -> IO (),
     loadContinuation :: KontsId' -> IO Konts',
     recordState :: ProcessId -> EvalState' -> IO (),

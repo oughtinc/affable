@@ -9,10 +9,11 @@ import AutoScheduler ( AutoSchedulerContext(..), ProcessId, AddContinuationResul
 import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsId', Konts(..),
              parseVarEnv, parseFunEnv,
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
-import Message ( messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
+import Message ( PointerRemapping, messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
 import Scheduler ( SchedulerContext(..), SessionId )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Util ( toText, Lock, withLock, parseUnsafe )
+import Workspace ( WorkspaceId )
 
 type FunctionId = Int64
 
@@ -44,6 +45,8 @@ makeSqliteAutoSchedulerContext' sessionId ctxt = do
                     allAlternatives = allAlternativesSqlite lock conn answerId sessionId,
                     addCaseFor = addCaseForSqlite lock conn answerId,
                     newFunction = newFunctionSqlite lock conn,
+                    linkVars = linkVarsSqlite lock conn,
+                    links = linksSqlite lock conn,
                     saveContinuation = saveContinuationSqlite lock conn answerId,
                     loadContinuation = loadContinuationSqlite lock conn answerId,
                     recordState = recordStateSqlite lock conn,
@@ -91,6 +94,18 @@ newFunctionSqlite lock conn = do
     withLock lock $ do
         execute_ conn "INSERT INTO Functions DEFAULT VALUES"
         (LOCAL . fromIntegral) <$> lastInsertRowId conn
+
+linkVarsSqlite :: Lock -> Connection -> WorkspaceId -> PointerRemapping -> IO ()
+linkVarsSqlite lock conn workspaceId mapping = do
+    withLock lock $ do -- TODO: Need 'INSERT OR REPLACE' ?
+        executeMany conn "INSERT OR REPLACE INTO Links ( workspaceId, sourceId, targetId ) VALUES (?, ?, ?)" $
+            map (\(srcId, tgtId) -> (workspaceId, srcId, tgtId)) (M.toList mapping)
+
+linksSqlite :: Lock -> Connection -> WorkspaceId -> IO PointerRemapping
+linksSqlite lock conn workspaceId = do
+    withLock lock $ do
+        srcTgts <- query conn "SELECT sourceId, targetId FROM Links WHERE workspaceId = ?" (Only workspaceId)
+        return $ M.fromList srcTgts
 
 addCaseForSqlite :: Lock -> Connection -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()
 addCaseForSqlite lock conn answerId f patterns e = do

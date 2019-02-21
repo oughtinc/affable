@@ -215,6 +215,16 @@ initSqlite conn = do
        \    PRIMARY KEY ( function ASC, pattern ASC )\n\
        \);"
     execute_ conn "\
+       \CREATE TABLE IF NOT EXISTS Links (\n\
+       \    workspaceId INTEGER NOT NULL,\n\
+       \    sourceId INTEGER NOT NULL,\n\
+       \    targetId INTEGER NOT NULL,\n\
+       \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
+       \    FOREIGN KEY ( sourceId ) REFERENCES Pointers ( id ) ON DELETE CASCADE\n\
+       \    FOREIGN KEY ( targetId ) REFERENCES Pointers ( id ) ON DELETE CASCADE\n\
+       \    PRIMARY KEY ( workspaceId ASC, sourceId ASC )\n\
+       \);"
+    execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Continuations (\n\
        \    workspaceId INTEGER NOT NULL,\n\
        \    function INTEGER NOT NULL,\n\

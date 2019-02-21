@@ -86,37 +86,22 @@ makeMatcher :: (MonadIO m, MonadFork m)
 makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
     let !ctxt = schedulerContext autoCtxt
 
-    -- TODO: This could probably be made unnecessary if we started tracking timing, i.e. using that logicalTime field.
-    cutOffsRef <- liftIO $ newIORef (M.empty :: M.Map WorkspaceId WorkspaceId)
-
-    -- Get answers that have been answered since last time the workspace was displayed.
-    let getRecentlyAnswered workspace = do
-            let !workspaceId = identity workspace
-                !answeredMax = case mapMaybe (\(qId, _, ma) -> qId <$ ma) $ subQuestions workspace of [] -> -1; qIds -> maximum qIds
-            currCutOff <- liftIO $ maybe (-1) id <$> atomicModifyIORef' cutOffsRef (swap . M.insertLookupWithKey (\_ new _ -> new) workspaceId answeredMax)
-            -- Answers of workspaces that have answers and are newer than the cutoff.
-            return $! mapMaybe (\(qId, _, ma) -> if qId > currCutOff then ma else Nothing) $ subQuestions workspace
-
-    -- Mapping of pointers from replay workspace to original workspace.
-    workspaceVariablesRef <- liftIO $ newIORef (M.empty :: M.Map WorkspaceId PointerRemapping)
-
-    let linkVars workspaceId mapping = liftIO $ modifyIORef' workspaceVariablesRef $ M.insertWith M.union workspaceId mapping
-        links workspaceId = liftIO $ (maybe M.empty id . M.lookup workspaceId) <$> readIORef workspaceVariablesRef
-
         -- If retrieveArgument produces something then we've recently done a variable lookup and need
         -- to map pointers from it. Otherwise we just map pointers from all the answers that have been
         -- added in the latest batch.
         linkPointers ANSWER workspace [pattern] = do
             let !workspaceId = identity workspace
-            linkVars workspaceId $ matchPointers pattern $ question workspace
+            liftIO $ linkVars autoCtxt workspaceId $ matchPointers pattern $ question workspace
         linkPointers _ workspace patterns = do
             let !workspaceId = identity workspace
             mDeref <- retrieveArgument workspaceId
             case (mDeref, patterns) of
-                (Just a, [pattern]) -> linkVars workspaceId $ matchPointers pattern a
+                (Just a, [pattern]) -> liftIO $ linkVars autoCtxt workspaceId $ matchPointers pattern a
                 (Nothing, _) -> do
-                    recentlyAnswered <- getRecentlyAnswered workspace
-                    zipWithM_ (\pattern a -> linkVars workspaceId $ matchPointers pattern a) patterns recentlyAnswered
+                    let !answered = mapMaybe (\(_, _, ma) -> ma) (subQuestions workspace)
+                    liftIO $ zipWithM_ (\pattern a -> linkVars autoCtxt workspaceId $ matchPointers pattern a)
+                                       (reverse patterns) -- TODO: This approach might make the whole cutOffsRef thing unnecessary.
+                                       (reverse answered)
                 -- Intentionally incomplete.
 
         debugCode = do
@@ -190,7 +175,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                                                       patterns ms') varEnv'
 
                                     linkPointers f workspace patterns
-                                    globalToLocal <- links workspaceId
+                                    globalToLocal <- liftIO $ links autoCtxt workspaceId
 
                                     -- This is a bit hacky. If this approach is the way to go, make these patterns individual constructors.
                                     case e of
@@ -211,7 +196,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                         Value msg -> do -- reply case
                                             let !msg' = substitute bindings msg
                                             msg <- liftIO $ normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
-                                            liftIO $ sendAnswer ctxt False autoUserId workspaceId msg -- TODO: Can I clean out workspaceVariablesRef a bit now?
+                                            liftIO $ sendAnswer ctxt False autoUserId workspaceId msg
                                             eval varEnv' funEnv workspaceId e k -- TODO: Think about this.
                                         -- _ -> eval varEnv' funEnv workspaceId e k -- Intentionally missing this case.
                                 Nothing -> matchPending workspace
@@ -225,7 +210,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     let !varEnv' = M.union bindings varEnv
 
                     linkPointers f workspace patterns
-                    globalToLocal <- links workspaceId
+                    globalToLocal <- liftIO $ links autoCtxt workspaceId
 
                     let loop = blockOnUser workspaceId >>= processEvent
                         processEvent (userId, Create msg) = do
@@ -241,11 +226,11 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                             return (M.singleton ptr' arg, LetFun g (Call g [Var ptr']))
                         processEvent (userId, Answer msg@(Structured [Reference p])) = do -- dereference pointers -- TODO: Do this?
                             msg' <- liftIO $ dereference ctxt p
-                            liftIO $ sendAnswer ctxt False userId workspaceId msg' -- TODO: Can I clean out workspaceVariablesRef a bit now?
+                            liftIO $ sendAnswer ctxt False userId workspaceId msg'
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         processEvent (userId, Answer msg) = do
                             msg' <- liftIO $ relabelMessage ctxt =<< normalize ctxt msg
-                            liftIO $ sendAnswer ctxt False userId workspaceId msg' -- TODO: Can I clean out workspaceVariablesRef a bit now?
+                            liftIO $ sendAnswer ctxt False userId workspaceId msg'
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         -- processEvent (userId, Send ws msg) = -- Intentionally incomplete pattern match. Should never get here.
                         processEvent (userId, Submit) = do
