@@ -21,12 +21,12 @@ import qualified Data.Text as T -- text
 import qualified Data.Text.IO as T -- text
 import qualified Data.Text.Lazy.Builder.Int as T ( decimal ) -- text
 import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
-import Data.Traversable ( traverse ) -- base
+import Data.Traversable ( traverse, forM ) -- base
 import Data.Tuple ( swap ) -- base
 import System.IO ( stderr) -- base
 
 import AutoScheduler ( AutoSchedulerContext(..), ProcessId, AddContinuationResult(..) )
-import Exp ( Result, Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), GoFn, MatchFn, Konts(..), FunEnv, Konts',
+import Exp ( Result(..), Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), GoFn, MatchFn, Konts(..), FunEnv, Konts',
              EvalState', varEnvToBuilder, funEnvToBuilder, nameToBuilder, nameParser, evaluateExp', applyKonts, expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage, messageParser',
                  matchPointers, expandPointers, substitute, renumberMessage' )
@@ -82,7 +82,7 @@ makeMatcher :: (MonadIO m, MonadFork m)
             -> (WorkspaceId -> Message -> m ())
             -> (WorkspaceId -> m (Maybe Message))
             -> AutoSchedulerContext extra
-            -> m (GoFn m WorkspaceId Primitive Name Var -> MatchFn m WorkspaceId Primitive Name Var)
+            -> m (GoFn m WorkspaceId Primitive Name Var ProcessId -> MatchFn m WorkspaceId Primitive Name Var ProcessId)
 makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
     let !ctxt = schedulerContext autoCtxt
 
@@ -306,23 +306,24 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     return scheduler
 
 concurrentlyK :: (MonadIO m, MonadFork m)
-              => MatchFn m WorkspaceId Primitive Name Var
+              => MatchFn m WorkspaceId Primitive Name Var ProcessId
               -> AutoSchedulerContext extra
               -> VarEnv Var
               -> FunEnv Name Var
               -> [WorkspaceId]
               -> [Exp']
               -> Konts'
-              -> m Result
+              -> m (Result ProcessId)
 concurrentlyK match autoCtxt varEnv funEnv ss es k@(CallKont _ f workspaceId _) = do
     let kId = (workspaceId, f)
         !n = length ss -- should equal length es, TODO: Add assertion.
     processId <- myProcessId
-    liftIO $ forM_ (zip3 [0..] ss es) $ \(i, s, e) -> do
+    pIds <- liftIO $ forM (zip3 [0..] ss es) $ \(i, s, e) -> do
         pId <- newProcess autoCtxt
         recordState autoCtxt pId (varEnv, funEnv, s, e, NotifyKont i n kId)
+        return pId
     liftIO $ terminate autoCtxt processId-- TODO: Alternatively, have this process handle one of the e's.
-    return Nothing
+    return $ Died pIds
 
 spawnInterpreter :: (MonadIO m, MonadFork m)
                  => (WorkspaceId -> m (UserId, Event))
@@ -369,11 +370,11 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                 pId <- myProcessId
                 liftIO $ recordState autoCtxt pId s
 
-            match = match' (\varEnv funEnv s e k -> do record (varEnv, funEnv, s, e, k); return Nothing)
+            match = match' (\varEnv funEnv s e k -> do record (varEnv, funEnv, s, e, k); return Paused)
 
             die = do
                 liftIO . terminate autoCtxt =<< myProcessId
-                return Nothing
+                return $ Died []
 
             notifyKont kId 0 1 v = do
                 r <- liftIO $ addContinuationArgument autoCtxt kId 0 v
@@ -403,15 +404,22 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                 if null q then return (error "AutoInterpreter.hs:consumeConcurrent: Should this happen?") -- TODO
                           else consumeConcurrent q
             consumeConcurrent pIds = do
-                mvs <- mapTasks $ map (\pId -> do
-                        (varEnv, funEnv, s, e, k) <- liftIO $ currentState autoCtxt pId
-                        fmap ((,) pId) <$> withProcessId pId (eval varEnv funEnv s e k)) pIds
-                case catMaybes mvs of
-                    [] -> consumeConcurrent []
-                    [(pId, v)] -> do
-                        liftIO $ terminate autoCtxt pId
-                        return v
-                    -- Intentionally incomplete -- TODO: This right? Maybe not with revisits.
+
+                let go pIds = do
+                        asum <$> mapTasks (map (\pId -> do
+                            let loop = do
+                                    (varEnv, funEnv, s, e, k) <- liftIO $ currentState autoCtxt pId
+                                    r <- withProcessId pId (eval varEnv funEnv s e k)
+                                    case r of
+                                        Finished v -> do
+                                            liftIO $ terminate autoCtxt pId
+                                            return $ Just v
+                                        Paused -> loop
+                                        Died [] -> return Nothing
+                                        Died pIds -> go pIds
+                            loop) pIds)
+                Just v <- go pIds
+                return v
 
             -- NOTE: I think the way this is implemented will produce something like a breadth-first traversal.
             -- A more depth-first traversal should be able to be produced by reading the RunQueue every step and
@@ -425,10 +433,10 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                 state@(varEnv, funEnv, s, e, k) <- liftIO $ currentState autoCtxt pId
                 mv <- withProcessId pId $ eval varEnv funEnv s e k
                 case mv of
-                    Nothing -> consumeSequential pIds
-                    Just v -> do
+                    Finished v -> do
                         liftIO $ terminate autoCtxt pId
                         return v
+                    _ -> consumeSequential pIds
 
         t <- (if isSequential then consumeSequential else consumeConcurrent) q
 
