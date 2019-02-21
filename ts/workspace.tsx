@@ -435,8 +435,9 @@ class MainComponent extends React.Component<MainProps, MainState> {
 }
 
 const mainDiv: HTMLElement = document.getElementById('main') as HTMLElement;
-getJoin().then(joinResponse => {
+getJoin(parseInt(localStorage.userId, 10)).then(joinResponse => {
     const userId = joinResponse.data.userId;
+    localStorage.userId = userId;
     const maybeSessionId = parseInt(location.hash.slice(1), 10);
     render(<MainComponent userId={userId} sessionId={isNaN(maybeSessionId) ? null : maybeSessionId} />, mainDiv);
 }).catch(e => console.log(e));

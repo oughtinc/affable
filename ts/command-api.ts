@@ -37,9 +37,9 @@ export function postNext(body: [{userId: number}, number | null]): Promise<Fetch
     });
 }
 
-export function getJoin(): Promise<FetchResult<{userId: number}>>
+export function getJoin(userId: number): Promise<FetchResult<{userId: number}>>
 {
-  return axios({ url: '/join'
+  return axios({ url: '/join' + (isNaN(userId) ? '' : '?userId=' + encodeURIComponent(''+userId))
     , method: 'get'
     });
 }

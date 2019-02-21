@@ -100,7 +100,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                 (Nothing, _) -> do
                     let !answered = mapMaybe (\(_, _, ma) -> ma) (subQuestions workspace)
                     liftIO $ zipWithM_ (\pattern a -> linkVars autoCtxt workspaceId $ matchPointers pattern a)
-                                       (reverse patterns) -- TODO: This approach might make the whole cutOffsRef thing unnecessary.
+                                       (reverse patterns)
                                        (reverse answered)
                 -- Intentionally incomplete.
 
@@ -341,7 +341,7 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
 
         let execMany varEnv funEnv workspaceId es k@(CallKont _ f s _) = do
                 let kId = (s, f)
-                liftIO $ saveContinuation autoCtxt k -- TODO: Think about this.
+                liftIO $ saveContinuation autoCtxt k
                 qIds <- liftIO $ pendingQuestions ctxt workspaceId
                 if null qIds then do -- Then either Var case or no arguments case, either way we can reuse the current workspaceId.
                     case es of

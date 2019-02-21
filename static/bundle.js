@@ -31451,8 +31451,8 @@
             responseType: 'json'
         });
     }
-    function getJoin() {
-        return axios$1({ url: '/join',
+    function getJoin(userId) {
+        return axios$1({ url: '/join' + (isNaN(userId) ? '' : '?userId=' + encodeURIComponent('' + userId)),
             method: 'get'
         });
     }
@@ -31804,8 +31804,9 @@
         return MainComponent;
     }(react_2));
     var mainDiv = document.getElementById('main');
-    getJoin().then(function (joinResponse) {
+    getJoin(parseInt(localStorage.userId, 10)).then(function (joinResponse) {
         var userId = joinResponse.data.userId;
+        localStorage.userId = userId;
         var maybeSessionId = parseInt(location.hash.slice(1), 10);
         reactDom_1(react_4(MainComponent, { userId: userId, sessionId: isNaN(maybeSessionId) ? null : maybeSessionId }), mainDiv);
     }).catch(function (e) { return console.log(e); });
