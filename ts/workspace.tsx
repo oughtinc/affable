@@ -372,20 +372,12 @@ class MainComponent extends React.Component<MainProps, MainState> {
 
     askInputChange = (evt: React.ChangeEvent) => {
         const target = evt.target as HTMLInputElement;
-        this.setState({
-            user: this.state.user,
-            completions: this.state.completions,
-            askInputText: target.value,
-            replyInputText: this.state.replyInputText});
+        this.setState({...this.state, askInputText: target.value});
     };
 
     replyInputChange = (evt: React.ChangeEvent) => {
         const target = evt.target as HTMLInputElement;
-        this.setState({
-            user: this.state.user,
-            completions: this.state.completions,
-            askInputText: this.state.askInputText,
-            replyInputText: target.value});
+        this.setState({...this.state, replyInputText: target.value});
     };
 
     pointerClick = (evt: React.MouseEvent) => {
@@ -393,11 +385,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
         if(target !== null && target.classList.contains('pointer') && target.classList.contains('locked')) {
             this.state.user.view(parseInt(target.dataset.original as string, 10)).then(r => {
                 if(r.tag === 'OK') {
-                    this.setState({
-                        user: r.contents,
-                        completions: this.state.completions,
-                        askInputText: this.state.askInputText,
-                        replyInputText: this.state.replyInputText});
+                    this.setState({...this.state, user: r.contents});
                 } else {
                     console.log(r);
                 }
@@ -424,11 +412,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
     askClick = (evt: React.MouseEvent) => {
         const msg = messageParser(this.state.askInputText);
         this.state.user.ask(msg).then(user => {
-            this.setState({
-                user: user,
-                completions: this.state.completions,
-                askInputText: '',
-                replyInputText: this.state.replyInputText});
+            this.setState({...this.state, user: user, askInputText: ''});
         });
     };
 
