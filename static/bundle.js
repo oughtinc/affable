@@ -31461,6 +31461,11 @@
             method: 'get'
         });
     }
+    function getCompletions(sessionId) {
+        return axios$1({ url: '/completions/' + encodeURIComponent('' + sessionId) + '',
+            method: 'get'
+        });
+    }
 
     function mappingFromMessage(mapping, expansion, msg) {
         switch (msg.tag) {
@@ -31721,18 +31726,33 @@
             var _this = _super.call(this, props) || this;
             _this.askInputChange = function (evt) {
                 var target = evt.target;
-                _this.setState({ user: _this.state.user, askInputText: target.value, replyInputText: _this.state.replyInputText });
+                _this.setState({
+                    user: _this.state.user,
+                    completions: _this.state.completions,
+                    askInputText: target.value,
+                    replyInputText: _this.state.replyInputText
+                });
             };
             _this.replyInputChange = function (evt) {
                 var target = evt.target;
-                _this.setState({ user: _this.state.user, askInputText: _this.state.askInputText, replyInputText: target.value });
+                _this.setState({
+                    user: _this.state.user,
+                    completions: _this.state.completions,
+                    askInputText: _this.state.askInputText,
+                    replyInputText: target.value
+                });
             };
             _this.pointerClick = function (evt) {
                 var target = evt.target;
                 if (target !== null && target.classList.contains('pointer') && target.classList.contains('locked')) {
                     _this.state.user.view(parseInt(target.dataset.original, 10)).then(function (r) {
                         if (r.tag === 'OK') {
-                            _this.setState({ user: r.contents, askInputText: _this.state.askInputText, replyInputText: _this.state.replyInputText });
+                            _this.setState({
+                                user: r.contents,
+                                completions: _this.state.completions,
+                                askInputText: _this.state.askInputText,
+                                replyInputText: _this.state.replyInputText
+                            });
                         }
                         else {
                             console.log(r);
@@ -31745,14 +31765,22 @@
                 return _this.state.user.next().then(function (user) {
                     if (user === null) ;
                     else {
-                        _this.setState({ user: user, askInputText: '', replyInputText: '' });
+                        return getCompletions(user.sessionId).then(function (r) {
+                            console.log(r.data);
+                            _this.setState({ user: user, completions: r.data, askInputText: '', replyInputText: '' });
+                        });
                     }
                 });
             };
             _this.askClick = function (evt) {
                 var msg = messageParser(_this.state.askInputText);
                 _this.state.user.ask(msg).then(function (user) {
-                    _this.setState({ user: user, askInputText: '', replyInputText: _this.state.replyInputText });
+                    _this.setState({
+                        user: user,
+                        completions: _this.state.completions,
+                        askInputText: '',
+                        replyInputText: _this.state.replyInputText
+                    });
                 });
             };
             _this.replyClick = function (evt) {

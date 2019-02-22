@@ -4,7 +4,7 @@ import { List, Map } from 'immutable';
 
 import { Mapping, Expansion, Message, Workspace, Either, Result, Pointer } from './types';
 import { messageParser } from './parser';
-import { postView, postReply, postWait, postNext, getJoin, getPointer } from './command-api';
+import { postView, postReply, postWait, postNext, getCompletions, getJoin, getPointer } from './command-api';
 
 /* PEG.js parser input
 Top "message"
@@ -334,6 +334,7 @@ interface MainProps {
 
 interface MainState {
     user: User,
+    completions?: Array<Message>,
     askInputText: string,
     replyInputText: string
 }
@@ -371,12 +372,20 @@ class MainComponent extends React.Component<MainProps, MainState> {
 
     askInputChange = (evt: React.ChangeEvent) => {
         const target = evt.target as HTMLInputElement;
-        this.setState({user: this.state.user, askInputText: target.value, replyInputText: this.state.replyInputText});
+        this.setState({
+            user: this.state.user,
+            completions: this.state.completions,
+            askInputText: target.value,
+            replyInputText: this.state.replyInputText});
     };
 
     replyInputChange = (evt: React.ChangeEvent) => {
         const target = evt.target as HTMLInputElement;
-        this.setState({user: this.state.user, askInputText: this.state.askInputText, replyInputText: target.value});
+        this.setState({
+            user: this.state.user,
+            completions: this.state.completions,
+            askInputText: this.state.askInputText,
+            replyInputText: target.value});
     };
 
     pointerClick = (evt: React.MouseEvent) => {
@@ -384,7 +393,11 @@ class MainComponent extends React.Component<MainProps, MainState> {
         if(target !== null && target.classList.contains('pointer') && target.classList.contains('locked')) {
             this.state.user.view(parseInt(target.dataset.original as string, 10)).then(r => {
                 if(r.tag === 'OK') {
-                    this.setState({user: r.contents, askInputText: this.state.askInputText, replyInputText: this.state.replyInputText});
+                    this.setState({
+                        user: r.contents,
+                        completions: this.state.completions,
+                        askInputText: this.state.askInputText,
+                        replyInputText: this.state.replyInputText});
                 } else {
                     console.log(r);
                 }
@@ -400,7 +413,10 @@ class MainComponent extends React.Component<MainProps, MainState> {
             if(user === null) {
                 // Do nothing but probably want to tell the user that.
             } else {
-                this.setState({user: user, askInputText: '', replyInputText: ''});
+                return getCompletions(user.sessionId as number).then(r => {
+                    console.log(r.data);
+                    this.setState({user: user, completions: r.data, askInputText: '', replyInputText: ''});
+                });
             }
         });
     };
@@ -408,7 +424,11 @@ class MainComponent extends React.Component<MainProps, MainState> {
     askClick = (evt: React.MouseEvent) => {
         const msg = messageParser(this.state.askInputText);
         this.state.user.ask(msg).then(user => {
-            this.setState({user: user, askInputText: '', replyInputText: this.state.replyInputText});
+            this.setState({
+                user: user,
+                completions: this.state.completions,
+                askInputText: '',
+                replyInputText: this.state.replyInputText});
         });
     };
 

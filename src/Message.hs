@@ -8,7 +8,7 @@ module Message (
     pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB, messageToHaskell, messageToPattern,
     patternsParser, parsePatternsUnsafe, patternsToBuilder,
     expandPointers, substitute, normalizeMessage, generalizeMessage, renumberMessage', renumberMessage, renumberAcc,
-    matchMessage, matchPointers, collectPointers )
+    stripLabel, matchMessage, matchPointers, collectPointers )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
@@ -245,6 +245,10 @@ renumberAcc mapping (LabeledStructured p ms) = foldl' renumberAcc mapping' ms
     where !mapping' = if p `M.member` mapping then mapping else M.insert p (M.size mapping) mapping
 renumberAcc mapping (Reference p) = if p `M.member` mapping then mapping else M.insert p (M.size mapping) mapping
 renumberAcc mapping msg = mapping
+
+stripLabel :: Message -> Message
+stripLabel (LabeledStructured _ ms) = Structured ms
+stripLabel m = m
 
 -- This mostly assumes that the 'pattern' fits the Message.
 matchPointers :: Message -> Message -> PointerRemapping

@@ -22,11 +22,13 @@ import Servant.Server ( serve, Application ) -- servant-server
 import System.Timeout ( timeout ) -- base
 
 import AutoInterpreter ( runM, spawnInterpreter )
-import Exp ( Name(..), Exp(..) )
-import Message ( Message(..), Pointer )
+import Completions ( CompletionContext(..) )
+import Exp ( Pattern, Name(..), Exp(..) )
+import Message ( Message(..), Pointer, stripLabel )
 import Scheduler ( SessionId, UserId, Event(..), SchedulerFn, SchedulerContext(..),
                    firstUserId, getWorkspace, createInitialWorkspace, normalize, generalize, relabelMessage, createWorkspace )
 import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext' )
+import SqliteCompletionContext ( makeSqliteCompletionContext )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 
@@ -45,15 +47,19 @@ type CommandAPI = "view" :> ReqBody '[JSON] (User, WorkspaceId, [Message], Point
              :<|> "reply" :> ReqBody '[JSON] (User, WorkspaceId, [Either Message Pointer], Message) :> Post '[JSON] Response
              :<|> "wait" :> ReqBody '[JSON] (User, WorkspaceId, [Either Message Pointer]) :> Post '[JSON] Response
 type PointerAPI = "pointer" :> Capture "p" Pointer :> Get '[JSON] (Maybe Message)
+type AutoCompleteAPI = "completions" :> Capture "sessionId" SessionId :> Get '[JSON] [Pattern]
 type NextAPI = "next" :> ReqBody '[JSON] (User, Maybe SessionId) :> Post '[JSON] (Maybe (Workspace, SessionId))
 type JoinAPI = "join" :> QueryParam "userId" UserId :> Get '[JSON] User
 
-type API = CommandAPI :<|> NextAPI :<|> JoinAPI :<|> PointerAPI
+type API = CommandAPI :<|> NextAPI :<|> JoinAPI :<|> PointerAPI :<|> AutoCompleteAPI
 
 type OverallAPI = StaticAPI :<|> API
 
 staticHandler :: Server StaticAPI
 staticHandler = serveDirectoryWebApp "static"
+
+autoCompleteHandler :: CompletionContext extra -> Server AutoCompleteAPI
+autoCompleteHandler compCtxt sessionId = liftIO $ completionsFor compCtxt sessionId
 
 pointerHandler :: (Pointer -> IO Message) -> Server PointerAPI
 pointerHandler deref ptr = liftIO $ do
@@ -94,18 +100,20 @@ commandHandler reply = viewHandler :<|> replyHandler :<|> waitHandler
             print ("Wait", userId, workspaceId, msgOrPtrs) -- DELETEME
             OK <$ reply userId workspaceId (map (either Create Expand) msgOrPtrs ++ [Submit])
 
-overallHandler :: (Maybe UserId -> IO User)
+overallHandler :: CompletionContext extra
+               -> (Maybe UserId -> IO User)
                -> (User -> Maybe SessionId -> IO (Maybe (WorkspaceId, SessionId)))
                -> (Pointer -> IO Message)
                -> (WorkspaceId -> IO Workspace)
                -> (UserId -> WorkspaceId -> [Event] -> IO ())
                -> Server OverallAPI
-overallHandler makeUser nextWorkspace deref lookupWorkspace reply
+overallHandler compCtxt makeUser nextWorkspace deref lookupWorkspace reply
     = staticHandler
  :<|> commandHandler reply
  :<|> nextHandler lookupWorkspace nextWorkspace
  :<|> joinHandler makeUser
  :<|> pointerHandler deref
+ :<|> autoCompleteHandler compCtxt
 
 data SessionState = SessionState {
     sessionRequestChan :: Chan WorkspaceId,
@@ -181,7 +189,7 @@ initServer conn = do
 
         begin = do
             initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
-            let !q = case question initWorkspace of LabeledStructured _ ms -> Structured ms; m -> m
+            let !q = stripLabel (question initWorkspace)
             return (identity initWorkspace, LetFun ANSWER (Call ANSWER [Value q]))
 
         activeWorkspaceId userId sessionId = do
@@ -236,4 +244,6 @@ initServer conn = do
             modifyIORef' userSessionMapRef (M.insert userId sessionId)
             return sessionId
 
-    return $ serve (Proxy :: Proxy OverallAPI) (overallHandler makeUser nextWorkspace (dereference ctxt) (getWorkspace ctxt) replyFromUser)
+    compCtxt <- makeSqliteCompletionContext ctxt
+
+    return $ serve (Proxy :: Proxy OverallAPI) (overallHandler compCtxt makeUser nextWorkspace (dereference ctxt) (getWorkspace ctxt) replyFromUser)

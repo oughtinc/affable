@@ -29,7 +29,7 @@ import AutoScheduler ( AutoSchedulerContext(..), ProcessId, AddContinuationResul
 import Exp ( Result(..), Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), GoFn, MatchFn, Konts(..), FunEnv, Konts',
              EvalState', varEnvToBuilder, funEnvToBuilder, nameToBuilder, nameParser, evaluateExp', applyKonts, expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage, messageParser',
-                 matchPointers, expandPointers, substitute, renumberMessage' )
+                 stripLabel, matchPointers, expandPointers, substitute, renumberMessage' )
 import Primitive ( makePrimitives )
 import Scheduler ( UserId, Event(..), SchedulerContext(..), SchedulerFn, autoUserId, relabelMessage, fullyExpand )
 import Util ( toText, invertMap )
@@ -272,7 +272,7 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
             readChan requestChan
         begin = liftIO $ do
             initWorkspace <- getWorkspace ctxt initWorkspaceId
-            let !q = case question initWorkspace of LabeledStructured _ ms -> Structured ms; m -> m
+            let !q = stripLabel (question initWorkspace)
             return (initWorkspaceId, LetFun ANSWER (Call ANSWER [Value q]))
 
     spawnInterpreter blockOnUser begin (liftIO $ writeChan requestChan Nothing) isSequential autoCtxt

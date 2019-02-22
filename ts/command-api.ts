@@ -50,3 +50,10 @@ export function getPointer(p: Pointer): Promise<FetchResult<Message | null>>
     , method: 'get'
     });
 }
+
+export function getCompletions(sessionId: number): Promise<FetchResult<Array<Message>>>
+{
+  return axios({ url: '/completions/' + encodeURIComponent(''+sessionId) + ''
+    , method: 'get'
+    });
+}
