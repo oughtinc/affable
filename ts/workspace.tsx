@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { render } from 'react-dom';
 import { List, Map } from 'immutable';
+import matchSorter from 'match-sorter';
+import Downshift, { StateChangeOptions, ControllerStateAndHelpers } from 'downshift';
 
 import { Mapping, Expansion, Message, Workspace, Either, Result, Pointer } from './types';
 import { messageParser } from './parser';
@@ -18,6 +20,60 @@ Msg "submessage"
 Pointer "pointer"
   = "$" digits:[0-9]+ { return {tag: 'Reference', contents: parseInt(digits.join(''), 10)}; }
 */
+
+function messageShape(msg: Message, substitutes: Array<string>): string {
+    switch(msg.tag) {
+        case 'Text':
+            return msg.contents;
+        case 'Reference':
+            return '[]';
+        case 'Structured':
+            let i = 0;
+            return msg.contents.map((m: Message) => {
+                if(m.tag === 'Text') return m.contents;
+                if(substitutes.length > i++) return substitutes[i-1];
+                return '[]';
+            }).join('');
+        default:
+            throw "Shouldn't happen";
+    }
+}
+
+function messageToString(msg: Message): string {
+    switch(msg.tag) {
+        case 'Text':
+            return msg.contents;
+        case 'Reference':
+            return '$' + msg.contents;
+        case 'Structured':
+            return '[' + msg.contents.map(messageToString).join('') + ']';
+        default:
+            throw "Shouldn't happen";
+    }
+}
+
+function getSubstitutes(msg: Message): Array<string> {
+    switch(msg.tag) {
+        case 'Text':
+            return [];
+        case 'Reference':
+            return ['$' + msg.contents];
+        case 'Structured':
+            const substs: Array<string> = [];
+            msg.contents.forEach((m: Message) => {
+                switch(m.tag) {
+                    case 'Text':
+                        return;
+                    default:
+                        substs.push(messageToString(m));
+                        return;
+                }
+            });
+            return substs;
+        default:
+            throw "Shouldn't happen";
+    }
+}
 
 // TODO: Switch this to use a Map via withMutations.
 function mappingFromMessage(mapping: {nextPointer: number, [ptr: number]: Pointer}, expansion: Expansion, msg: Message): void {
@@ -284,13 +340,12 @@ const ButtonComponent: React.FunctionComponent<ButtonProps> = (props) =>
     <button type="submit" className="btn btn-outline-primary btn-default" onClick={props.onClick}>{props.label}</button>;
 
 interface TextInputProps extends ButtonProps {
-    className: string,
     inputText: string,
     onChange: (evt: React.ChangeEvent) => void
 }
 
 const TextInputComponent: React.FunctionComponent<TextInputProps> = (props) => {
-    return <div className={props.className}>
+    return <div className="input-group">
             <input className="form-control" type="text" value={props.inputText} onChange={props.onChange}></input>
             <div className="input-group-append">
                 <ButtonComponent onClick={props.onClick} label={props.label} />
@@ -298,15 +353,63 @@ const TextInputComponent: React.FunctionComponent<TextInputProps> = (props) => {
            </div>;
 };
 
+interface TypeAheadProps extends ButtonProps {
+    selectedValue: string | null,
+    completions: Array<Message>,
+    onStateChange?: (options: StateChangeOptions<string>, stateAndHelpers: ControllerStateAndHelpers<string>) => void
+}
+
+const TypeAheadComponent: React.FunctionComponent<TypeAheadProps> = (props) => {
+    return <Downshift selectedItem={props.selectedValue} onStateChange={props.onStateChange}>{downshift => {
+            let matches: Array<string> = [];
+            try {
+                const completions = props.completions;
+                const input = downshift.inputValue;
+                if(input !== null) {
+                    const msg = messageParser(input);
+                    const substs = getSubstitutes(msg);
+                    const shape = messageShape(msg, substs);
+                    const items = completions.map(m => messageShape(m, substs));
+                    matches = matchSorter(items, shape); // TODO: Limit the number of outputs by slicing matches.
+                }
+            } catch { // TODO: Probably make this tighter. It's to handle messageParser failing to parse which will be common.
+                // Do nothing
+            }
+            return <div className="typeahead">
+                    <div className="input-group">
+                        <input {...downshift.getInputProps()} className="form-control" type="text"></input>
+                        <div className="input-group-append">
+                            <ButtonComponent onClick={props.onClick} label={props.label} />
+                        </div>
+                    </div>
+                    <ul {...downshift.getMenuProps()} className={downshift.isOpen ? 'open' : 'closed'}>{
+                        downshift.isOpen ? matches.map((item, i) =>
+                            <li {...downshift.getItemProps({key: item, index: i, item: item})}
+                                className={i == downshift.highlightedIndex ? 'highlighted' : ''}>
+                                {item}
+                            </li>
+                        ) : null
+                    }</ul>
+                   </div>;
+            }}
+           </Downshift>;
+};
+
 interface NewQuestionProps {
-    inputText: string,
-    onClick: (evt: React.MouseEvent) => void,
-    onChange: (evt: React.ChangeEvent) => void
+    selectedValue: string | null,
+    completions: Array<Message>,
+    onStateChange?: (options: StateChangeOptions<string>, stateAndHelpers: ControllerStateAndHelpers<string>) => void,
+    onClick: (evt: React.MouseEvent) => void
 }
 
 const NewQuestionComponent: React.FunctionComponent<NewQuestionProps> = (props) =>
     <form className="newQuestion cell">
-        <TextInputComponent className="input-group" inputText={props.inputText} onChange={props.onChange} label="Ask" onClick={props.onClick} />
+        <TypeAheadComponent
+            selectedValue={props.selectedValue}
+            completions={props.completions}
+            onStateChange={props.onStateChange}
+            label="Ask"
+            onClick={props.onClick} />
     </form>;
 
 interface ReplyProps {
@@ -317,7 +420,7 @@ interface ReplyProps {
 
 const ReplyComponent: React.FunctionComponent<ReplyProps> = (props) =>
     <form className="reply cell">
-        <TextInputComponent className="input-group" inputText={props.inputText} onChange={props.onChange} label="Reply" onClick={props.onClick} />
+        <TextInputComponent inputText={props.inputText} onChange={props.onChange} label="Reply" onClick={props.onClick} />
     </form>;
 
 interface WaitProps {
@@ -335,7 +438,7 @@ interface MainProps {
 interface MainState {
     user: User,
     completions?: Array<Message>,
-    askInputText: string,
+    askInputText: string | null,
     replyInputText: string
 }
 
@@ -347,6 +450,14 @@ class MainComponent extends React.Component<MainProps, MainState> {
         this.state = {user: new User(props.userId, props.sessionId), askInputText: '', replyInputText: ''};
     }
 
+    askStateChange = (changes: StateChangeOptions<string>) => {
+        if(changes.hasOwnProperty('selectedItem')) {
+            this.setState({...this.state, askInputText: changes.selectedItem as string | null});
+        } else if(changes.hasOwnProperty('inputValue')) {
+            this.setState({...this.state, askInputText: changes.inputValue as string | null});
+        }
+    }
+
     render() {
         const workspace = this.state.user.workspace;
         if(workspace === null) {
@@ -355,25 +466,25 @@ class MainComponent extends React.Component<MainProps, MainState> {
             const sessionId = this.state.user.sessionId;
             location.hash = sessionId === null ? '' : '#' + sessionId;
             const mapping = this.state.user.mapping;
+            const askInputText = this.state.askInputText;
+            const completions = this.state.completions;
             const expansion = workspace.expandedPointers;
-            console.log(workspace);
             return <div className="mainContainer" onClick={this.pointerClick}>
                        <QuestionComponent mapping={mapping} expansion={expansion} question={workspace.question} />
                        <div className="subQuestions cell">
                            {workspace.subQuestions.map((q, i) => // Using index-based keying is reasonable here.
                                 <SubQuestionComponent key={i} mapping={mapping} expansion={expansion} question={q[1]} answer={q[2]} />)}
                        </div>
-                       <NewQuestionComponent inputText={this.state.askInputText} onClick={this.askClick} onChange={this.askInputChange} />
+                       <NewQuestionComponent
+                        selectedValue={askInputText}
+                        completions={completions === void(0) ? [] : completions}
+                        onStateChange={this.askStateChange}
+                        onClick={this.askClick} />
                        <WaitComponent onClick={this.waitClick} />
                        <ReplyComponent inputText={this.state.replyInputText} onClick={this.replyClick} onChange={this.replyInputChange} />
                    </div>;
         }
     }
-
-    askInputChange = (evt: React.ChangeEvent) => {
-        const target = evt.target as HTMLInputElement;
-        this.setState({...this.state, askInputText: target.value});
-    };
 
     replyInputChange = (evt: React.ChangeEvent) => {
         const target = evt.target as HTMLInputElement;
@@ -402,7 +513,6 @@ class MainComponent extends React.Component<MainProps, MainState> {
                 // Do nothing but probably want to tell the user that.
             } else {
                 return getCompletions(user.sessionId as number).then(r => {
-                    console.log(r.data);
                     this.setState({user: user, completions: r.data, askInputText: '', replyInputText: ''});
                 });
             }
@@ -410,7 +520,9 @@ class MainComponent extends React.Component<MainProps, MainState> {
     };
 
     askClick = (evt: React.MouseEvent) => {
-        const msg = messageParser(this.state.askInputText);
+        const askInputText = this.state.askInputText;
+        if(askInputText === null) return;
+        const msg = messageParser(askInputText);
         this.state.user.ask(msg).then(user => {
             this.setState({...this.state, user: user, askInputText: ''});
         });

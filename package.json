@@ -5,12 +5,15 @@
   "main": "workspace.js",
   "dependencies": {
     "axios": "^0.18.0",
+    "downshift": "^3.2.4",
     "immutable": "^4.0.0-rc.12",
+    "match-sorter": "^2.3.0",
     "react": "^16.8.1",
     "react-dom": "^16.8.1"
   },
   "devDependencies": {
     "@types/jest": "^22.2.0",
+    "@types/match-sorter": "^2.3.0",
     "@types/react": "^16.8.3",
     "@types/react-dom": "^16.8.1",
     "jest": "^22.4.2",
