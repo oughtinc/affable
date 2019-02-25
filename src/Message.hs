@@ -17,11 +17,11 @@ import Data.Foldable ( foldl', foldMap ) -- base
 import Data.List ( intersperse, mapAccumL ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Set as S -- containers
-import Data.Traversable ( sequenceA, traverse ) -- base
 import Data.String ( fromString ) -- base
 import Data.Text ( Text ) -- text
 import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
 import qualified Data.Text.Lazy.Builder.Int as T ( decimal ) -- text
+import Data.Traversable ( sequenceA, traverse ) -- base
 import Data.Void ( Void ) -- base
 import GHC.Generics ( Generic ) -- ghc
 import Text.Megaparsec ( Parsec, parse, many, some, takeWhile1P, (<|>), (<?>) ) -- megaparsec
@@ -164,23 +164,25 @@ type PointerRemapping = M.Map Pointer Pointer
 -- We want to maintain the invariant that for LabeledStructure p msg, msg is "equivalent" to
 -- whatever "p" points at (in the actual database).
 expandPointers :: PointerEnvironment -> Message -> Message
-expandPointers env (Reference p) = maybe (Reference p) (expandPointers env) $ M.lookup p env
-expandPointers env (Structured blocks) = Structured (map (expandPointers env) blocks)
-expandPointers env (LabeledStructured p blocks) = LabeledStructured p (map (expandPointers env) blocks)
-expandPointers env t = t
+expandPointers env = go S.empty
+    where go seen (Reference p) | p `S.notMember` seen = maybe (Reference p) (go (S.insert p seen)) $ M.lookup p env
+          go seen (Structured blocks) = Structured (map (go seen) blocks)
+          go seen (LabeledStructured p blocks) = LabeledStructured p (map (go seen) blocks)
+          go seen t = t
 
 -- substitute is like expandPointers only the PointerEnvironment may not reflect the actual state of the
 -- pointers in the database. The upshot of this is that when we substitute under a LabeledStructure p, the
 -- result may no longer be "equivalent" to what the pointer p points to, so, to maintain the invariant
 -- we turn those into plain Structures.
 substitute :: PointerEnvironment -> Message -> Message
-substitute env (Reference p) = maybe (Reference p) (substitute env) $ M.lookup p env
-substitute env (Structured [p@(Reference _)]) = substitute env p
-substitute env (Structured blocks) = Structured (map (substitute env) blocks)
-substitute env (LabeledStructured p blocks) = Structured (map (substitute env) blocks) -- TODO: Could probably keep LabeledStructured p if we don't
-                                                                                       -- actually substitute into any subMessages. We could percolate
-                                                                                       -- up a Bool to indicate whether any substitutions were made.
-substitute _ t = t
+substitute env = go S.empty
+    where go seen (Reference p) | p `S.notMember` seen = maybe (Reference p) (go (S.insert p seen)) $ M.lookup p env
+          go seen (Structured [p@(Reference _)]) = go seen p
+          go seen (Structured blocks) = Structured (map (go seen) blocks)
+          go seen (LabeledStructured p blocks) = Structured (map (go seen) blocks) -- TODO: Could probably keep LabeledStructured p if we don't
+                                                                                   -- actually substitute into any subMessages. We could percolate
+                                                                                   -- up a Bool to indicate whether any substitutions were made.
+          go seen t = t
 
 -- Given a Message, replace all Structured sub-Messages with pointers and output a mapping
 -- from those pointers to the Structured sub-Messages. Normalized subMessages are "equivalent"
