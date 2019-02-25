@@ -34785,6 +34785,11 @@
         });
     }
 
+    var dummy = document.createElement('textarea');
+    function escapeHTML(html) {
+        dummy.textContent = html;
+        return dummy.innerHTML;
+    }
     function messageShape(msg, substitutes) {
         switch (msg.tag) {
             case 'Text':
@@ -34801,7 +34806,7 @@
                     return '[]';
                 }).join('');
             default:
-                throw "Shouldn't happen";
+                throw "messageShape: Shouldn't happen";
         }
     }
     function messageToString(msg) {
@@ -34812,30 +34817,43 @@
                 return '$' + msg.contents;
             case 'Structured':
                 return '[' + msg.contents.map(messageToString).join('') + ']';
+            case 'LabeledStructured':
+                return '[$' + msg.contents[0] + ': ' + msg.contents.slice(1).map(messageToString).join('') + ']';
             default:
-                throw "Shouldn't happen";
+                throw "messageToString: Shouldn't happen";
         }
     }
     function getSubstitutes(msg) {
+        var substs = [];
         switch (msg.tag) {
             case 'Text':
-                return [];
+                return substs;
             case 'Reference':
                 return ['$' + msg.contents];
             case 'Structured':
-                var substs_1 = [];
                 msg.contents.forEach(function (m) {
                     switch (m.tag) {
                         case 'Text':
                             return;
                         default:
-                            substs_1.push(messageToString(m));
+                            substs.push(messageToString(m));
                             return;
                     }
                 });
-                return substs_1;
+                return substs;
+            case 'LabeledStructured':
+                msg.contents.slice(1).forEach(function (m) {
+                    switch (m.tag) {
+                        case 'Text':
+                            return;
+                        default:
+                            substs.push(messageToString(m));
+                            return;
+                    }
+                });
+                return substs;
             default:
-                throw "Shouldn't happen";
+                throw "getSubstitutes: Shouldn't happen";
         }
     }
     function mappingFromMessage(mapping, expansion, msg) {
@@ -34862,7 +34880,7 @@
                 msg.contents[1].forEach(function (m) { return mappingFromMessage(mapping, expansion, m); });
                 return;
             default:
-                throw "Something's wrong";
+                throw "mappingFromMessage: Something's wrong";
         }
     }
     function mappingFromWorkspace(mapping, workspace) {
@@ -34883,53 +34901,60 @@
                 return { tag: 'Reference', contents: mapping.get(msg.contents) };
             case 'Structured':
                 return { tag: 'Structured', contents: msg.contents.map(function (m) { return renumberMessage(mapping, m); }) };
+            case 'LabeledStructured':
+                return { tag: 'LabeledStructured',
+                    contents: [mapping.get(msg.contents[0])].concat(msg.contents.slice(1).map(function (m) { return renumberMessage(mapping, m); })) };
             default:
-                throw "Something's wrong";
+                throw "renumberMessage: Something's wrong";
         }
-    }
-    var dummy = document.createElement('textarea');
-    function escapeHTML(html) {
-        dummy.textContent = html;
-        return dummy.innerHTML;
     }
     var MessageComponent = function (props) {
         var mapping = props.mapping;
         var expansion = props.expansion;
+        var occurrences = props.expandedOccurrences;
         var msg = props.message;
+        var path = props.path;
         switch (msg.tag) {
             case 'Text':
                 return react_4("span", null, escapeHTML(msg.contents));
             case 'Reference':
                 var p = msg.contents;
                 if (expansion.has(p)) {
-                    return react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: expansion.get(p), isSubmessage: true });
+                    if (occurrences.has(path)) {
+                        return react_4(MessageComponent, __assign({}, props, { message: expansion.get(p), isSubmessage: true }));
+                    }
+                    else {
+                        return react_4("span", { className: "pointer unexpanded", "data-path": path, "data-original": p },
+                            "$",
+                            mapping.get(p));
+                    }
                 }
                 else {
-                    return react_4("span", { className: "pointer locked unexpanded", "data-original": p },
+                    return react_4("span", { className: "pointer locked unexpanded", "data-path": path, "data-original": p },
                         "$",
                         mapping.get(p));
                 }
             case 'Structured':
                 if (props.isSubmessage) {
-                    return react_4("span", null,
+                    return react_4("span", { "data-path": path },
                         "[",
                         msg.contents.map(function (m, i) {
-                            return react_4(MessageComponent, { key: i, mapping: mapping, expansion: expansion, message: m, isSubmessage: true });
+                            return react_4(MessageComponent, __assign({}, props, { key: i, message: m, path: path + '.' + i, isSubmessage: true }));
                         }),
                         "]");
                 }
                 else {
-                    return react_4("span", null, msg.contents.map(function (m, i) {
-                        return react_4(MessageComponent, { key: i, mapping: mapping, expansion: expansion, message: m, isSubmessage: true });
+                    return react_4("span", { "data-path": path }, msg.contents.map(function (m, i) {
+                        return react_4(MessageComponent, __assign({}, props, { key: i, message: m, path: path + '.' + i, isSubmessage: true }));
                     }));
                 }
             case 'LabeledStructured':
                 var label = msg.contents[0];
                 return react_4("span", null,
-                    react_4("span", { className: "pointer expanded" }, mapping.get(label)),
+                    react_4("span", { className: props.isSubmessage ? 'pointer expanded' : 'pointer expanded top', "data-path": path, "data-original": label }, mapping.get(label)),
                     react_4("span", { className: "pointer-bracket left" }, "["),
                     msg.contents[1].map(function (m, i) {
-                        return react_4(MessageComponent, { key: i, mapping: mapping, expansion: expansion, message: m, isSubmessage: true });
+                        return react_4(MessageComponent, __assign({}, props, { key: i, message: m, path: path + '.' + i, isSubmessage: true }));
                     }),
                     react_4("span", { className: "pointer-bracket right" }, "]"));
         }
@@ -34937,36 +34962,38 @@
     var QuestionComponent = function (props) {
         return react_4("div", { className: "topLevelQuestion cell" },
             react_4("h2", null,
-                react_4(MessageComponent, { mapping: props.mapping, expansion: props.expansion, message: props.question })));
+                react_4(MessageComponent, { mapping: props.mapping, expansion: props.expansion, expandedOccurrences: props.expandedOccurrences, message: props.question, path: "top" })));
     };
     var SubQuestionComponent = function (props) {
-        var mapping = props.mapping;
-        var expansion = props.expansion;
+        var msgProps = { mapping: props.mapping, expansion: props.expansion, expandedOccurrences: props.expandedOccurrences };
         var question = props.question;
         var answer = props.answer;
+        var i = props.index;
         if (answer === null) {
             return react_4("div", { className: "subQuestion unanswered" },
                 react_4("div", { className: "question" },
-                    react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: question })));
+                    react_4(MessageComponent, __assign({}, msgProps, { message: question, path: 'q.' + i }))));
         }
         else {
             return react_4("div", { className: "subQuestion answered" },
                 react_4("div", { className: "question" },
-                    react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: question })),
+                    react_4(MessageComponent, __assign({}, msgProps, { message: question, path: 'q.' + i }))),
                 react_4("div", { className: "answer" },
-                    react_4(MessageComponent, { mapping: mapping, expansion: expansion, message: answer })));
+                    react_4(MessageComponent, __assign({}, msgProps, { message: answer, path: 'a.' + i }))));
         }
     };
     var User = (function () {
-        function User(userId, sessionId, pending, workspace, mapping, inverseMapping) {
+        function User(userId, sessionId, pending, workspace, expandedOccurrences, mapping, inverseMapping) {
             if (pending === void 0) { pending = List(); }
             if (workspace === void 0) { workspace = null; }
+            if (expandedOccurrences === void 0) { expandedOccurrences = Set$1(); }
             if (mapping === void 0) { mapping = Map$1(); }
             if (inverseMapping === void 0) { inverseMapping = Map$1(); }
             this.userId = userId;
             this.sessionId = sessionId;
             this.pending = pending;
             this.workspace = workspace;
+            this.expandedOccurrences = expandedOccurrences;
             this.mapping = mapping;
             this.inverseMapping = inverseMapping;
         }
@@ -35006,7 +35033,7 @@
                 question: ws.question,
                 subQuestions: ws.subQuestions.push([null, msg2, null])
             };
-            var user = new User(this.userId, this.sessionId, this.pending.push({ Left: msg2 }), ws2, this.mapping, this.inverseMapping);
+            var user = new User(this.userId, this.sessionId, this.pending.push({ Left: msg2 }), ws2, this.expandedOccurrences, this.mapping, this.inverseMapping);
             return new Promise(function (resolve, reject) { return resolve(user); });
         };
         User.prototype.reply = function (msg) {
@@ -35014,28 +35041,35 @@
             return postReply([{ userId: this.userId }, this.workspaceId, this.pending.toArray(), renumberMessage(this.inverseMapping, msg)])
                 .then(function (r) { return _this.postProcess(r.data); });
         };
-        User.prototype.view = function (ptr) {
+        User.prototype.view = function (ptr, path) {
             var _this = this;
-            return getPointer(ptr).then(function (r) {
-                var msg = r.data;
-                if (msg !== null) {
-                    var ws = _this.workspace;
-                    var expansion = ws.expandedPointers;
-                    var ws2 = {
-                        identity: ws.identity,
-                        expandedPointers: expansion.set(ptr, msg),
-                        question: ws.question,
-                        subQuestions: ws.subQuestions
-                    };
-                    var transientMapping = _this.mapping.toObject();
-                    transientMapping.nextPointer = _this.mapping.size;
-                    mappingFromMessage(transientMapping, expansion, msg);
-                    var mappings = User.updateInverseMapping(transientMapping);
-                    var user = new User(_this.userId, _this.sessionId, _this.pending.push({ Right: ptr }), ws2, mappings[0], mappings[1]);
-                    return { tag: 'OK', contents: user };
-                }
-                return { tag: 'Error' };
-            });
+            var ws = this.workspace;
+            var expansion = ws.expandedPointers;
+            var occurrences = this.expandedOccurrences;
+            if (expansion.has(ptr)) {
+                var user_1 = new User(this.userId, this.sessionId, this.pending, ws, occurrences.has(path) ? occurrences.delete(path) : occurrences.add(path), this.mapping, this.inverseMapping);
+                return new Promise(function (resolve, reject) { return resolve({ tag: 'OK', contents: user_1 }); });
+            }
+            else {
+                return getPointer(ptr).then(function (r) {
+                    var msg = r.data;
+                    if (msg !== null) {
+                        var ws2 = {
+                            identity: ws.identity,
+                            expandedPointers: expansion.set(ptr, msg),
+                            question: ws.question,
+                            subQuestions: ws.subQuestions
+                        };
+                        var transientMapping = _this.mapping.toObject();
+                        transientMapping.nextPointer = _this.mapping.size;
+                        mappingFromMessage(transientMapping, expansion, msg);
+                        var mappings = User.updateInverseMapping(transientMapping);
+                        var user = new User(_this.userId, _this.sessionId, _this.pending.push({ Right: ptr }), ws2, occurrences.add(path), mappings[0], mappings[1]);
+                        return { tag: 'OK', contents: user };
+                    }
+                    return { tag: 'Error' };
+                });
+            }
         };
         User.prototype.wait = function () {
             var _this = this;
@@ -35064,7 +35098,7 @@
                 var transientMapping = { nextPointer: 0 };
                 mappingFromWorkspace(transientMapping, ws2);
                 var mappings = User.updateInverseMapping(transientMapping);
-                var user = new User(_this.userId, sessionId, List(), ws2, mappings[0], mappings[1]);
+                var user = new User(_this.userId, sessionId, List(), ws2, Set$1(), mappings[0], mappings[1]);
                 return user;
             });
         };
@@ -35087,9 +35121,9 @@
                 var input = downshift.inputValue;
                 if (input !== null) {
                     var msg = messageParser(input);
-                    var substs_2 = getSubstitutes(msg);
-                    var shape = messageShape(msg, substs_2);
-                    var items = completions.map(function (m) { return messageShape(m, substs_2); });
+                    var substs_1 = getSubstitutes(msg);
+                    var shape = messageShape(msg, substs_1);
+                    var items = completions.map(function (m) { return messageShape(m, substs_1); });
                     matches = matchSorter(items, shape);
                 }
             }
@@ -35135,8 +35169,8 @@
             };
             _this.pointerClick = function (evt) {
                 var target = evt.target;
-                if (target !== null && target.classList.contains('pointer') && target.classList.contains('locked')) {
-                    _this.state.user.view(parseInt(target.dataset.original, 10)).then(function (r) {
+                if (target !== null && (target.classList.contains('unexpanded') || target.classList.contains('expanded'))) {
+                    _this.state.user.view(parseInt(target.dataset.original, 10), target.dataset.path).then(function (r) {
                         if (r.tag === 'OK') {
                             _this.setState(__assign({}, _this.state, { user: r.contents }));
                         }
@@ -35199,14 +35233,17 @@
             else {
                 var sessionId = this.state.user.sessionId;
                 location.hash = sessionId === null ? '' : '#' + sessionId;
-                var mapping_1 = this.state.user.mapping;
+                var ctxtProps_1 = {
+                    mapping: this.state.user.mapping,
+                    expansion: workspace.expandedPointers,
+                    expandedOccurrences: this.state.user.expandedOccurrences
+                };
                 var askInputText = this.state.askInputText;
                 var completions = this.state.completions;
-                var expansion_1 = workspace.expandedPointers;
                 return react_4("div", { className: "mainContainer", onClick: this.pointerClick },
-                    react_4(QuestionComponent, { mapping: mapping_1, expansion: expansion_1, question: workspace.question }),
+                    react_4(QuestionComponent, __assign({}, ctxtProps_1, { question: workspace.question })),
                     react_4("div", { className: "subQuestions cell" }, workspace.subQuestions.map(function (q, i) {
-                        return react_4(SubQuestionComponent, { key: i, mapping: mapping_1, expansion: expansion_1, question: q[1], answer: q[2] });
+                        return react_4(SubQuestionComponent, __assign({ key: i, index: i }, ctxtProps_1, { question: q[1], answer: q[2] }));
                     })),
                     react_4(NewQuestionComponent, { selectedValue: askInputText, completions: completions === void (0) ? [] : completions, onStateChange: this.askStateChange, onClick: this.askClick }),
                     react_4(WaitComponent, { onClick: this.waitClick }),

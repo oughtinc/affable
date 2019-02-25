@@ -1,4 +1,4 @@
-.pointer.locked {
+.pointer.unexpanded, .pointer.locked {
     color: white;
     background-color: #007bff;
     border-radius: 4px;
@@ -12,6 +12,11 @@
     background-color: #007bff;
     border-radius: 4px 0px 0px 4px;
     padding: 0px 3px;
+    cursor: pointer;
+}
+
+.pointer.expanded.top {
+    cursor: default;
 }
 
 .question::before {
