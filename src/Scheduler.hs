@@ -4,6 +4,7 @@ module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), Session
                    autoUserId, firstUserId, makeSingleUserScheduler, relabelMessage, fullyExpand ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
+import qualified Data.Set as S -- containers
 
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping )
 import Workspace ( Workspace(identity), WorkspaceId )
@@ -52,10 +53,11 @@ relabelMessage ctxt (LabeledStructured _ ms) = labelMessage ctxt (Structured ms)
 relabelMessage ctxt msg = labelMessage ctxt msg
 
 fullyExpand :: SchedulerContext extra -> Message -> IO Message
-fullyExpand ctxt (Reference p) = fullyExpand ctxt =<< dereference ctxt p
-fullyExpand ctxt (Structured ms) = Structured <$> mapM (fullyExpand ctxt) ms
-fullyExpand ctxt (LabeledStructured _ ms) = Structured <$> mapM (fullyExpand ctxt) ms
-fullyExpand ctxt m = return m
+fullyExpand ctxt m = go S.empty m
+    where go !seen (Reference p) | p `S.notMember` seen = go (S.insert p seen) =<< dereference ctxt p
+          go !seen (Structured ms) = Structured <$> mapM (go seen) ms
+          go !seen (LabeledStructured _ ms) = Structured <$> mapM (go seen) ms
+          go !seen m = return m
 
 makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeSingleUserScheduler ctxt = do
