@@ -34870,8 +34870,8 @@
                 return;
             case 'Reference':
                 var p = msg.contents;
-                if (!(p in mapping)) {
-                    mapping[p] = mapping.nextPointer++;
+                if (!(mapping.has(p))) {
+                    mapping.set(p, mapping.size);
                 }
                 if (expansion.has(p)) {
                     mappingFromMessage(mapping, expansion, expansion.get(p));
@@ -34882,8 +34882,8 @@
                 return;
             case 'LabeledStructured':
                 var label = msg.contents[0];
-                if (!(label in mapping)) {
-                    mapping[label] = mapping.nextPointer++;
+                if (!(mapping.has(label))) {
+                    mapping.set(label, mapping.size);
                 }
                 msg.contents[1].forEach(function (m) { return mappingFromMessage(mapping, expansion, m); });
                 return;
@@ -34902,21 +34902,49 @@
                 mappingFromMessage(mapping, expansion, answer);
         });
     }
-    function renumberMessage(mapping, msg) {
+    function boundPointers(base, mapping, msg) {
         switch (msg.tag) {
-            case 'Text':
-                return msg;
-            case 'Reference':
-                return { tag: 'Reference', contents: mapping.get(msg.contents) };
             case 'Structured':
-                return { tag: 'Structured', contents: msg.contents.map(function (m) { return renumberMessage(mapping, m); }) };
+                msg.contents.forEach(function (m) { return boundPointers(base, mapping, m); });
+                break;
             case 'LabeledStructured':
-                return { tag: 'LabeledStructured',
-                    contents: [mapping.get(msg.contents[0]), msg.contents[1].map(function (m) { return renumberMessage(mapping, m); })] };
-            default:
-                console.log([mapping, msg]);
-                throw "renumberMessage: Something's wrong";
+                var p = base - mapping.size;
+                mapping.set(msg.contents[0], p);
+                msg.contents[1].forEach(function (m) { return boundPointers(base, mapping, m); });
+                break;
         }
+    }
+    function renumberMessage(invMapping, msg) {
+        var mn = invMapping.min();
+        var base = mn === void (0) ? -1 : Math.min(-1, mn);
+        var localMapping = Map$1().withMutations(function (tm) { return boundPointers(base, tm, msg); });
+        localMapping.forEach(function (p) { return invMapping.set(invMapping.size, p); });
+        var expansion = Map$1().asMutable();
+        var loop = function (m) {
+            switch (m.tag) {
+                case 'Text':
+                    return m;
+                case 'Reference':
+                    var ptr = localMapping.get(m.contents);
+                    if (ptr !== void (0)) {
+                        return { tag: 'Reference', contents: ptr };
+                    }
+                    else {
+                        return { tag: 'Reference', contents: invMapping.get(m.contents) };
+                    }
+                case 'Structured':
+                    return { tag: 'Structured', contents: m.contents.map(loop) };
+                case 'LabeledStructured':
+                    var p = localMapping.get(m.contents[0]);
+                    var r = { tag: 'LabeledStructured', contents: [p, m.contents[1].map(loop)] };
+                    expansion.set(p, r);
+                    return r;
+                default:
+                    console.log(m);
+                    throw "renumberMessage: Something's wrong";
+            }
+        };
+        return [loop(msg), expansion.asImmutable()];
     }
     var MessageComponent = function (props) {
         var mapping = props.mapping;
@@ -35012,19 +35040,6 @@
             enumerable: true,
             configurable: true
         });
-        User.updateInverseMapping = function (transientMapping) {
-            var mapping = [];
-            var invMapping = [];
-            for (var k in transientMapping) {
-                if (k === 'nextPointer')
-                    continue;
-                var p1 = parseInt(k, 10);
-                var p2 = transientMapping[k];
-                mapping.push([p1, p2]);
-                invMapping.push([p2, p1]);
-            }
-            return [Map$1(mapping), Map$1(invMapping)];
-        };
         User.prototype.postProcess = function (r) {
             switch (r.tag) {
                 case 'OK':
@@ -35035,20 +35050,34 @@
             }
         };
         User.prototype.ask = function (msg) {
-            var msg2 = renumberMessage(this.inverseMapping, msg);
             var ws = this.workspace;
+            if (ws === null)
+                throw 'User.ask: null workspace';
+            var msg2 = null;
+            var expansion = null;
+            var invMap = this.inverseMapping.withMutations(function (im) {
+                var r = renumberMessage(im, msg);
+                msg2 = r[0];
+                expansion = r[1];
+            });
+            if (msg2 === null || expansion === null)
+                throw "User.ask: something's wrong";
             var ws2 = {
                 identity: ws.identity,
-                expandedPointers: ws.expandedPointers,
+                expandedPointers: ws.expandedPointers.merge(expansion),
                 question: ws.question,
                 subQuestions: ws.subQuestions.push([null, msg2, null])
             };
-            var user = new User(this.userId, this.sessionId, this.pending.push({ Left: msg2 }), ws2, this.expandedOccurrences, this.mapping, this.inverseMapping);
+            var user = new User(this.userId, this.sessionId, this.pending.push({ Left: msg2 }), ws2, this.expandedOccurrences, invMap.mapEntries(function (entry) { return [entry[1], entry[0]]; }), invMap);
             return new Promise(function (resolve, reject) { return resolve(user); });
         };
         User.prototype.reply = function (msg) {
             var _this = this;
-            return postReply([{ userId: this.userId }, this.workspaceId, this.pending.toArray(), renumberMessage(this.inverseMapping, msg)])
+            var msg2 = null;
+            this.inverseMapping.withMutations(function (im) { msg2 = renumberMessage(im, msg)[0]; });
+            if (msg2 === null)
+                throw "User.reply: something's wrong";
+            return postReply([{ userId: this.userId }, this.workspaceId, this.pending.toArray(), msg2])
                 .then(function (r) { return _this.postProcess(r.data); });
         };
         User.prototype.view = function (ptr, path) {
@@ -35070,11 +35099,9 @@
                             question: ws.question,
                             subQuestions: ws.subQuestions
                         };
-                        var transientMapping = _this.mapping.toObject();
-                        transientMapping.nextPointer = _this.mapping.size;
-                        mappingFromMessage(transientMapping, expansion, msg);
-                        var mappings = User.updateInverseMapping(transientMapping);
-                        var user = new User(_this.userId, _this.sessionId, _this.pending.push({ Right: ptr }), ws2, occurrences.add(path), mappings[0], mappings[1]);
+                        var mapping = _this.mapping.withMutations(function (tm) { return mappingFromMessage(tm, expansion, msg); });
+                        var invMapping = mapping.mapEntries(function (entry) { return [entry[1], entry[0]]; });
+                        var user = new User(_this.userId, _this.sessionId, _this.pending.push({ Right: ptr }), ws2, occurrences.add(path), mapping, invMapping);
                         return { tag: 'OK', contents: user };
                     }
                     return { tag: 'Error' };
@@ -35105,10 +35132,9 @@
                     question: ws.question,
                     subQuestions: List(ws.subQuestions)
                 };
-                var transientMapping = { nextPointer: 0 };
-                mappingFromWorkspace(transientMapping, ws2);
-                var mappings = User.updateInverseMapping(transientMapping);
-                var user = new User(_this.userId, sessionId, List(), ws2, Set$1(), mappings[0], mappings[1]);
+                var mapping = Map$1().withMutations(function (tm) { return mappingFromWorkspace(tm, ws2); });
+                var invMapping = mapping.mapEntries(function (entry) { return [entry[1], entry[0]]; });
+                var user = new User(_this.userId, sessionId, List(), ws2, Set$1(), mapping, invMapping);
                 return user;
             });
         };

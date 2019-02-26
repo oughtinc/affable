@@ -98,15 +98,14 @@ function getSubstitutes(msg: Message): Array<string> {
     }
 }
 
-// TODO: Switch this to use a Map via withMutations.
-function mappingFromMessage(mapping: {nextPointer: number, [ptr: number]: Pointer}, expansion: Expansion, msg: Message): void {
+function mappingFromMessage(mapping: Mapping /* mutable */, expansion: Expansion, msg: Message): void {
     switch(msg.tag) {
         case 'Text':
             return; // Nothing to do.
         case 'Reference':
             const p = msg.contents;
-            if(!(p in mapping)) {
-                mapping[p] = mapping.nextPointer++;
+            if(!(mapping.has(p))) {
+                mapping.set(p, mapping.size);
             }
             if(expansion.has(p)) {
                 mappingFromMessage(mapping, expansion, expansion.get(p) as Message);
@@ -117,8 +116,8 @@ function mappingFromMessage(mapping: {nextPointer: number, [ptr: number]: Pointe
             return;
         case 'LabeledStructured':
             const label = msg.contents[0];
-            if(!(label in mapping)) {
-                mapping[label] = mapping.nextPointer++;
+            if(!(mapping.has(label))) {
+                mapping.set(label, mapping.size);
             }
             msg.contents[1].forEach(m => mappingFromMessage(mapping, expansion, m));
             return;
@@ -128,7 +127,7 @@ function mappingFromMessage(mapping: {nextPointer: number, [ptr: number]: Pointe
     }
 }
 
-function mappingFromWorkspace(mapping: {nextPointer: number, [ptr: number]: Pointer}, workspace: Workspace): void {
+function mappingFromWorkspace(mapping: Mapping /* mutable */, workspace: Workspace): void {
     const expansion = workspace.expandedPointers;
     mappingFromMessage(mapping, expansion, workspace.question);
     workspace.subQuestions.forEach(q => {
@@ -137,21 +136,51 @@ function mappingFromWorkspace(mapping: {nextPointer: number, [ptr: number]: Poin
         if(answer !== null) mappingFromMessage(mapping, expansion, answer); });
 }
 
-function renumberMessage(mapping: Mapping, msg: Message): Message {
+function boundPointers(base: number, mapping: Mapping /* mutable */, msg: Message): void {
     switch(msg.tag) {
-        case 'Text':
-            return msg;
-        case 'Reference':
-            return {tag: 'Reference', contents: mapping.get(msg.contents) as number};
         case 'Structured':
-            return {tag: 'Structured', contents: msg.contents.map(m => renumberMessage(mapping, m))};
-        case 'LabeledStructured':
-            return {tag: 'LabeledStructured',
-                    contents: [mapping.get(msg.contents[0]) as number, msg.contents[1].map(m => renumberMessage(mapping, m))]};
-        default:
-            console.log([mapping, msg]);
-            throw "renumberMessage: Something's wrong";
+            msg.contents.forEach(m => boundPointers(base, mapping, m));
+            break;
+        case 'LabeledStructured': // TODO: Check for reuse of labels.
+            const p = base - mapping.size;
+            mapping.set(msg.contents[0], p);
+            msg.contents[1].forEach(m => boundPointers(base, mapping, m));
+            break;
     }
+}
+
+function renumberMessage(invMapping: Mapping /* mutable */, msg: Message): [Message, Expansion] {
+    const mn = invMapping.min();
+    const base = mn === void(0) ? -1 : Math.min(-1, mn);
+    const localMapping = Map<Pointer,Pointer>().withMutations(tm => boundPointers(base, tm, msg));
+
+    localMapping.forEach(p => invMapping.set(invMapping.size, p));
+
+    const expansion = Map<Pointer, Message>().asMutable();
+    const loop: (m: Message) => Message = m => {
+        switch(m.tag) {
+            case 'Text':
+                return m;
+            case 'Reference':
+                const ptr = localMapping.get(m.contents);
+                if(ptr !== void(0)) {
+                    return {tag: 'Reference', contents: ptr};
+                } else {
+                    return {tag: 'Reference', contents: invMapping.get(m.contents) as number};
+                }
+            case 'Structured':
+                return {tag: 'Structured', contents: m.contents.map(loop)};
+            case 'LabeledStructured':
+                const p = localMapping.get(m.contents[0]) as number;
+                const r: Message = {tag: 'LabeledStructured', contents: [p, m.contents[1].map(loop)]};
+                expansion.set(p, r);
+                return r;
+            default:
+                console.log(m);
+                throw "renumberMessage: Something's wrong";
+        }
+    };
+    return [loop(msg), expansion.asImmutable()];
 }
 
 interface MessageProps {
@@ -194,7 +223,7 @@ const MessageComponent: React.FunctionComponent<MessageProps> = (props) => {
                        </span>;
             }
         case 'LabeledStructured':
-            const label: Pointer = msg.contents[0];
+            const label = msg.contents[0];
             return <span>
                     <span className={props.isSubmessage ? 'pointer expanded' : 'pointer expanded top'} data-path={path} data-original={label}>
                         {mapping.get(label)}
@@ -254,20 +283,6 @@ class User {
 
     private get workspaceId(): number { return (this.workspace as Workspace).identity; }
 
-    private static updateInverseMapping(transientMapping: {[ptr: number]: Pointer}): [Mapping, Mapping] {
-        // There's probably a better way of doing this.
-        const mapping: Array<[Pointer, Pointer]> = [];
-        const invMapping: Array<[Pointer, Pointer]> = [];
-        for(const k in transientMapping) {
-            if(k === 'nextPointer') continue;
-            const p1 = parseInt(k, 10);
-            const p2 = transientMapping[k];
-            mapping.push([p1, p2]);
-            invMapping.push([p2, p1]);
-        }
-        return [Map<Pointer, Pointer>(mapping), Map<Pointer, Pointer>(invMapping)];
-    }
-
     private postProcess(r: Result<void>): Result<User> {
         switch(r.tag) {
             case 'OK':
@@ -279,11 +294,19 @@ class User {
     }
 
     ask(msg: Message): Promise<User> {
-        const msg2 = renumberMessage(this.inverseMapping, msg);
-        const ws = this.workspace as Workspace;
+        const ws = this.workspace;
+        if(ws === null) throw 'User.ask: null workspace';
+        let msg2: Message | null = null;
+        let expansion: Expansion | null = null;
+        const invMap = this.inverseMapping.withMutations(im => {
+            const r = renumberMessage(im, msg);
+            msg2 = r[0];
+            expansion = r[1];
+        });
+        if(msg2 === null || expansion === null) throw "User.ask: something's wrong";
         const ws2: Workspace = {
             identity: ws.identity,
-            expandedPointers: ws.expandedPointers,
+            expandedPointers: ws.expandedPointers.merge(expansion),
             question: ws.question,
             subQuestions: ws.subQuestions.push([null, msg2, null])
         };
@@ -292,13 +315,16 @@ class User {
                               this.pending.push({Left: msg2}),
                               ws2,
                               this.expandedOccurrences,
-                              this.mapping,
-                              this.inverseMapping);
+                              invMap.mapEntries(entry => [entry[1], entry[0]]),
+                              invMap)
         return new Promise((resolve, reject) => resolve(user));
     }
 
     reply(msg: Message): Promise<Result<User>> {
-        return postReply([{userId:this.userId}, this.workspaceId, this.pending.toArray(), renumberMessage(this.inverseMapping, msg)])
+        let msg2: Message | null = null;
+        this.inverseMapping.withMutations(im => { msg2 = renumberMessage(im, msg)[0]; })
+        if(msg2 === null) throw "User.reply: something's wrong";
+        return postReply([{userId:this.userId}, this.workspaceId, this.pending.toArray(), msg2])
                .then(r => this.postProcess(r.data));
     }
 
@@ -326,17 +352,15 @@ class User {
                         question: ws.question,
                         subQuestions: ws.subQuestions
                     };
-                    const transientMapping = this.mapping.toObject();
-                    transientMapping.nextPointer = this.mapping.size;
-                    mappingFromMessage(transientMapping as {[ptr: number]: Pointer, nextPointer: number}, expansion, msg);
-                    const mappings = User.updateInverseMapping(transientMapping);
+                    const mapping = this.mapping.withMutations(tm => mappingFromMessage(tm, expansion, msg));
+                    const invMapping = mapping.mapEntries(entry => [entry[1], entry[0]]);
                     const user = new User(this.userId,
                                           this.sessionId,
                                           this.pending.push({Right: ptr}),
                                           ws2,
                                           occurrences.add(path),
-                                          mappings[0],
-                                          mappings[1]);
+                                          mapping,
+                                          invMapping);
                     return {tag: 'OK' as 'OK', contents: user};
                 }
                 return {tag: 'Error' as 'Error'};
@@ -366,17 +390,15 @@ class User {
                 question: ws.question,
                 subQuestions: List(ws.subQuestions)
             };
-            const transientMapping = {nextPointer: 0};
-            mappingFromWorkspace(transientMapping, ws2);
-            const mappings = User.updateInverseMapping(transientMapping);
-
+            const mapping = Map<Pointer, Pointer>().withMutations(tm => mappingFromWorkspace(tm, ws2));
+            const invMapping = mapping.mapEntries(entry => [entry[1], entry[0]]);
             const user = new User(this.userId,
                                   sessionId,
                                   List<Either<Message, Pointer>>(),
                                   ws2,
                                   Set<string>(),
-                                  mappings[0],
-                                  mappings[1]);
+                                  mapping,
+                                  invMapping);
             return user;
         });
     }
