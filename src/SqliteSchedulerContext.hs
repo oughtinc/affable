@@ -10,7 +10,8 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
 
 import Command ( Command(..), commandToBuilder )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
-                 messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB )
+                 messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
+                 canonicalizeMessage, renumberMessage', boundPointers )
 import Scheduler ( SchedulerContext(..), UserId, SessionId )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Lock, newLock, withLock )
@@ -33,6 +34,7 @@ makeSqliteSchedulerContext conn = do
             getNextWorkspace = getNextWorkspaceSqlite lock conn,
             labelMessage = labelMessageSqlite lock conn,
             normalize = insertMessagePointers lock conn,
+            canonicalize = canonicalizeMessageSqlite lock conn,
             generalize = insertGeneralizedMessagePointers lock conn,
             dereference = dereferenceSqlite lock conn,
             reifyWorkspace = reifyWorkspaceSqlite lock conn,
@@ -113,6 +115,26 @@ workspaceToMessage workspaces workspaceId = go (M.lookup workspaceId workspaces)
                   goMsg 1 (m:ms) = m:goMsg 2 ms
                   goMsg i (m:ms) = Text (fromString (' ':show i ++ ". ")):m:goMsg (i+1) ms
 
+-- TODO: Rename.
+-- This takes a Message from the user where the LabeledStructures represent binding forms and produces
+-- a Message and pointer state that corresponds to that binding structure.
+canonicalizeMessageSqlite :: Lock -> Connection -> Message -> IO Message
+canonicalizeMessageSqlite lock conn msg = do
+    case boundPointers msg of
+        Right env -> do
+            withLock lock $ do
+                withTransaction conn $ do
+                    [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+                    let !firstPointerId = maybe 0 succ lastPointerId
+                    let !topPointerId = firstPointerId + M.size env - 1
+                    let !mapping = M.fromList (zip (M.keys env) [firstPointerId ..])
+                    let !msg' = renumberMessage' mapping msg
+                    let (pEnv, _) = canonicalizeMessage (topPointerId + 1) msg'
+                    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
+                    return msg'
+        -- Left p -> return (Left p)
+        -- TODO: XXX Either decide to assume msg is well-formed, and enforce it, or propagate the error.
+
 -- TODO: Bulkify this.
 -- CACHEABLE
 dereferenceSqlite :: Lock -> Connection -> Pointer -> IO Message
@@ -125,7 +147,7 @@ dereferenceSqlite lock conn ptr = do
 insertMessagePointers :: Lock -> Connection -> Message -> IO Message
 insertMessagePointers lock conn msg = do
     withLock lock $ do
-        withTransaction conn $ do -- TODO: Need stronger transaction?
+        withTransaction conn $ do
             [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
             let (pEnv, normalizedMsg) = normalizeMessage (maybe 0 succ lastPointerId) msg
             executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
@@ -134,7 +156,7 @@ insertMessagePointers lock conn msg = do
 insertGeneralizedMessagePointers :: Lock -> Connection -> Message -> IO Message
 insertGeneralizedMessagePointers lock conn msg = do
     withLock lock $ do
-        withTransaction conn $ do -- TODO: Need stronger transaction?
+        withTransaction conn $ do
             [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
             let (mapping, generalizedMsg) = generalizeMessage (maybe 0 succ lastPointerId) msg
             executeMany conn "INSERT INTO Pointers (id, content) SELECT ?, o.content FROM Pointers o WHERE o.id = ?" (M.assocs mapping)

@@ -6,9 +6,9 @@ module Message (
     Message(..), Pointer, Address, PointerEnvironment, PointerRemapping,
     pointerParser, addressParser, messageParser, messageParser', parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
     pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB, messageToHaskell, messageToPattern,
-    patternsParser, parsePatternsUnsafe, patternsToBuilder,
-    expandPointers, substitute, normalizeMessage, generalizeMessage, renumberMessage', renumberMessage, renumberAcc,
-    stripLabel, matchMessage, matchPointers, collectPointers )
+    patternsParser, parsePatternsUnsafe, patternsToBuilder, expandPointers, substitute,
+    normalizeMessage, canonicalizeMessage, generalizeMessage, renumberMessage', renumberMessage, renumberAcc,
+    stripLabel, matchMessage, matchPointers, collectPointers, boundPointers )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
@@ -44,9 +44,9 @@ instance FromJSON Message
 instance ToJSON Message
 
 {-
-Pointer ::= "$" [1-9]*[0-9]
+Pointer ::= "$" [0-9]+
 
-Address ::= "@" [1-9]*[0-9]
+Address ::= "@" [0-9]+
 
 Msg ::= Pointer
       | Address
@@ -70,6 +70,9 @@ addressParser =  (char '@' *> decimal) <?> "address"
 addressToBuilder :: Address -> Builder
 addressToBuilder a = singleton '@' <> T.decimal a
 
+messageParser :: Parsec Void Text Message
+messageParser = messageParser'
+{-
 -- Doesn't parse LabeledStructures, so we can keep users for entering them.
 messageParser :: Parsec Void Text Message
 messageParser = do
@@ -79,6 +82,7 @@ messageParser = do
               <|> (Location <$> addressParser)
               <|> (Structured <$> (char '[' *> some mParser <* char ']') <?> "submessage")
               <|> (Text <$> takeWhile1P Nothing (\c -> c `notElem` ("[]$@" :: String)) <?> "text")
+-}
 
 messageParser' :: Parsec Void Text Message
 messageParser' = do
@@ -198,7 +202,26 @@ normalizeMessage start = go True M.empty
             where !p = M.size env + start
                   env' = M.insert p (LabeledStructured p ms') env
                   (env'', ms') = mapAccumL (go False) env' ms -- A bit of knot typing occurring here.
-          go _ env m@(LabeledStructured p ms) = (env, Reference p)
+          go _ env (LabeledStructured p _) = (env, Reference p)
+          go _ env m = (env, m)
+
+-- Given a Message, replace all Structured sub-Messages with pointers and output a mapping
+-- from those pointers to the Structured sub-Messages. For LabeledStructured sub-Messages,
+-- use the label pointer.
+canonicalizeMessage :: Int -> Message -> (PointerEnvironment, Message)
+canonicalizeMessage start = go True M.empty
+    where go True env (Structured ms) = (env'', LabeledStructured p ms')
+            where !p = M.size env + start
+                  env' = M.insert p (LabeledStructured p ms') env -- Knot tying
+                  (env'', ms') = mapAccumL (go False) env' ms
+          go True env (LabeledStructured p ms) = second (LabeledStructured p) $ mapAccumL (go False) env ms
+          go _ env (Structured ms) = (env'', Reference p)
+            where !p = M.size env + start
+                  env' = M.insert p (LabeledStructured p ms') env
+                  (env'', ms') = mapAccumL (go False) env' ms -- A bit of knot typing occurring here.
+          go _ env (LabeledStructured p ms) = (env'', Reference p)
+            where env' = M.insert p (LabeledStructured p ms') env
+                  (env'', ms') = mapAccumL (go False) env' ms -- A bit of knot typing occurring here.
           go _ env m = (env, m)
 
 -- Creates a message where all pointers are distinct. The output is a mapping
@@ -283,3 +306,19 @@ collectPointers msg = go msg []
           go (Structured ms) acc = foldr go acc ms
           go (LabeledStructured _ ms) acc = foldr go acc ms
           go _ acc = acc
+
+-- Returns a PointerEnvironment that maps labels of LabeledStructures to their bodies.
+-- Returns `Left p` if `p` occurs as the label of multiple LabeledStructures. For the purposes
+-- of this function, we are treating LabeledStructures as binding forms, so this situation would
+-- correspond to binding `p` to multiple things.
+boundPointers :: Message -> Either Pointer PointerEnvironment
+boundPointers = go M.empty
+    where go env m@(LabeledStructured p ms) | p `M.member` env = Left p
+                                            | otherwise = let !env' = M.insert p m env
+                                                          in goMany env' ms
+          go env (Structured ms) = goMany env ms
+          go env _ = return env
+          goMany env [] = return env
+          goMany env (m:ms) = do
+            env' <- go env m
+            goMany env' ms

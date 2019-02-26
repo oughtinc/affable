@@ -214,6 +214,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
 
                     let loop = blockOnUser workspaceId >>= processEvent
                         processEvent (userId, Create msg) = do
+                            msg <- liftIO $ canonicalize ctxt msg
                             pattern <- liftIO $ relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
                             liftIO $ createWorkspace ctxt False userId workspaceId msg pattern
                             loop
@@ -229,6 +230,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                             liftIO $ sendAnswer ctxt False userId workspaceId msg'
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         processEvent (userId, Answer msg) = do
+                            msg <- liftIO $ canonicalize ctxt msg
                             msg' <- liftIO $ relabelMessage ctxt =<< normalize ctxt msg
                             liftIO $ sendAnswer ctxt False userId workspaceId msg'
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)

@@ -18,7 +18,7 @@ import System.Console.Haskeline ( InputT, CompletionFunc, outputStr, outputStrLn
 import Text.Megaparsec ( ParseError, parse, parseErrorPretty ) -- megaparsec 6.5
 
 import Command ( Command(..), commandParser )
-import Message ( Message(..), PointerRemapping, messageToBuilder, expandPointers, renumberMessage, renumberAcc )
+import Message ( Message(..), PointerRemapping, messageToBuilder, expandPointers, renumberMessage, renumberMessage', renumberAcc )
 import Scheduler ( UserId, Event, SchedulerFn, firstUserId )
 import qualified Scheduler as Event ( Event (..) )
 import Util ( toText, invertMap )
@@ -99,8 +99,8 @@ commandLineInteraction initWorkspace scheduler = do
                               go mapping' ws
 
 commandToEvent :: PointerRemapping -> Command -> Maybe Event
-commandToEvent mapping (Ask msg) = Event.Create <$> renumberMessage mapping msg
-commandToEvent mapping (Reply msg) = Event.Answer <$> renumberMessage mapping msg
+commandToEvent mapping (Ask msg) = Just (Event.Create $ renumberMessage' mapping msg)
+commandToEvent mapping (Reply msg) = Just (Event.Answer $ renumberMessage' mapping msg)
 commandToEvent mapping (View p) = Event.Expand <$> M.lookup p mapping
-commandToEvent mapping (Send addr msg) = Event.Send (fromIntegral addr) <$> renumberMessage mapping msg
+commandToEvent mapping (Send addr msg) = Just (Event.Send (fromIntegral addr) $ renumberMessage' mapping msg)
 commandToEvent mapping Wait = Just Event.Submit

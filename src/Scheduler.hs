@@ -6,7 +6,7 @@ import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Set as S -- containers
 
-import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping )
+import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, stripLabel )
 import Workspace ( Workspace(identity), WorkspaceId )
 
 data Event
@@ -42,6 +42,7 @@ data SchedulerContext extra = SchedulerContext {
     getNextWorkspace :: IO (Maybe WorkspaceId),
     labelMessage :: Message -> IO Message,
     normalize :: Message -> IO Message,
+    canonicalize :: Message -> IO Message,
     generalize :: Message -> IO Message,
     dereference :: Pointer -> IO Message,
     reifyWorkspace :: WorkspaceId -> IO Message,
@@ -49,14 +50,14 @@ data SchedulerContext extra = SchedulerContext {
   }
 
 relabelMessage :: SchedulerContext extra -> Message -> IO Message
-relabelMessage ctxt (LabeledStructured _ ms) = labelMessage ctxt (Structured ms)
-relabelMessage ctxt msg = labelMessage ctxt msg
+relabelMessage ctxt = labelMessage ctxt . stripLabel
 
 fullyExpand :: SchedulerContext extra -> Message -> IO Message
-fullyExpand ctxt m = go S.empty m
-    where go !seen (Reference p) | p `S.notMember` seen = go (S.insert p seen) =<< dereference ctxt p
+fullyExpand ctxt m = go S.empty m -- TODO: Maybe maintain seen Messages to avoid issues with aliases.
+    where go !seen (Reference p) = go seen =<< dereference ctxt p
           go !seen (Structured ms) = Structured <$> mapM (go seen) ms
-          go !seen (LabeledStructured _ ms) = Structured <$> mapM (go seen) ms
+          go !seen (LabeledStructured p ms) | p `S.member` seen = return $ Reference p
+                                            | otherwise = Structured <$> mapM (go (S.insert p seen)) ms
           go !seen m = return m
 
 makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
