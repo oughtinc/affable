@@ -343,7 +343,8 @@ class User {
     }
 
     view(ptr: Pointer, path: string): Promise<Result<User>> {
-        const ws = this.workspace as Workspace;
+        const ws = this.workspace;
+        if(ws === null) throw 'User.view: null workspace';
         const expansion = ws.expandedPointers;
         const occurrences = this.expandedOccurrences;
 
@@ -383,11 +384,11 @@ class User {
     }
 
     wait(): Promise<Result<User>> {
-        return postWait([{userId:this.userId}, this.workspaceId, this.pending.toArray()]).then(r => this.postProcess(r.data));
+        return postWait([{userId: this.userId}, this.workspaceId, this.pending.toArray()]).then(r => this.postProcess(r.data));
     }
 
     next(): Promise<User | null> {
-        return postNext([{userId:this.userId}, this.sessionId]).then(response => {
+        return postNext([{userId: this.userId}, this.sessionId]).then(response => {
             const workspaceSession = response.data;
             if(workspaceSession === null) return null;
             const ws = workspaceSession[0];
@@ -626,7 +627,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
         const msg = messageParser(this.state.replyInputText);
         this.state.user.reply(msg).then(r => {
             if(r.tag === 'OK') {
-                this.setState({user: r.contents, askInputText: '', replyInputText: ''});
+                this.setState({user: r.contents, completions: List<Message>(), askInputText: '', replyInputText: ''});
             } else {
                 console.log(r);
             }
@@ -636,7 +637,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
     waitClick = (evt: React.MouseEvent) => {
         this.state.user.wait().then(r => {
             if(r.tag === 'OK') {
-                this.setState({user: r.contents, askInputText: '', replyInputText: ''});
+                this.setState({user: r.contents, completions: List<Message>(), askInputText: '', replyInputText: ''});
             } else {
                 console.log(r);
             }

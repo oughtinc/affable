@@ -35099,6 +35099,8 @@
         User.prototype.view = function (ptr, path) {
             var _this = this;
             var ws = this.workspace;
+            if (ws === null)
+                throw 'User.view: null workspace';
             var expansion = ws.expandedPointers;
             var occurrences = this.expandedOccurrences;
             if (expansion.has(ptr)) {
@@ -35262,7 +35264,7 @@
                 var msg = messageParser(_this.state.replyInputText);
                 _this.state.user.reply(msg).then(function (r) {
                     if (r.tag === 'OK') {
-                        _this.setState({ user: r.contents, askInputText: '', replyInputText: '' });
+                        _this.setState({ user: r.contents, completions: List(), askInputText: '', replyInputText: '' });
                     }
                     else {
                         console.log(r);
@@ -35272,7 +35274,7 @@
             _this.waitClick = function (evt) {
                 _this.state.user.wait().then(function (r) {
                     if (r.tag === 'OK') {
-                        _this.setState({ user: r.contents, askInputText: '', replyInputText: '' });
+                        _this.setState({ user: r.contents, completions: List(), askInputText: '', replyInputText: '' });
                     }
                     else {
                         console.log(r);
