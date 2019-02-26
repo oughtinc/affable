@@ -32860,7 +32860,7 @@
      *
      * http://pegjs.org/
      */
-    /** @type {(input: string, options?: any) => any */
+
     const messageParser = (function() {
       function peg$subclass(child, parent) {
         function ctor() { this.constructor = child; }
@@ -33001,25 +33001,30 @@
               peg$otherExpectation("message"),
               function(msgs) { return {tag: 'Structured', contents: msgs}; },
               peg$otherExpectation("submessage"),
+              "[$",
+              peg$literalExpectation("[$", false),
+              /^[0-9]/,
+              peg$classExpectation([["0", "9"]], false, false),
+              ": ",
+              peg$literalExpectation(": ", false),
+              "]",
+              peg$literalExpectation("]", false),
+              function(digits, msgs) { return {tag: 'LabeledStructured', contents: [parseInt(digits.join(''), 10), msgs]}; },
+              "[",
+              peg$literalExpectation("[", false),
               /^[^\][$]/,
               peg$classExpectation(["]", "[", "$"], true, false),
               function() { return {tag: 'Text', contents: text()}; },
-              "[",
-              peg$literalExpectation("[", false),
-              "]",
-              peg$literalExpectation("]", false),
               peg$otherExpectation("pointer"),
               "$",
               peg$literalExpectation("$", false),
-              /^[0-9]/,
-              peg$classExpectation([["0", "9"]], false, false),
               function(digits) { return {tag: 'Reference', contents: parseInt(digits.join(''), 10)}; }
             ],
 
             peg$bytecode = [
               peg$decode("<%$;!/&#0#*;!&&&#/' 8!:!!! )=.\" 7 "),
-              peg$decode("<;\".\x87 &%$4#\"\"5!7$/,#0)*4#\"\"5!7$&&&#/& 8!:%! ).] &%2&\"\"6&7'/M#$;!/&#0#*;!&&&#/7$2(\"\"6(7)/($8#:!#!!)(#'#(\"'#&'#=.\" 7\""),
-              peg$decode("<%2+\"\"6+7,/J#$4-\"\"5!7./,#0)*4-\"\"5!7.&&&#/($8\":/\"! )(\"'#&'#=.\" 7*")
+              peg$decode("<;\".\xF9 &%2#\"\"6#7$/\x7F#$4%\"\"5!7&/,#0)*4%\"\"5!7&&&&#/]$2'\"\"6'7(/N$$;!/&#0#*;!&&&#/8$2)\"\"6)7*/)$8%:+%\"#!)(%'#($'#(#'#(\"'#&'#.\x87 &%2,\"\"6,7-/M#$;!/&#0#*;!&&&#/7$2)\"\"6)7*/($8#:!#!!)(#'#(\"'#&'#.G &%$4.\"\"5!7//,#0)*4.\"\"5!7/&&&#/& 8!:0! )=.\" 7\""),
+              peg$decode("<%22\"\"6273/J#$4%\"\"5!7&/,#0)*4%\"\"5!7&&&&#/($8\":4\"! )(\"'#&'#=.\" 71")
             ],
 
             peg$currPos          = 0,
@@ -34806,6 +34811,7 @@
                     return '[]';
                 }).join('');
             default:
+                console.log(msg);
                 throw "messageShape: Shouldn't happen";
         }
     }
@@ -34818,8 +34824,9 @@
             case 'Structured':
                 return '[' + msg.contents.map(messageToString).join('') + ']';
             case 'LabeledStructured':
-                return '[$' + msg.contents[0] + ': ' + msg.contents.slice(1).map(messageToString).join('') + ']';
+                return '[$' + msg.contents[0] + ': ' + msg.contents[1].map(messageToString).join('') + ']';
             default:
+                console.log(msg);
                 throw "messageToString: Shouldn't happen";
         }
     }
@@ -34842,7 +34849,7 @@
                 });
                 return substs;
             case 'LabeledStructured':
-                msg.contents.slice(1).forEach(function (m) {
+                msg.contents[1].forEach(function (m) {
                     switch (m.tag) {
                         case 'Text':
                             return;
@@ -34853,6 +34860,7 @@
                 });
                 return substs;
             default:
+                console.log(msg);
                 throw "getSubstitutes: Shouldn't happen";
         }
     }
@@ -34880,6 +34888,7 @@
                 msg.contents[1].forEach(function (m) { return mappingFromMessage(mapping, expansion, m); });
                 return;
             default:
+                console.log(msg);
                 throw "mappingFromMessage: Something's wrong";
         }
     }
@@ -34903,8 +34912,9 @@
                 return { tag: 'Structured', contents: msg.contents.map(function (m) { return renumberMessage(mapping, m); }) };
             case 'LabeledStructured':
                 return { tag: 'LabeledStructured',
-                    contents: [mapping.get(msg.contents[0])].concat(msg.contents.slice(1).map(function (m) { return renumberMessage(mapping, m); })) };
+                    contents: [mapping.get(msg.contents[0]), msg.contents[1].map(function (m) { return renumberMessage(mapping, m); })] };
             default:
+                console.log([mapping, msg]);
                 throw "renumberMessage: Something's wrong";
         }
     }

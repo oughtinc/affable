@@ -14,9 +14,9 @@ Top "message"
 
 Msg "submessage"
   = Pointer
-  / [^\]\[$]+ { return {tag: 'Text', contents: text()}; }
+  / "[$" digits:[0-9]+ ": " msgs:Msg+ "]" { return {tag: 'LabeledStructured', contents: [parseInt(digits.join(''), 10), msgs]}; }
   / "[" msgs:Msg+ "]" { return {tag: 'Structured', contents: msgs}; }
-  / "[" "$" digits:[0-9]+ ": " msgs:Msg+ "]" { return {tag: 'LabeledStructured', contents: [parseInt(digits.join(''), 10), ...msgs]}; }
+  / [^\]\[$]+ { return {tag: 'Text', contents: text()}; }
 
 Pointer "pointer"
   = "$" digits:[0-9]+ { return {tag: 'Reference', contents: parseInt(digits.join(''), 10)}; }
@@ -36,12 +36,13 @@ function messageShape(msg: Message, substitutes: Array<string>): string {
             return '[]';
         case 'Structured':
             let i = 0;
-            return msg.contents.map((m: Message) => {
+            return msg.contents.map(m => {
                 if(m.tag === 'Text') return m.contents;
                 if(substitutes.length > i++) return substitutes[i-1];
                 return '[]';
             }).join('');
         default:
+            console.log(msg);
             throw "messageShape: Shouldn't happen";
     }
 }
@@ -55,8 +56,9 @@ function messageToString(msg: Message): string {
         case 'Structured':
             return '[' + msg.contents.map(messageToString).join('') + ']';
         case 'LabeledStructured':
-            return '[$' + msg.contents[0] + ': ' + msg.contents.slice(1).map(messageToString).join('') + ']';
+            return '[$' + msg.contents[0] + ': ' + msg.contents[1].map(messageToString).join('') + ']';
         default:
+            console.log(msg);
             throw "messageToString: Shouldn't happen";
     }
 }
@@ -69,7 +71,7 @@ function getSubstitutes(msg: Message): Array<string> {
         case 'Reference':
             return ['$' + msg.contents];
         case 'Structured':
-            msg.contents.forEach((m: Message) => {
+            msg.contents.forEach(m => {
                 switch(m.tag) {
                     case 'Text':
                         return;
@@ -80,7 +82,7 @@ function getSubstitutes(msg: Message): Array<string> {
             });
             return substs;
         case 'LabeledStructured': // TODO: Is this the right thing to do?
-            msg.contents.slice(1).forEach((m: Message) => {
+            msg.contents[1].forEach(m  => {
                 switch(m.tag) {
                     case 'Text':
                         return;
@@ -91,6 +93,7 @@ function getSubstitutes(msg: Message): Array<string> {
             });
             return substs;
         default:
+            console.log(msg);
             throw "getSubstitutes: Shouldn't happen";
     }
 }
@@ -110,16 +113,17 @@ function mappingFromMessage(mapping: {nextPointer: number, [ptr: number]: Pointe
             }
             return;
         case 'Structured':
-            msg.contents.forEach((m: Message) => mappingFromMessage(mapping, expansion, m));
+            msg.contents.forEach(m => mappingFromMessage(mapping, expansion, m));
             return;
         case 'LabeledStructured':
             const label = msg.contents[0];
             if(!(label in mapping)) {
                 mapping[label] = mapping.nextPointer++;
             }
-            msg.contents[1].forEach((m: Message) => mappingFromMessage(mapping, expansion, m));
+            msg.contents[1].forEach(m => mappingFromMessage(mapping, expansion, m));
             return;
         default:
+            console.log(msg);
             throw "mappingFromMessage: Something's wrong";
     }
 }
@@ -138,13 +142,14 @@ function renumberMessage(mapping: Mapping, msg: Message): Message {
         case 'Text':
             return msg;
         case 'Reference':
-            return {tag: 'Reference', contents: mapping.get(msg.contents)};
+            return {tag: 'Reference', contents: mapping.get(msg.contents) as number};
         case 'Structured':
-            return {tag: 'Structured', contents: msg.contents.map((m: Message) => renumberMessage(mapping, m))};
+            return {tag: 'Structured', contents: msg.contents.map(m => renumberMessage(mapping, m))};
         case 'LabeledStructured':
             return {tag: 'LabeledStructured',
-                    contents: [mapping.get(msg.contents[0]), ...msg.contents.slice(1).map((m: Message) => renumberMessage(mapping, m))]};
+                    contents: [mapping.get(msg.contents[0]) as number, msg.contents[1].map(m => renumberMessage(mapping, m))]};
         default:
+            console.log([mapping, msg]);
             throw "renumberMessage: Something's wrong";
     }
 }
@@ -180,11 +185,11 @@ const MessageComponent: React.FunctionComponent<MessageProps> = (props) => {
             }
         case 'Structured':
             if(props.isSubmessage) {
-                return <span data-path={path}>[{msg.contents.map((m: Message, i: number) =>
+                return <span data-path={path}>[{msg.contents.map((m, i) =>
                                 <MessageComponent {...props} key={i} message={m} path={path+'.'+i} isSubmessage={true} />)}]
                        </span>;
             } else {
-                return <span data-path={path}>{msg.contents.map((m: Message, i: number) =>
+                return <span data-path={path}>{msg.contents.map((m, i) =>
                                 <MessageComponent {...props} key={i} message={m} path={path+'.'+i} isSubmessage={true} />)}
                        </span>;
             }
@@ -195,7 +200,7 @@ const MessageComponent: React.FunctionComponent<MessageProps> = (props) => {
                         {mapping.get(label)}
                     </span>
                     <span className="pointer-bracket left">[</span>
-                    {msg.contents[1].map((m: Message, i: number) =>
+                    {msg.contents[1].map((m, i) =>
                             <MessageComponent {...props} key={i} message={m} path={path+'.'+i} isSubmessage={true} />)}
                     <span className="pointer-bracket right">]</span>
                    </span>;

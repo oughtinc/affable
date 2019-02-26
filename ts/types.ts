@@ -8,10 +8,27 @@ export type Pointer = number;
 
 export type MessageTag = 'Text' | 'Reference' | 'Structured' | 'LabeledStructured';
 
-export interface Message {
-    tag: MessageTag,
-    contents: any // TODO: Make more specific.
+export interface TextMessage {
+    tag: 'Text',
+    contents: string
 };
+
+export interface ReferenceMessage {
+    tag: 'Reference',
+    contents: number
+};
+
+export interface StructuredMessage {
+    tag: 'Structured',
+    contents: Array<Message>
+};
+
+export interface LabeledStructuredMessage {
+    tag: 'LabeledStructured',
+    contents: [number, Array<Message>]
+};
+
+export type Message = TextMessage | ReferenceMessage | StructuredMessage | LabeledStructuredMessage;
 
 export type Mapping = Map<Pointer, Pointer>;
 

@@ -3,7 +3,7 @@
  *
  * http://pegjs.org/
  */
-/** @type {(input: string, options?: any) => any */
+
 export const messageParser = (function() {
   function peg$subclass(child, parent) {
     function ctor() { this.constructor = child; }
@@ -144,25 +144,30 @@ export const messageParser = (function() {
           peg$otherExpectation("message"),
           function(msgs) { return {tag: 'Structured', contents: msgs}; },
           peg$otherExpectation("submessage"),
+          "[$",
+          peg$literalExpectation("[$", false),
+          /^[0-9]/,
+          peg$classExpectation([["0", "9"]], false, false),
+          ": ",
+          peg$literalExpectation(": ", false),
+          "]",
+          peg$literalExpectation("]", false),
+          function(digits, msgs) { return {tag: 'LabeledStructured', contents: [parseInt(digits.join(''), 10), msgs]}; },
+          "[",
+          peg$literalExpectation("[", false),
           /^[^\][$]/,
           peg$classExpectation(["]", "[", "$"], true, false),
           function() { return {tag: 'Text', contents: text()}; },
-          "[",
-          peg$literalExpectation("[", false),
-          "]",
-          peg$literalExpectation("]", false),
           peg$otherExpectation("pointer"),
           "$",
           peg$literalExpectation("$", false),
-          /^[0-9]/,
-          peg$classExpectation([["0", "9"]], false, false),
           function(digits) { return {tag: 'Reference', contents: parseInt(digits.join(''), 10)}; }
         ],
 
         peg$bytecode = [
           peg$decode("<%$;!/&#0#*;!&&&#/' 8!:!!! )=.\" 7 "),
-          peg$decode("<;\".\x87 &%$4#\"\"5!7$/,#0)*4#\"\"5!7$&&&#/& 8!:%! ).] &%2&\"\"6&7'/M#$;!/&#0#*;!&&&#/7$2(\"\"6(7)/($8#:!#!!)(#'#(\"'#&'#=.\" 7\""),
-          peg$decode("<%2+\"\"6+7,/J#$4-\"\"5!7./,#0)*4-\"\"5!7.&&&#/($8\":/\"! )(\"'#&'#=.\" 7*")
+          peg$decode("<;\".\xF9 &%2#\"\"6#7$/\x7F#$4%\"\"5!7&/,#0)*4%\"\"5!7&&&&#/]$2'\"\"6'7(/N$$;!/&#0#*;!&&&#/8$2)\"\"6)7*/)$8%:+%\"#!)(%'#($'#(#'#(\"'#&'#.\x87 &%2,\"\"6,7-/M#$;!/&#0#*;!&&&#/7$2)\"\"6)7*/($8#:!#!!)(#'#(\"'#&'#.G &%$4.\"\"5!7//,#0)*4.\"\"5!7/&&&#/& 8!:0! )=.\" 7\""),
+          peg$decode("<%22\"\"6273/J#$4%\"\"5!7&/,#0)*4%\"\"5!7&&&&#/($8\":4\"! )(\"'#&'#=.\" 71")
         ],
 
         peg$currPos          = 0,
