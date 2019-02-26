@@ -28,15 +28,21 @@ function escapeHTML(html: string): string {
     return dummy.innerHTML;
 }
 
-function messageShape(msg: Message, substitutes: Array<string>): string {
+function messageShape(msg: Message, substitutes: Array<string> = []): string {
+    let i = 0;
     switch(msg.tag) {
         case 'Text':
             return msg.contents;
         case 'Reference':
             return '[]';
         case 'Structured':
-            let i = 0;
             return msg.contents.map(m => {
+                if(m.tag === 'Text') return m.contents;
+                if(substitutes.length > i++) return substitutes[i-1];
+                return '[]';
+            }).join('');
+        case 'LabeledStructured': // TODO: Think about this.
+            return msg.contents[1].map(m => {
                 if(m.tag === 'Text') return m.contents;
                 if(substitutes.length > i++) return substitutes[i-1];
                 return '[]';
@@ -96,6 +102,13 @@ function getSubstitutes(msg: Message): Array<string> {
             console.log(msg);
             throw "getSubstitutes: Shouldn't happen";
     }
+}
+
+function addCompletion(completions: List<Message>, msg: Message): List<Message> {
+    const shape = messageShape(msg);
+    const shapes = completions.map(m => messageShape(m));
+    if(shapes.findIndex(s => s === shape) !== -1) return completions;
+    return completions.push(msg);
 }
 
 function mappingFromMessage(mapping: Mapping /* mutable */, expansion: Expansion, msg: Message): void {
@@ -310,6 +323,7 @@ class User {
             question: ws.question,
             subQuestions: ws.subQuestions.push([null, msg2, null])
         };
+
         const user = new User(this.userId,
                               this.sessionId,
                               this.pending.push({Left: msg2}),
@@ -428,7 +442,7 @@ const TextInputComponent: React.FunctionComponent<TextInputProps> = (props) => {
 
 interface TypeAheadProps extends ButtonProps {
     selectedValue: string | null,
-    completions: Array<Message>,
+    completions: List<Message>,
     onStateChange?: (options: StateChangeOptions<string>, stateAndHelpers: ControllerStateAndHelpers<string>) => void
 }
 
@@ -443,7 +457,7 @@ const TypeAheadComponent: React.FunctionComponent<TypeAheadProps> = (props) => {
                     const substs = getSubstitutes(msg);
                     const shape = messageShape(msg, substs);
                     const items = completions.map(m => messageShape(m, substs));
-                    matches = matchSorter(items, shape); // TODO: Limit the number of outputs by slicing matches.
+                    matches = matchSorter(items.toArray(), shape); // TODO: Limit the number of outputs by slicing matches.
                 }
             } catch { // TODO: Probably make this tighter. It's to handle messageParser failing to parse which will be common.
                 // Do nothing
@@ -470,7 +484,7 @@ const TypeAheadComponent: React.FunctionComponent<TypeAheadProps> = (props) => {
 
 interface NewQuestionProps {
     selectedValue: string | null,
-    completions: Array<Message>,
+    completions: List<Message>,
     onStateChange?: (options: StateChangeOptions<string>, stateAndHelpers: ControllerStateAndHelpers<string>) => void,
     onClick: (evt: React.MouseEvent) => void
 }
@@ -510,7 +524,7 @@ interface MainProps {
 
 interface MainState {
     user: User,
-    completions?: Array<Message>,
+    completions: List<Message>,
     askInputText: string | null,
     replyInputText: string
 }
@@ -520,7 +534,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
 
     constructor(props: MainProps) {
         super(props);
-        this.state = {user: new User(props.userId, props.sessionId), askInputText: '', replyInputText: ''};
+        this.state = {user: new User(props.userId, props.sessionId), completions: List<Message>(), askInputText: '', replyInputText: ''};
     }
 
     askStateChange = (changes: StateChangeOptions<string>) => {
@@ -552,7 +566,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
                        </div>
                        <NewQuestionComponent
                         selectedValue={askInputText}
-                        completions={completions === void(0) ? [] : completions}
+                        completions={completions}
                         onStateChange={this.askStateChange}
                         onClick={this.askClick} />
                        <WaitComponent onClick={this.waitClick} />
@@ -588,7 +602,9 @@ class MainComponent extends React.Component<MainProps, MainState> {
                 // Do nothing but probably want to tell the user that.
             } else {
                 return getCompletions(user.sessionId as number).then(r => {
-                    this.setState({user: user, completions: r.data, askInputText: '', replyInputText: ''});
+                    const q = (user.workspace as Workspace).question;
+                    const completions = addCompletion(List<Message>(r.data), q);
+                    this.setState({user: user, completions: completions, askInputText: '', replyInputText: ''});
                 });
             }
         });
@@ -599,7 +615,10 @@ class MainComponent extends React.Component<MainProps, MainState> {
         if(askInputText === null) return;
         const msg = messageParser(askInputText);
         this.state.user.ask(msg).then(user => {
-            this.setState({...this.state, user: user, askInputText: ''});
+            const q = (user.workspace as Workspace).subQuestions.last(null);
+            if(q === null) throw "askClick: Shouldn't happen";
+            const completions = addCompletion(this.state.completions, q[1]);
+            this.setState({...this.state, user: user, completions: completions, askInputText: ''});
         });
     };
 

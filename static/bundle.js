@@ -34796,18 +34796,27 @@
         return dummy.innerHTML;
     }
     function messageShape(msg, substitutes) {
+        if (substitutes === void 0) { substitutes = []; }
+        var i = 0;
         switch (msg.tag) {
             case 'Text':
                 return msg.contents;
             case 'Reference':
                 return '[]';
             case 'Structured':
-                var i_1 = 0;
                 return msg.contents.map(function (m) {
                     if (m.tag === 'Text')
                         return m.contents;
-                    if (substitutes.length > i_1++)
-                        return substitutes[i_1 - 1];
+                    if (substitutes.length > i++)
+                        return substitutes[i - 1];
+                    return '[]';
+                }).join('');
+            case 'LabeledStructured':
+                return msg.contents[1].map(function (m) {
+                    if (m.tag === 'Text')
+                        return m.contents;
+                    if (substitutes.length > i++)
+                        return substitutes[i - 1];
                     return '[]';
                 }).join('');
             default:
@@ -34863,6 +34872,13 @@
                 console.log(msg);
                 throw "getSubstitutes: Shouldn't happen";
         }
+    }
+    function addCompletion(completions, msg) {
+        var shape = messageShape(msg);
+        var shapes = completions.map(function (m) { return messageShape(m); });
+        if (shapes.findIndex(function (s) { return s === shape; }) !== -1)
+            return completions;
+        return completions.push(msg);
     }
     function mappingFromMessage(mapping, expansion, msg) {
         switch (msg.tag) {
@@ -35160,7 +35176,7 @@
                     var substs_1 = getSubstitutes(msg);
                     var shape = messageShape(msg, substs_1);
                     var items = completions.map(function (m) { return messageShape(m, substs_1); });
-                    matches = matchSorter(items, shape);
+                    matches = matchSorter(items.toArray(), shape);
                 }
             }
             catch (_a) {
@@ -35222,7 +35238,9 @@
                     if (user === null) ;
                     else {
                         return getCompletions(user.sessionId).then(function (r) {
-                            _this.setState({ user: user, completions: r.data, askInputText: '', replyInputText: '' });
+                            var q = user.workspace.question;
+                            var completions = addCompletion(List(r.data), q);
+                            _this.setState({ user: user, completions: completions, askInputText: '', replyInputText: '' });
                         });
                     }
                 });
@@ -35233,7 +35251,11 @@
                     return;
                 var msg = messageParser(askInputText);
                 _this.state.user.ask(msg).then(function (user) {
-                    _this.setState(__assign({}, _this.state, { user: user, askInputText: '' }));
+                    var q = user.workspace.subQuestions.last(null);
+                    if (q === null)
+                        throw "askClick: Shouldn't happen";
+                    var completions = addCompletion(_this.state.completions, q[1]);
+                    _this.setState(__assign({}, _this.state, { user: user, completions: completions, askInputText: '' }));
                 });
             };
             _this.replyClick = function (evt) {
@@ -35257,7 +35279,7 @@
                     }
                 });
             };
-            _this.state = { user: new User(props.userId, props.sessionId), askInputText: '', replyInputText: '' };
+            _this.state = { user: new User(props.userId, props.sessionId), completions: List(), askInputText: '', replyInputText: '' };
             return _this;
         }
         MainComponent.prototype.render = function () {
@@ -35281,7 +35303,7 @@
                     react_4("div", { className: "subQuestions cell" }, workspace.subQuestions.map(function (q, i) {
                         return react_4(SubQuestionComponent, __assign({ key: i, index: i }, ctxtProps_1, { question: q[1], answer: q[2] }));
                     })),
-                    react_4(NewQuestionComponent, { selectedValue: askInputText, completions: completions === void (0) ? [] : completions, onStateChange: this.askStateChange, onClick: this.askClick }),
+                    react_4(NewQuestionComponent, { selectedValue: askInputText, completions: completions, onStateChange: this.askStateChange, onClick: this.askClick }),
                     react_4(WaitComponent, { onClick: this.waitClick }),
                     react_4(ReplyComponent, { inputText: this.state.replyInputText, onClick: this.replyClick, onChange: this.replyInputChange }));
             }
