@@ -1,10 +1,13 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 module SqliteSchedulerContext ( makeSqliteSchedulerContext ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
+import Data.Maybe ( mapMaybe ) -- base
 import Data.String ( fromString ) -- base
 import Data.Text ( Text ) -- text
+import Data.Traversable ( mapAccumL ) -- base
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
                                 query, query_, execute, execute_, executeMany, executeNamed, lastInsertRowId, withTransaction ) -- sqlite-simple
 
@@ -12,7 +15,8 @@ import Command ( Command(..), commandToBuilder )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
                  canonicalizeMessage, renumberMessage', boundPointers )
-import Scheduler ( SchedulerContext(..), UserId, SessionId )
+import Scheduler ( SchedulerContext(..), Event, UserId, SessionId )
+import qualified Scheduler as Event ( Event(..) )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Lock, newLock, withLock )
 import Workspace ( Workspace(..), WorkspaceId )
@@ -34,7 +38,7 @@ makeSqliteSchedulerContext conn = do
             getNextWorkspace = getNextWorkspaceSqlite lock conn,
             labelMessage = labelMessageSqlite lock conn,
             normalize = insertMessagePointers lock conn,
-            canonicalize = canonicalizeMessageSqlite lock conn,
+            canonicalizeEvents = canonicalizeEventsSqlite lock conn,
             generalize = insertGeneralizedMessagePointers lock conn,
             dereference = dereferenceSqlite lock conn,
             reifyWorkspace = reifyWorkspaceSqlite lock conn,
@@ -115,25 +119,41 @@ workspaceToMessage workspaces workspaceId = go (M.lookup workspaceId workspaces)
                   goMsg 1 (m:ms) = m:goMsg 2 ms
                   goMsg i (m:ms) = Text (fromString (' ':show i ++ ". ")):m:goMsg (i+1) ms
 
+
+renumberEvent :: PointerRemapping -> Event -> Event
+renumberEvent mapping (Event.Create m) = Event.Create (renumberMessage' mapping m)
+renumberEvent mapping (Event.Answer m) = Event.Answer (renumberMessage' mapping m)
+renumberEvent mapping (Event.Send loc m) = Event.Send loc (renumberMessage' mapping m)
+renumberEvent mapping m = m
+
+eventMessage :: Event -> Maybe Message
+eventMessage (Event.Create m) = Just m
+eventMessage (Event.Answer m) = Just m
+eventMessage (Event.Send _ m) = Just m
+eventMessage _ = Nothing
+
 -- TODO: Rename.
 -- This takes a Message from the user where the LabeledStructures represent binding forms and produces
 -- a Message and pointer state that corresponds to that binding structure.
-canonicalizeMessageSqlite :: Lock -> Connection -> Message -> IO Message
-canonicalizeMessageSqlite lock conn msg = do
-    case boundPointers msg of
-        Right env -> do
+canonicalizeEventsSqlite :: Lock -> Connection -> [Event] -> IO [Event]
+canonicalizeEventsSqlite lock conn evts = do
+    case traverse boundPointers $ mapMaybe eventMessage evts of
+        Right envs -> do
+            let !env = M.unions envs -- TODO: XXX There could be re-use of bound variables, so this needs to be handled in a smarter manner.
             withLock lock $ do
                 withTransaction conn $ do
                     [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
                     let !firstPointerId = maybe 0 succ lastPointerId
                     let !topPointerId = firstPointerId + M.size env - 1
                     let !mapping = M.fromList (zip (M.keys env) [firstPointerId ..])
-                    let !msg' = renumberMessage' mapping msg
-                    let (pEnv, _) = canonicalizeMessage (topPointerId + 1) msg'
+                    let !evts' = map (renumberEvent mapping) evts
+                    let canonicalizeMsg !top msg = (top + M.size pEnv, pEnv)
+                            where (pEnv, _) = canonicalizeMessage top msg
+                    let !pEnv = M.unions $ snd $ mapAccumL canonicalizeMsg (topPointerId + 1) (mapMaybe eventMessage evts')
                     executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-                    return msg'
+                    return evts'
         -- Left p -> return (Left p)
-        -- TODO: XXX Either decide to assume msg is well-formed, and enforce it, or propagate the error.
+        -- TODO: XXX Either decide to assume evts is well-formed, and enforce it, or propagate the error.
 
 -- TODO: Bulkify this.
 -- CACHEABLE

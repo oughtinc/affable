@@ -42,7 +42,7 @@ data SchedulerContext extra = SchedulerContext {
     getNextWorkspace :: IO (Maybe WorkspaceId),
     labelMessage :: Message -> IO Message,
     normalize :: Message -> IO Message,
-    canonicalize :: Message -> IO Message,
+    canonicalizeEvents :: [Event] -> IO [Event],
     generalize :: Message -> IO Message,
     dereference :: Pointer -> IO Message,
     reifyWorkspace :: WorkspaceId -> IO Message,

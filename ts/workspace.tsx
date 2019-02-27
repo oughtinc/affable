@@ -111,28 +111,32 @@ function addCompletion(completions: List<Message>, msg: Message): List<Message> 
     return completions.push(msg);
 }
 
-function mappingFromMessage(mapping: Mapping /* mutable */, expansion: Expansion, msg: Message): void {
+function mappingFromMessage(mapping: Mapping /* mutable */, expansion: Expansion, msg: Message, seen: Set<Pointer> = Set().asMutable()): void {
     switch(msg.tag) {
         case 'Text':
             return; // Nothing to do.
         case 'Reference':
             const p = msg.contents;
+            if(seen.has(p)) return;
+            seen.add(p);
             if(!(mapping.has(p))) {
                 mapping.set(p, mapping.size);
             }
             if(expansion.has(p)) {
-                mappingFromMessage(mapping, expansion, expansion.get(p) as Message);
+                mappingFromMessage(mapping, expansion, expansion.get(p) as Message, seen);
             }
             return;
         case 'Structured':
-            msg.contents.forEach(m => mappingFromMessage(mapping, expansion, m));
+            msg.contents.forEach(m => mappingFromMessage(mapping, expansion, m), seen);
             return;
         case 'LabeledStructured':
             const label = msg.contents[0];
+            if(seen.has(label)) return;
+            seen.add(label);
             if(!(mapping.has(label))) {
                 mapping.set(label, mapping.size);
             }
-            msg.contents[1].forEach(m => mappingFromMessage(mapping, expansion, m));
+            msg.contents[1].forEach(m => mappingFromMessage(mapping, expansion, m), seen);
             return;
         default:
             console.log(msg);
@@ -540,9 +544,9 @@ class MainComponent extends React.Component<MainProps, MainState> {
 
     askStateChange = (changes: StateChangeOptions<string>) => {
         if(changes.hasOwnProperty('selectedItem')) {
-            this.setState(state => { return {...state, askInputText: changes.selectedItem as string | null}; });
+            this.setState({askInputText: changes.selectedItem as string | null});
         } else if(changes.hasOwnProperty('inputValue')) {
-            this.setState(state => { return {...state, askInputText: changes.inputValue as string | null}; });
+            this.setState({askInputText: changes.inputValue as string | null});
         }
     }
 
@@ -578,7 +582,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
 
     replyInputChange = (evt: React.ChangeEvent) => {
         const target = evt.target as HTMLInputElement;
-        this.setState(state => { return {...state, replyInputText: target.value}; });
+        this.setState({replyInputText: target.value});
     };
 
     pointerClick = (evt: React.MouseEvent) => {
@@ -586,7 +590,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
         if(target !== null && (target.classList.contains('unexpanded') || target.classList.contains('expanded'))) {
             this.state.user.view(parseInt(target.dataset.original as string, 10), target.dataset.path as string).then(r => {
                 if(r.tag === 'OK') {
-                    this.setState(state => { return {...state, user: r.contents}; });
+                    this.setState({user: r.contents});
                 } else {
                     console.log(r);
                 }
@@ -618,7 +622,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
         this.state.user.ask(msg).then(user => {
             const q = (user.workspace as Workspace).subQuestions.last(null);
             if(q === null) throw "askClick: Shouldn't happen";
-            this.setState(state => { return {...state, user: user, completions: addCompletion(state.completions, q[1]), askInputText: ''}; });
+            this.setState(state => { return {user: user, completions: addCompletion(state.completions, q[1]), askInputText: ''}; });
         });
     };
 

@@ -26,7 +26,7 @@ import Completions ( CompletionContext(..) )
 import Exp ( Pattern, Name(..), Exp(..) )
 import Message ( Message(..), Pointer, stripLabel )
 import Scheduler ( SessionId, UserId, Event(..), SchedulerFn, SchedulerContext(..),
-                   firstUserId, getWorkspace, createInitialWorkspace, normalize, generalize, relabelMessage, createWorkspace )
+                   firstUserId, getWorkspace, createInitialWorkspace, createWorkspace )
 import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext' )
 import SqliteCompletionContext ( makeSqliteCompletionContext )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
@@ -171,21 +171,22 @@ initServer conn = do
                         _ -> return r
 
         -- TODO: Check if userID is in userIdRef. If not, then ignore.
-        replyFromUser userId workspaceId [evt] = do
-            (ss, sessionId) <- userSessionState userId
-            let !responseMVarsRef = sessionResponseMVarsRef ss
-            Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
-            updateUserSession userId sessionId Nothing
-            putMVar responseMVar (userId, evt)
-        replyFromUser userId workspaceId (evt:evts) = do
-            (ss, sessionId) <- userSessionState userId
-            let !responseMVarsRef = sessionResponseMVarsRef ss
-                !drainingMVarsRef = sessionDrainingMVarsRef ss
-            Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
-            modifyIORef' drainingMVarsRef (M.insert workspaceId responseMVar)
-            updateUserSession userId sessionId Nothing
-            putMVar responseMVar (userId, evt)
-            mapM_ (putMVar responseMVar . (,) userId) evts -- NOTE: This assumes that a sort of protocol between the interpreter and this and will block forever if it is not met.
+        replyFromUser userId workspaceId evts = go =<< canonicalizeEvents ctxt evts
+            where go [evt] = do
+                    (ss, sessionId) <- userSessionState userId
+                    let !responseMVarsRef = sessionResponseMVarsRef ss
+                    Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
+                    updateUserSession userId sessionId Nothing
+                    putMVar responseMVar (userId, evt)
+                  go (evt:evts) = do
+                    (ss, sessionId) <- userSessionState userId
+                    let !responseMVarsRef = sessionResponseMVarsRef ss
+                        !drainingMVarsRef = sessionDrainingMVarsRef ss
+                    Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
+                    modifyIORef' drainingMVarsRef (M.insert workspaceId responseMVar)
+                    updateUserSession userId sessionId Nothing
+                    putMVar responseMVar (userId, evt)
+                    mapM_ (putMVar responseMVar . (,) userId) evts -- NOTE: This assumes that a sort of protocol between the interpreter and this and will block forever if it is not met.
 
         begin = do
             initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
