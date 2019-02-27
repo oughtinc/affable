@@ -540,9 +540,9 @@ class MainComponent extends React.Component<MainProps, MainState> {
 
     askStateChange = (changes: StateChangeOptions<string>) => {
         if(changes.hasOwnProperty('selectedItem')) {
-            this.setState({...this.state, askInputText: changes.selectedItem as string | null});
+            this.setState(state => { return {...state, askInputText: changes.selectedItem as string | null}; });
         } else if(changes.hasOwnProperty('inputValue')) {
-            this.setState({...this.state, askInputText: changes.inputValue as string | null});
+            this.setState(state => { return {...state, askInputText: changes.inputValue as string | null}; });
         }
     }
 
@@ -578,7 +578,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
 
     replyInputChange = (evt: React.ChangeEvent) => {
         const target = evt.target as HTMLInputElement;
-        this.setState({...this.state, replyInputText: target.value});
+        this.setState(state => { return {...state, replyInputText: target.value}; });
     };
 
     pointerClick = (evt: React.MouseEvent) => {
@@ -586,7 +586,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
         if(target !== null && (target.classList.contains('unexpanded') || target.classList.contains('expanded'))) {
             this.state.user.view(parseInt(target.dataset.original as string, 10), target.dataset.path as string).then(r => {
                 if(r.tag === 'OK') {
-                    this.setState({...this.state, user: r.contents});
+                    this.setState(state => { return {...state, user: r.contents}; });
                 } else {
                     console.log(r);
                 }
@@ -618,8 +618,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
         this.state.user.ask(msg).then(user => {
             const q = (user.workspace as Workspace).subQuestions.last(null);
             if(q === null) throw "askClick: Shouldn't happen";
-            const completions = addCompletion(this.state.completions, q[1]);
-            this.setState({...this.state, user: user, completions: completions, askInputText: ''});
+            this.setState(state => { return {...state, user: user, completions: addCompletion(state.completions, q[1]), askInputText: ''}; });
         });
     };
 

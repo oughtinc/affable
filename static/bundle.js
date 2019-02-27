@@ -35211,22 +35211,22 @@
             var _this = _super.call(this, props) || this;
             _this.askStateChange = function (changes) {
                 if (changes.hasOwnProperty('selectedItem')) {
-                    _this.setState(__assign({}, _this.state, { askInputText: changes.selectedItem }));
+                    _this.setState(function (state) { return __assign({}, state, { askInputText: changes.selectedItem }); });
                 }
                 else if (changes.hasOwnProperty('inputValue')) {
-                    _this.setState(__assign({}, _this.state, { askInputText: changes.inputValue }));
+                    _this.setState(function (state) { return __assign({}, state, { askInputText: changes.inputValue }); });
                 }
             };
             _this.replyInputChange = function (evt) {
                 var target = evt.target;
-                _this.setState(__assign({}, _this.state, { replyInputText: target.value }));
+                _this.setState(function (state) { return __assign({}, state, { replyInputText: target.value }); });
             };
             _this.pointerClick = function (evt) {
                 var target = evt.target;
                 if (target !== null && (target.classList.contains('unexpanded') || target.classList.contains('expanded'))) {
                     _this.state.user.view(parseInt(target.dataset.original, 10), target.dataset.path).then(function (r) {
                         if (r.tag === 'OK') {
-                            _this.setState(__assign({}, _this.state, { user: r.contents }));
+                            _this.setState(function (state) { return __assign({}, state, { user: r.contents }); });
                         }
                         else {
                             console.log(r);
@@ -35256,8 +35256,7 @@
                     var q = user.workspace.subQuestions.last(null);
                     if (q === null)
                         throw "askClick: Shouldn't happen";
-                    var completions = addCompletion(_this.state.completions, q[1]);
-                    _this.setState(__assign({}, _this.state, { user: user, completions: completions, askInputText: '' }));
+                    _this.setState(function (state) { return __assign({}, state, { user: user, completions: addCompletion(state.completions, q[1]), askInputText: '' }); });
                 });
             };
             _this.replyClick = function (evt) {
