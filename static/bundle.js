@@ -35201,11 +35201,11 @@
         });
     };
     var NewQuestionComponent = function (props) {
-        return react_4("form", { className: "newQuestion cell" },
+        return react_4("form", { className: "newQuestion cell", onSubmit: function (e) { return e.preventDefault(); } },
             react_4(TypeAheadComponent, { selectedValue: props.selectedValue, completions: props.completions, onStateChange: props.onStateChange, label: "Ask", onClick: props.onClick }));
     };
     var ReplyComponent = function (props) {
-        return react_4("form", { className: "reply cell" },
+        return react_4("form", { className: "reply cell", onSubmit: function (e) { return e.preventDefault(); } },
             react_4(TextInputComponent, { inputText: props.inputText, onChange: props.onChange, label: "Reply", onClick: props.onClick }));
     };
     var WaitComponent = function (props) {

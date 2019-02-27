@@ -495,7 +495,7 @@ interface NewQuestionProps {
 }
 
 const NewQuestionComponent: React.FunctionComponent<NewQuestionProps> = (props) =>
-    <form className="newQuestion cell">
+    <form className="newQuestion cell" onSubmit={e => e.preventDefault()}>
         <TypeAheadComponent
             selectedValue={props.selectedValue}
             completions={props.completions}
@@ -511,7 +511,7 @@ interface ReplyProps {
 }
 
 const ReplyComponent: React.FunctionComponent<ReplyProps> = (props) =>
-    <form className="reply cell">
+    <form className="reply cell" onSubmit={e => e.preventDefault()}>
         <TextInputComponent inputText={props.inputText} onChange={props.onChange} label="Reply" onClick={props.onClick} />
     </form>;
 
