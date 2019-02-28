@@ -39,19 +39,19 @@ These are the commands that are accepted in the interactive mode:
 
 Tab completion should work for these commands except for `exit`.
 
-Currently, you need to `ask` a question as the first thing otherwise the program will crash.
-
 A `pointer` looks like `$n` where `n` is a number, e.g. `$37`.
 
 A `message` is an arbitrary string that may contain `pointer`s except that it must have balanced square brackets, `[`, `]`. A
-square bracketed part of the string becomes a sub-`message` that will be hidden behind a pointer.
+square bracketed part of the string becomes a sub-`message` that will be hidden behind a pointer. Sub-`messages` may be labeled and
+can then be referred to elsewhere including cyclicly. For example, `foo [$1: cons [x] $1] $1`. The space after the `:` is required.
 
 When you `ask` a question like `What is $1 minus $1?` the question that will be presented is the more general question, `What is $1 minus $2?`
 
 Here is an animation illustrating the command-line interface in action:
 ![Demonstration of command-line interface](docs/lengthprim.gif)
 
-<!-- Add screen recording of web interface. -->
+Here is an animation illustrating the web interface in action:
+![Demonstration of web interface](docs/take.gif)
 
 See the scripts in [https://github.com/oughtinc/affable/tree/master/tests/scripts](https://github.com/oughtinc/affable/tree/master/tests/scripts)
 for more example input sequences.
