@@ -1,0 +1,5 @@
+docs/
+DESIGN.markdown
+README.markdown
+ChangeLog.md
+make-db.sql
