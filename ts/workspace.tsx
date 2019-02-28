@@ -111,7 +111,7 @@ function addCompletion(completions: List<Message>, msg: Message): List<Message> 
     return completions.push(msg);
 }
 
-function mappingFromMessage(mapping: Mapping /* mutable */, expansion: Expansion, msg: Message, seen: Set<Pointer> = Set().asMutable()): void {
+function mappingFromMessage(mapping: Mapping /* mutable */, expansion: Expansion, msg: Message, seen: Set<Pointer>): void {
     switch(msg.tag) {
         case 'Text':
             return; // Nothing to do.
@@ -119,24 +119,24 @@ function mappingFromMessage(mapping: Mapping /* mutable */, expansion: Expansion
             const p = msg.contents;
             if(seen.has(p)) return;
             seen.add(p);
-            if(!(mapping.has(p))) {
+            if(!mapping.has(p)) {
                 mapping.set(p, mapping.size);
             }
-            if(expansion.has(p)) {
-                mappingFromMessage(mapping, expansion, expansion.get(p) as Message, seen);
+            const lm = expansion.get(p);
+            if(lm !== void(0)) {
+                mappingFromMessage(mapping, expansion, lm, seen);
             }
             return;
         case 'Structured':
-            msg.contents.forEach(m => mappingFromMessage(mapping, expansion, m), seen);
+            msg.contents.forEach(m => mappingFromMessage(mapping, expansion, m, seen));
             return;
         case 'LabeledStructured':
             const label = msg.contents[0];
-            if(seen.has(label)) return;
             seen.add(label);
-            if(!(mapping.has(label))) {
+            if(!mapping.has(label)) {
                 mapping.set(label, mapping.size);
             }
-            msg.contents[1].forEach(m => mappingFromMessage(mapping, expansion, m), seen);
+            msg.contents[1].forEach(m => mappingFromMessage(mapping, expansion, m, seen));
             return;
         default:
             console.log(msg);
@@ -146,11 +146,25 @@ function mappingFromMessage(mapping: Mapping /* mutable */, expansion: Expansion
 
 function mappingFromWorkspace(mapping: Mapping /* mutable */, workspace: Workspace): void {
     const expansion = workspace.expandedPointers;
-    mappingFromMessage(mapping, expansion, workspace.question);
+    const seen = Set<Pointer>().asMutable();
+    mappingFromMessage(mapping, expansion, workspace.question, seen);
     workspace.subQuestions.forEach(q => {
         const answer = q[2];
-        mappingFromMessage(mapping, expansion, q[1]);
-        if(answer !== null) mappingFromMessage(mapping, expansion, answer); });
+        mappingFromMessage(mapping, expansion, q[1], seen);
+        if(answer !== null) mappingFromMessage(mapping, expansion, answer, seen); });
+}
+
+function bindings(expansion: Expansion /* mutable */, msg: Message): void {
+    switch(msg.tag) {
+        case 'Structured':
+            msg.contents.forEach(m => bindings(expansion, m));
+            break;
+        case 'LabeledStructured':
+            if(expansion.has(msg.contents[0])) break;
+            expansion.set(msg.contents[0], msg);
+            msg.contents[1].forEach(m => bindings(expansion, m));
+            break;
+    }
 }
 
 function boundPointers(base: number, mapping: Mapping /* mutable */, msg: Message): void {
@@ -371,7 +385,7 @@ class User {
                         question: ws.question,
                         subQuestions: ws.subQuestions
                     };
-                    const mapping = this.mapping.withMutations(tm => mappingFromMessage(tm, expansion, msg));
+                    const mapping = this.mapping.withMutations(tm => mappingFromMessage(tm, expansion, msg, Set<Pointer>().asMutable()));
                     const invMapping = mapping.mapEntries(entry => [entry[1], entry[0]]);
                     const user = new User(this.userId,
                                           this.sessionId,
@@ -397,15 +411,22 @@ class User {
             if(workspaceSession === null) return null;
             const ws = workspaceSession[0];
             const sessionId = workspaceSession[1];
-            const expansion = ws.expandedPointers;
             const ep: Array<[Pointer, Message]> = [];
-            for(const k in expansion) {
+            for(const k in ws.expandedPointers) {
                 const p = parseInt(k, 10);
-                ep.push([p, expansion[p]]);
+                ep.push([p, ws.expandedPointers[p]]);
             }
+            const expansion = Map<Pointer, Message>(ep).withMutations(tm => {
+                bindings(tm, ws.question);
+                ws.subQuestions.forEach(qa => {
+                    bindings(tm, qa[1]);
+                    const answer = qa[2];
+                    if(answer !== null) bindings(tm, answer);
+                });
+            });
             const ws2: Workspace = {
                 identity: ws.identity,
-                expandedPointers: Map<Pointer, Message>(ep),
+                expandedPointers: expansion,
                 question: ws.question,
                 subQuestions: List(ws.subQuestions)
             };
@@ -415,7 +436,7 @@ class User {
                                   sessionId,
                                   List<Either<Message, Pointer>>(),
                                   ws2,
-                                  Set<string>(),
+                                  Set<string>(), // TODO: Prepopulate expandedOccurrences somehow.
                                   mapping,
                                   invMapping);
             return user;

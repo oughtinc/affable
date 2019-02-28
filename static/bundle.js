@@ -34881,7 +34881,6 @@
         return completions.push(msg);
     }
     function mappingFromMessage(mapping, expansion, msg, seen) {
-        if (seen === void 0) { seen = Set$1().asMutable(); }
         switch (msg.tag) {
             case 'Text':
                 return;
@@ -34890,25 +34889,24 @@
                 if (seen.has(p))
                     return;
                 seen.add(p);
-                if (!(mapping.has(p))) {
+                if (!mapping.has(p)) {
                     mapping.set(p, mapping.size);
                 }
-                if (expansion.has(p)) {
-                    mappingFromMessage(mapping, expansion, expansion.get(p), seen);
+                var lm = expansion.get(p);
+                if (lm !== void (0)) {
+                    mappingFromMessage(mapping, expansion, lm, seen);
                 }
                 return;
             case 'Structured':
-                msg.contents.forEach(function (m) { return mappingFromMessage(mapping, expansion, m); }, seen);
+                msg.contents.forEach(function (m) { return mappingFromMessage(mapping, expansion, m, seen); });
                 return;
             case 'LabeledStructured':
                 var label = msg.contents[0];
-                if (seen.has(label))
-                    return;
                 seen.add(label);
-                if (!(mapping.has(label))) {
+                if (!mapping.has(label)) {
                     mapping.set(label, mapping.size);
                 }
-                msg.contents[1].forEach(function (m) { return mappingFromMessage(mapping, expansion, m); }, seen);
+                msg.contents[1].forEach(function (m) { return mappingFromMessage(mapping, expansion, m, seen); });
                 return;
             default:
                 console.log(msg);
@@ -34917,13 +34915,27 @@
     }
     function mappingFromWorkspace(mapping, workspace) {
         var expansion = workspace.expandedPointers;
-        mappingFromMessage(mapping, expansion, workspace.question);
+        var seen = Set$1().asMutable();
+        mappingFromMessage(mapping, expansion, workspace.question, seen);
         workspace.subQuestions.forEach(function (q) {
             var answer = q[2];
-            mappingFromMessage(mapping, expansion, q[1]);
+            mappingFromMessage(mapping, expansion, q[1], seen);
             if (answer !== null)
-                mappingFromMessage(mapping, expansion, answer);
+                mappingFromMessage(mapping, expansion, answer, seen);
         });
+    }
+    function bindings(expansion, msg) {
+        switch (msg.tag) {
+            case 'Structured':
+                msg.contents.forEach(function (m) { return bindings(expansion, m); });
+                break;
+            case 'LabeledStructured':
+                if (expansion.has(msg.contents[0]))
+                    break;
+                expansion.set(msg.contents[0], msg);
+                msg.contents[1].forEach(function (m) { return bindings(expansion, m); });
+                break;
+        }
     }
     function boundPointers(base, mapping, msg) {
         switch (msg.tag) {
@@ -35124,7 +35136,7 @@
                             question: ws.question,
                             subQuestions: ws.subQuestions
                         };
-                        var mapping = _this.mapping.withMutations(function (tm) { return mappingFromMessage(tm, expansion, msg); });
+                        var mapping = _this.mapping.withMutations(function (tm) { return mappingFromMessage(tm, expansion, msg, Set$1().asMutable()); });
                         var invMapping = mapping.mapEntries(function (entry) { return [entry[1], entry[0]]; });
                         var user = new User(_this.userId, _this.sessionId, _this.pending.push({ Right: ptr }), ws2, occurrences.add(path), mapping, invMapping);
                         return { tag: 'OK', contents: user };
@@ -35145,15 +35157,23 @@
                     return null;
                 var ws = workspaceSession[0];
                 var sessionId = workspaceSession[1];
-                var expansion = ws.expandedPointers;
                 var ep = [];
-                for (var k in expansion) {
+                for (var k in ws.expandedPointers) {
                     var p = parseInt(k, 10);
-                    ep.push([p, expansion[p]]);
+                    ep.push([p, ws.expandedPointers[p]]);
                 }
+                var expansion = Map$1(ep).withMutations(function (tm) {
+                    bindings(tm, ws.question);
+                    ws.subQuestions.forEach(function (qa) {
+                        bindings(tm, qa[1]);
+                        var answer = qa[2];
+                        if (answer !== null)
+                            bindings(tm, answer);
+                    });
+                });
                 var ws2 = {
                     identity: ws.identity,
-                    expandedPointers: Map$1(ep),
+                    expandedPointers: expansion,
                     question: ws.question,
                     subQuestions: List(ws.subQuestions)
                 };
