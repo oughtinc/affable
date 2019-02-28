@@ -212,10 +212,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     linkPointers f workspace patterns
                     globalToLocal <- liftIO $ links autoCtxt workspaceId
 
-                    let loop = do
-                            (userId, evt) <- blockOnUser workspaceId
-                            [evt] <- liftIO $ canonicalizeEvents ctxt [evt]
-                            processEvent (userId, evt)
+                    let loop = blockOnUser workspaceId >>= processEvent
                         processEvent (userId, Create msg) = do
                             pattern <- liftIO $ relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
                             liftIO $ createWorkspace ctxt False userId workspaceId msg pattern
@@ -267,9 +264,11 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
             modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
             writeChan requestChan (Just workspaceId)
             takeMVar responseMVar -- BLOCK
+
         replyFromUser userId workspaceId Init = liftIO $ do
             readChan requestChan
         replyFromUser userId workspaceId evt = liftIO $ do
+            [evt] <- canonicalizeEvents ctxt [evt]
             Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
             putMVar responseMVar (userId, evt)
             readChan requestChan
