@@ -50,7 +50,7 @@ reifyWorkspaceSqlite :: Lock -> Connection -> WorkspaceId -> IO Message
 reifyWorkspaceSqlite lock conn workspaceId = do
     workspaces <- withLock lock $ do
         withTransaction conn $ do
-            execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMRY KEY ASC )"
+            execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMARY KEY ASC )"
             execute_ conn "DELETE FROM Descendants"
             executeNamed conn "WITH RECURSIVE ds(id) AS ( \
                               \     VALUES (:root) \
