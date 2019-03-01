@@ -179,28 +179,34 @@ insertGeneralizedMessagePointers lock conn msg = do
         withTransaction conn $ do
             [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
             let (mapping, generalizedMsg) = generalizeMessage (maybe 0 succ lastPointerId) msg
-            executeMany conn "INSERT INTO Pointers (id, content) SELECT ?, o.content FROM Pointers o WHERE o.id = ?" (M.assocs mapping)
+            executeMany conn "INSERT INTO Pointers (id, content) \
+                             \SELECT t.new, o.content FROM (VALUES (?, ?)) t(new, old) \
+                             \INNER JOIN Pointers o ON o.id = t.old" (M.assocs mapping)
             return generalizedMsg
 
 labelMessagePostgres :: Lock -> Connection -> Message -> IO Message
 labelMessagePostgres lock conn msg@(Structured ms) = do
     let !msgText = toText (messageToBuilderDB msg)
     withLock lock $ do
-        [Only p] <- query conn "INSERT INTO Pointers (content) VALUES (?) RETURNING id" [msgText]
-        return (LabeledStructured p ms)
+        withTransaction conn $ do
+            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+            [Only p] <- query conn "INSERT INTO Pointers (id, content) VALUES (?, ?) RETURNING id" (maybe 0 succ lastPointerId :: Pointer, msgText)
+            return (LabeledStructured p ms)
 labelMessagePostgres lock conn msg = do
     let !msgText = toText (messageToBuilderDB msg)
     withLock lock $ do
-        [Only p] <- query conn "INSERT INTO Pointers (content) VALUES (?) RETURNING id" [msgText]
-        return (LabeledStructured p [msg])
+        withTransaction conn $ do
+            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+            [Only p] <- query conn "INSERT INTO Pointers (id, content) VALUES (?, ?) RETURNING id" (maybe 0 succ lastPointerId :: Pointer, msgText)
+            return (LabeledStructured p [msg])
 
 insertCommand :: Lock -> Connection -> UserId -> WorkspaceId -> Command -> IO ()
 insertCommand lock conn userId workspaceId cmd = do
     let !cmdText = toText (commandToBuilder cmd)
     withLock lock $ do
-        mt <- query conn "SELECT localTime FROM Commands WHERE workspaceId = ? ORDER BY localTime DESC LIMIT 1" (Only workspaceId)
+        mt <- query conn "SELECT commandTime FROM Commands WHERE workspaceId = ? ORDER BY commandTime DESC LIMIT 1" (Only workspaceId)
         let t = case mt of [] -> 0; [Only t'] -> t'+1
-        () <$ execute conn "INSERT INTO Commands (workspaceId, localTime, userId, command) VALUES (?, ?, ?, ?)"
+        () <$ execute conn "INSERT INTO Commands (workspaceId, commandTime, userId, command) VALUES (?, ?, ?, ?)"
                             (workspaceId, t :: Int64, userId, cmdText)
 
 createInitialWorkspacePostgres :: Lock -> Connection -> IO WorkspaceId
@@ -222,7 +228,7 @@ newSessionPostgres lock conn Nothing = do
         return sessionId
 newSessionPostgres lock conn (Just sessionId) = do
     withLock lock $ do
-        execute conn "INSERT OR IGNORE INTO Sessions VALUES (?)" (Only sessionId)
+        execute conn "INSERT INTO Sessions VALUES (?) ON CONFLICT DO NOTHING" (Only sessionId)
         return sessionId
 
 createWorkspacePostgres :: Lock -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
@@ -243,10 +249,9 @@ sendAnswerPostgres lock conn doNormalize userId workspaceId msg = do
     msg' <- if doNormalize then insertMessagePointers lock conn msg else return msg
     let !msgText = toText (messageToBuilder msg')
     withLock lock $ do
-        -- TODO: XXX If we revisit, and thus change an answer, this will need to be an INSERT OR REPLACE or we'll need to start
-        -- actually using this time parameter. If this is all that is changed, then we'll get a model of edits where we see
         -- the following questions upon return, possibly referring to pointers in an answer that no longer exist.
-        execute conn "INSERT OR REPLACE INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (?, ?, ?)"
+        execute conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (?, ?, ?) \
+                     \ON CONFLICT(workspaceId) DO UPDATE SET logicalTimeAnswered = excluded.logicalTimeAnswered, answer = excluded.answer"
                             (workspaceId, 0 :: LogicalTime, msgText)
     insertCommand lock conn userId workspaceId (Reply msg)
 
@@ -263,7 +268,7 @@ sendMessagePostgres lock conn doNormalize userId srcId tgtId msg = do
 expandPointerPostgres :: Lock -> Connection -> UserId -> WorkspaceId -> Pointer -> IO ()
 expandPointerPostgres lock conn userId workspaceId ptr = do
     withLock lock $ do
-        execute conn "INSERT OR IGNORE INTO ExpandedPointers (workspaceId, pointerId, logicalTimeExpanded) VALUES (?, ?, ?)"
+        execute conn "INSERT INTO ExpandedPointers (workspaceId, pointerId, logicalTimeExpanded) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
                             (workspaceId, ptr, 0 :: LogicalTime)
     insertCommand lock conn userId workspaceId (View ptr)
 

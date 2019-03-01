@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 module Main where
 import Control.Applicative ( optional, (<|>) ) -- base
 import Data.Foldable ( forM_ ) -- base
@@ -72,15 +73,31 @@ optionsParser = hsubparser $ mconcat [
     command "start" (info (CommandLine <$> noAutoOption <*> concurrentOption <*> optional sessionIdOption <*> dbFileOption)
                     (progDesc "Start command-line interaction."))]
 
+withDatabaseContext :: FilePath -> (forall e. DatabaseContext e -> IO ()) -> IO ()
+withDatabaseContext dbFile body = do
+    -- Example: "postgres://foo:bar@example.com:2345/database" becomes:
+    -- ConnectInfo {connectHost = "example.com", connectPort = 2345, connectUser = "foo", connectPassword = "bar", connectDatabase = "database"}
+    if ("postgres://" `isPrefixOf` dbFile) || ("postgresql://" `isPrefixOf` dbFile) then do
+        case parseDatabaseUrl dbFile of
+            Nothing -> putStrLn $ "'" ++ dbFile ++ "' isn't a valid PostgreSQL URL."
+            Just connInfo -> do
+                conn <- Postgres.connect connInfo
+                dbCtxt <- makePostgresDatabaseContext conn
+                initDB dbCtxt
+                body dbCtxt
+      else do
+        Sqlite.withConnection dbFile $ \conn -> do
+            dbCtxt <- makeSqliteDatabaseContext conn
+            initDB dbCtxt
+            body dbCtxt
+
 main :: IO ()
 main = do
     options <- execParser (info (helper <*> optionsParser) (footer "Run COMMAND --help for help on each command."))
     case options of
         GenAPI -> writeJSForAPI (Proxy :: Proxy API) (axios defAxiosOptions) "ts/command-api.js"
         Export dbFile sessionId -> do
-            -- TODO: XXX if "postgres://" `isPrefixOf` dbFile then parseDatabaseUrl dbFile else sqlite
-            Sqlite.withConnection dbFile $ \conn -> do
-                dbCtxt <- makeSqliteDatabaseContext conn
+            withDatabaseContext dbFile $ \dbCtxt -> do
                 ctxt <- makeSchedulerContext dbCtxt
                 autoCtxt <- makeAutoSchedulerContext dbCtxt ctxt sessionId
                 alts <- fmap reverse <$> allAlternatives autoCtxt
@@ -102,10 +119,7 @@ main = do
                         topArg <- fullyExpand (schedulerContext autoCtxt) topArg
                         T.putStrLn (toText (expToHaskell localLookup (LetFun ANSWER (Call ANSWER [Value topArg]))))
         Serve noAuto dbFile port mCertFile mKeyFile -> do
-            -- TODO: XXX if "postgres://" `isPrefixOf` dbFile then parseDatabaseUrl dbFile else sqlite
-            Sqlite.withConnection dbFile $ \conn -> do
-                dbCtxt <- makeSqliteDatabaseContext conn
-                initDB dbCtxt
+            withDatabaseContext dbFile $ \dbCtxt -> do
                 case (mCertFile, mKeyFile) of
                     (Nothing, Nothing) -> do
                         putStrLn $ "Navigate to http://localhost:"++show port++"/static/index.html ..."
@@ -117,19 +131,13 @@ main = do
                         runTLS tlsOpts warpOpts =<< ({-if noAuto then initServerNoAutomation else-} initServer) dbCtxt
                     _ -> putStrLn "Both a certificate and a key are needed to enable TLS."
         CommandLine True _ mSessionId dbFile -> do -- TODO: Use session ID.
-            -- TODO: XXX if "postgres://" `isPrefixOf` dbFile then parseDatabaseUrl dbFile else sqlite
-            Sqlite.withConnection dbFile $ \conn -> do
-                dbCtxt <- makeSqliteDatabaseContext conn
-                initDB dbCtxt
+            withDatabaseContext dbFile $ \dbCtxt -> do
                 ctxt <- makeSchedulerContext dbCtxt
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
                 scheduler <- makeSingleUserScheduler ctxt
                 commandLineInteraction initWorkspace scheduler
         CommandLine False concurrent mSessionId dbFile -> do
-            -- TODO: XXX if "postgres://" `isPrefixOf` dbFile then parseDatabaseUrl dbFile else sqlite
-            Sqlite.withConnection dbFile $ \conn -> do
-                dbCtxt <- makeSqliteDatabaseContext conn
-                initDB dbCtxt
+            withDatabaseContext dbFile $ \dbCtxt -> do
                 ctxt <- makeSchedulerContext dbCtxt
                 sessionId <- newSession ctxt mSessionId
                 putStrLn ("Session ID: " ++ show sessionId)

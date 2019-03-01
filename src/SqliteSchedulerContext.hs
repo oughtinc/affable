@@ -200,9 +200,9 @@ insertCommand :: Lock -> Connection -> UserId -> WorkspaceId -> Command -> IO ()
 insertCommand lock conn userId workspaceId cmd = do
     let !cmdText = toText (commandToBuilder cmd)
     withLock lock $ do
-        mt <- query conn "SELECT localTime FROM Commands WHERE workspaceId = ? ORDER BY localTime DESC LIMIT 1" (Only workspaceId)
+        mt <- query conn "SELECT commandTime FROM Commands WHERE workspaceId = ? ORDER BY commandTime DESC LIMIT 1" (Only workspaceId)
         let t = case mt of [] -> 0; [Only t'] -> t'+1
-        executeNamed conn "INSERT INTO Commands (workspaceId, localTime, userId, command) VALUES (:workspace, :time, :userId, :cmd)" [
+        executeNamed conn "INSERT INTO Commands (workspaceId, commandTime, userId, command) VALUES (:workspace, :time, :userId, :cmd)" [
                             ":workspace" := workspaceId,
                             ":time" := (t :: Int64),
                             ":userId" := userId,

@@ -29,7 +29,8 @@ makePostgresDatabaseContext conn = do
 initPrimitivesPostgres :: Connection -> IO ()
 initPrimitivesPostgres conn = do
     let prims = map (\(i, p, b, _) -> (i, toText (messageToBuilderDB p), b)) primitives
-    () <$ executeMany conn "INSERT OR REPLACE INTO Primitives (id, pattern, body) VALUES (?, ?, ?)" prims
+    () <$ executeMany conn "INSERT INTO Primitives (id, pattern, body) VALUES (?, ?, ?) \
+                           \ON CONFLICT (id) DO UPDATE SET pattern = excluded.pattern, body = excluded.body" prims
 
 primitivesToHaskellPostgres :: Connection -> IO ()
 primitivesToHaskellPostgres conn = do
@@ -44,7 +45,7 @@ initDBPostgres :: Connection -> IO ()
 initDBPostgres conn = do
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Workspaces (\n\
-       \    id INTEGER PRIMARY KEY ASC,\n\
+       \    id SERIAL PRIMARY KEY,\n\
        \    logicalTime INTEGER NOT NULL,\n\
        \    parentWorkspaceId INTEGER NULL,\n\
        \    questionAsAsked TEXT NOT NULL,\n\
@@ -54,23 +55,23 @@ initDBPostgres conn = do
     execute_ conn "CREATE INDEX IF NOT EXISTS Workspaces_IDX_ParentWorkspaces_Id ON Workspaces(parentWorkspaceId, id);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Messages (\n\
-       \    id INTEGER PRIMARY KEY ASC,\n\
+       \    id SERIAL PRIMARY KEY,\n\
        \    logicalTimeSent INTEGER NOT NULL,\n\
        \    sourceWorkspaceId INTEGER NOT NULL,\n\
        \    targetWorkspaceId INTEGER NOT NULL,\n\
        \    content TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( sourceWorkspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
+       \    FOREIGN KEY ( sourceWorkspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE,\n\
        \    FOREIGN KEY ( targetWorkspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
        \);"
     execute_ conn "CREATE INDEX IF NOT EXISTS Messages_IDX_TargetWorkspaceId ON Messages(targetWorkspaceId);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Pointers (\n\
-       \    id INTEGER PRIMARY KEY ASC,\n\
+       \    id INTEGER PRIMARY KEY,\n\
        \    content TEXT NOT NULL\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Answers (\n\
-       \    workspaceId INTEGER PRIMARY KEY ASC, -- NOT NULL,\n\
+       \    workspaceId SERIAL PRIMARY KEY, -- NOT NULL,\n\
        \    logicalTimeAnswered INTEGER NOT NULL,\n\
        \    answer TEXT NOT NULL,\n\
        \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
@@ -80,22 +81,22 @@ initDBPostgres conn = do
        \    workspaceId INTEGER NOT NULL,\n\
        \    pointerId INTEGER NOT NULL,\n\
        \    logicalTimeExpanded INTEGER NOT NULL,\n\
-       \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
-       \    FOREIGN KEY ( pointerId ) REFERENCES Pointers ( id ) ON DELETE CASCADE\n\
-       \    PRIMARY KEY ( workspaceId ASC, pointerId ASC )\n\
+       \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE,\n\
+       \    FOREIGN KEY ( pointerId ) REFERENCES Pointers ( id ) ON DELETE CASCADE,\n\
+       \    PRIMARY KEY ( workspaceId, pointerId )\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Commands (\n\
        \    workspaceId INTEGER NOT NULL,\n\
-       \    localTime INTEGER NOT NULL,\n\
+       \    commandTime INTEGER NOT NULL,\n\
        \    userId INTEGER NOT NULL,\n\
        \    command TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
-       \    PRIMARY KEY ( workspaceId ASC, localTime ASC )\n\
+       \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE,\n\
+       \    PRIMARY KEY ( workspaceId, commandTime )\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Functions (\n\
-       \    id INTEGER PRIMARY KEY ASC,\n\
+       \    id SERIAL PRIMARY KEY,\n\
        \    isAnswer INTEGER NOT NULL DEFAULT 0\n\
        \);"
     execute_ conn "\
@@ -103,26 +104,26 @@ initDBPostgres conn = do
        \    function INTEGER NOT NULL,\n\
        \    pattern TEXT NOT NULL,\n\
        \    body TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE\n\
-       \    PRIMARY KEY ( function ASC, pattern ASC )\n\
+       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE,\n\
+       \    PRIMARY KEY ( function, pattern )\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Links (\n\
        \    workspaceId INTEGER NOT NULL,\n\
        \    sourceId INTEGER NOT NULL,\n\
        \    targetId INTEGER NOT NULL,\n\
-       \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
-       \    FOREIGN KEY ( sourceId ) REFERENCES Pointers ( id ) ON DELETE CASCADE\n\
-       \    FOREIGN KEY ( targetId ) REFERENCES Pointers ( id ) ON DELETE CASCADE\n\
-       \    PRIMARY KEY ( workspaceId ASC, sourceId ASC )\n\
+       \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE,\n\
+       \    FOREIGN KEY ( sourceId ) REFERENCES Pointers ( id ) ON DELETE CASCADE,\n\
+       \    FOREIGN KEY ( targetId ) REFERENCES Pointers ( id ) ON DELETE CASCADE,\n\
+       \    PRIMARY KEY ( workspaceId, sourceId )\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Continuations (\n\
        \    workspaceId INTEGER NOT NULL,\n\
        \    function INTEGER NOT NULL,\n\
        \    next TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE\n\
-       \    PRIMARY KEY ( workspaceId ASC, function ASC )\n\
+       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE,\n\
+       \    PRIMARY KEY ( workspaceId, function )\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS ContinuationEnvironments (\n\
@@ -130,10 +131,10 @@ initDBPostgres conn = do
        \    function INTEGER NOT NULL,\n\
        \    variable INTEGER NOT NULL,\n\
        \    value TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE\n\
-       \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
-       \    FOREIGN KEY ( workspaceId, function ) REFERENCES Continuations ( workspaceId, function ) ON DELETE CASCADE\n\
-       \    PRIMARY KEY ( workspaceId ASC, function ASC, variable ASC )\n\
+       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE,\n\
+       \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE,\n\
+       \    FOREIGN KEY ( workspaceId, function ) REFERENCES Continuations ( workspaceId, function ) ON DELETE CASCADE,\n\
+       \    PRIMARY KEY ( workspaceId, function, variable )\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS ContinuationArguments (\n\
@@ -141,14 +142,14 @@ initDBPostgres conn = do
        \    function INTEGER NOT NULL,\n\
        \    argNumber INTEGER NOT NULL,\n\
        \    value TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE\n\
-       \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
-       \    FOREIGN KEY ( workspaceId, function ) REFERENCES Continuations ( workspaceId, function ) ON DELETE CASCADE\n\
-       \    PRIMARY KEY ( workspaceId ASC, function ASC, argNumber ASC )\n\
+       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE,\n\
+       \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE,\n\
+       \    FOREIGN KEY ( workspaceId, function ) REFERENCES Continuations ( workspaceId, function ) ON DELETE CASCADE,\n\
+       \    PRIMARY KEY ( workspaceId, function, argNumber )\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Trace (\n\
-       \    t INTEGER PRIMARY KEY ASC,\n\
+       \    t SERIAL PRIMARY KEY,\n\
        \    processId INTEGER NOT NULL,\n\
        \    varEnv TEXT NOT NULL,\n\
        \    funEnv TEXT NOT NULL,\n\
@@ -159,22 +160,22 @@ initDBPostgres conn = do
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS RunQueue (\n\
-       \    processId INTEGER PRIMARY KEY AUTOINCREMENT\n\
+       \    processId SERIAL PRIMARY KEY\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Sessions (\n\
-       \    sessionId INTEGER PRIMARY KEY ASC\n\
+       \    sessionId SERIAL PRIMARY KEY\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS SessionProcesses (\n\
        \    sessionId INTEGER NOT NULL,\n\
        \    processId INTEGER NOT NULL,\n\
-       \    FOREIGN KEY ( sessionId ) REFERENCES Sessions ( sessionId ) ON DELETE CASCADE\n\
-       \    PRIMARY KEY ( sessionId ASC, processId ASC )\n\
+       \    FOREIGN KEY ( sessionId ) REFERENCES Sessions ( sessionId ) ON DELETE CASCADE,\n\
+       \    PRIMARY KEY ( sessionId, processId )\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Primitives (\n\
-       \    id INTEGER PRIMARY KEY ASC,\n\
+       \    id INTEGER PRIMARY KEY,\n\
        \    pattern TEXT NOT NULL,\n\
        \    body TEXT NOT NULL\n\
        \);"
