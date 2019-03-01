@@ -58,6 +58,8 @@ common deps
     warp                    >= 3.2.25 && < 3.3,
     warp-tls                >= 3.2.4 && < 3.3,
     sqlite-simple           >= 0.4.16 && < 0.5,
+    postgresql-simple       >= 0.5.4 && < 0.6,
+    postgresql-simple-url   >= 0.2.1 && < 0.3,
     async                   >= 2.2.1 && < 2.3,
     async-pool              >= 0.9.0 && < 0.10,
     optparse-applicative    >= 0.14.3 && < 0.14.4,
@@ -79,9 +81,15 @@ common deps
     Exp,
     Primitive,
     AutoScheduler,
+    DatabaseContext,
+    SqliteInit,
     SqliteAutoSchedulerContext,
     SqliteCompletionContext,
-    SqliteSchedulerContext
+    SqliteSchedulerContext,
+    PostgresInit,
+    PostgresAutoSchedulerContext,
+    PostgresCompletionContext,
+    PostgresSchedulerContext
 
   -- LANGUAGE extensions used by modules in this package.
   other-extensions:

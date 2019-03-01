@@ -15,7 +15,6 @@ import qualified Data.Map as M -- containers
 import Data.String ( fromString ) -- base
 import qualified Data.Text as T -- text
 import Data.Tuple ( swap ) -- base
-import Database.SQLite.Simple ( Connection ) -- sqlite-simple
 import GHC.Generics ( Generic ) -- ghc
 import Servant ( (:<|>)(..), (:>), QueryParam, Capture, Server, Get, Post, Proxy(..), ReqBody, JSON, Raw, serveDirectoryWebApp ) -- servant-server
 import Servant.Server ( serve, Application ) -- servant-server
@@ -23,13 +22,11 @@ import System.Timeout ( timeout ) -- base
 
 import AutoInterpreter ( runM, spawnInterpreter )
 import Completions ( CompletionContext(..) )
+import DatabaseContext ( DatabaseContext(..) )
 import Exp ( Pattern, Name(..), Exp(..) )
 import Message ( Message(..), Pointer, stripLabel )
 import Scheduler ( SessionId, UserId, Event(..), SchedulerFn, SchedulerContext(..),
                    firstUserId, getWorkspace, createInitialWorkspace, createWorkspace )
-import SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext' )
-import SqliteCompletionContext ( makeSqliteCompletionContext )
-import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 
 data Response = OK | Error T.Text deriving ( Generic )
@@ -127,9 +124,9 @@ data SessionState = SessionState {
 -- that walk away without responding. Once we've decided a user isn't going to respond, we can reschedule the workspace
 -- to a new user and discard any late response from the old user.
 -- Probably use a keep-alive policy.
-initServer :: Connection -> IO Application
-initServer conn = do
-    ctxt <- makeSqliteSchedulerContext conn
+initServer :: DatabaseContext e -> IO Application
+initServer dbCtxt = do
+    ctxt <- makeSchedulerContext dbCtxt
 
     userIdRef <- liftIO $ newIORef (M.empty :: M.Map UserId (M.Map SessionId (Maybe WorkspaceId)))
     sessionMapRef <- newIORef (M.empty :: M.Map SessionId SessionState)
@@ -213,7 +210,7 @@ initServer conn = do
                     if isNew then do
                         let !doneRef = sessionDoneRef ss
                             !requestChan = sessionRequestChan ss
-                        autoCtxt <- makeSqliteAutoSchedulerContext' sessionId ctxt
+                        autoCtxt <- makeAutoSchedulerContext dbCtxt ctxt sessionId
                         runM (spawnInterpreter (blockOnUser sessionId) (liftIO begin) (liftIO $ writeIORef doneRef True) False autoCtxt) 0
                         mWorkspaceId <- timeout 10000000 (readChan requestChan) -- Timeout after 10 seconds.
                         updateUserSession userId sessionId mWorkspaceId
@@ -245,6 +242,6 @@ initServer conn = do
             modifyIORef' userSessionMapRef (M.insert userId sessionId)
             return sessionId
 
-    compCtxt <- makeSqliteCompletionContext ctxt
+    compCtxt <- makeCompletionContext dbCtxt ctxt
 
     return $ serve (Proxy :: Proxy OverallAPI) (overallHandler compCtxt makeUser nextWorkspace (dereference ctxt) (getWorkspace ctxt) replyFromUser)

@@ -17,13 +17,13 @@ import Workspace ( WorkspaceId )
 
 type FunctionId = Int64
 
-makeSqliteAutoSchedulerContext :: SessionId -> Connection -> IO (AutoSchedulerContext (Connection, Lock))
-makeSqliteAutoSchedulerContext sessionId conn = do
+makeSqliteAutoSchedulerContext :: Connection -> SessionId -> IO (AutoSchedulerContext (Connection, Lock))
+makeSqliteAutoSchedulerContext conn sessionId = do
     ctxt <- makeSqliteSchedulerContext conn
-    makeSqliteAutoSchedulerContext' sessionId ctxt
+    makeSqliteAutoSchedulerContext' ctxt sessionId
 
-makeSqliteAutoSchedulerContext' :: SessionId -> SchedulerContext (Connection, Lock) -> IO (AutoSchedulerContext (Connection, Lock))
-makeSqliteAutoSchedulerContext' sessionId ctxt = do
+makeSqliteAutoSchedulerContext' :: SchedulerContext (Connection, Lock) -> SessionId -> IO (AutoSchedulerContext (Connection, Lock))
+makeSqliteAutoSchedulerContext' ctxt sessionId = do
     let (conn, lock) = extraContent ctxt
 
     ss <- queryNamed conn "SELECT f.id \
