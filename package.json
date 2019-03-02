@@ -5,28 +5,28 @@
   "main": "workspace.js",
   "dependencies": {
     "axios": "^0.18.0",
-    "downshift": "^3.2.4",
+    "downshift": "^3.2.6",
     "immutable": "^4.0.0-rc.12",
     "match-sorter": "^2.3.0",
-    "react": "^16.8.1",
-    "react-dom": "^16.8.1"
+    "react": "^16.8.3",
+    "react-dom": "^16.8.3"
   },
   "devDependencies": {
-    "@types/jest": "^22.2.0",
+    "@types/jest": "^23.3.0",
     "@types/match-sorter": "^2.3.0",
-    "@types/react": "^16.8.3",
-    "@types/react-dom": "^16.8.1",
-    "jest": "^22.4.2",
-    "rollup": "^0.59.3",
-    "rollup-plugin-commonjs": "^9.2.0",
+    "@types/react": "^16.8.6",
+    "@types/react-dom": "^16.8.2",
+    "jest": "^24.1.0",
+    "rollup": "^1.4.0",
+    "rollup-plugin-commonjs": "^9.2.1",
     "rollup-plugin-json": "^3.1.0",
     "rollup-plugin-node-builtins": "^2.1.2",
     "rollup-plugin-node-globals": "^1.4.0",
-    "rollup-plugin-node-resolve": "^3.3.0",
-    "rollup-plugin-typescript2": "^0.14.0",
-    "ts-jest": "^22.3.1",
-    "typedoc": "^0.11.1",
-    "typescript": "^2.8.3"
+    "rollup-plugin-node-resolve": "^4.0.1",
+    "rollup-plugin-typescript2": "^0.19.3",
+    "ts-jest": "^24.0.0",
+    "typedoc": "^0.14.2",
+    "typescript": "^3.2.4"
   },
   "engines": {
     "node": "11.10.1",
