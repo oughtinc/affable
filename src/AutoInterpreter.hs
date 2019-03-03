@@ -6,8 +6,8 @@ import Control.Concurrent ( ThreadId, forkIO ) -- base
 import Control.Concurrent.Async ( mapConcurrently ) -- async
 -- import Control.Concurrent.Async.Pool ( withTaskGroup, mapTasks ) -- async-pool
 import Control.Concurrent.STM ( atomically ) -- stm
-import Control.Concurrent.STM.TMVar ( TMVar, newEmptyTMVarIO, newTMVarIO, putTMVar, takeTMVar, readTMVar ) -- stm
-import Control.Concurrent.STM.TChan ( TChan, newTChanIO, readTChan, writeTChan ) -- stm -- TODO: Exploit STM more.
+import Control.Concurrent.STM.TMVar ( TMVar, newEmptyTMVarIO, newEmptyTMVar, newTMVarIO, putTMVar, takeTMVar, readTMVar ) -- stm
+import Control.Concurrent.STM.TChan ( TChan, newTChanIO, readTChan, writeTChan ) -- stm
 import qualified Control.Exception as IO ( bracket_ ) -- base
 import Control.Monad ( ap, zipWithM, zipWithM_ ) -- base
 import Control.Monad.IO.Class ( MonadIO, liftIO ) -- base
@@ -137,20 +137,22 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                         mTMVar <- atomicModifyIORef' pendingMatchesRef $ swap . M.insertLookupWithKey (\_ _ old -> old) f fTMVar
                         return $ maybe fTMVar id mTMVar
 
-                    -- Begin atomic block
-                    pendingMatches <- liftIO $ atomically $ takeTMVar pendingMatchesTMVar -- BLOCK
-                    -- TODO: Error out if there is more than one match.
-                    -- TODO: If an error happens here, pendingMatchesTMVar will not be refilled and will lead to deadlock.
-                    case asum $ map (\(ps, pTMVar) -> pTMVar <$ zipWithM matchMessage ps ms') pendingMatches of
-                        Just pTMVar -> do
-                            liftIO $ atomically $ putTMVar pendingMatchesTMVar pendingMatches
-                            -- End atomic block
+                    r <- liftIO $ atomically $ do
+                            pendingMatches <- takeTMVar pendingMatchesTMVar -- BLOCK
+                            -- TODO: Error out if there is more than one match.
+                            case asum $ map (\(ps, pTMVar) -> pTMVar <$ zipWithM matchMessage ps ms') pendingMatches of
+                                r@(Just pTMVar) -> do
+                                    putTMVar pendingMatchesTMVar pendingMatches
+                                    return (Right pTMVar)
+                                r@Nothing -> do
+                                    pTMVar <- newEmptyTMVar -- locked lock
+                                    putTMVar pendingMatchesTMVar ((ms', pTMVar):pendingMatches)
+                                    return (Left pTMVar)
+                    case r of
+                        Right pTMVar -> do
                             liftIO $ atomically $ readTMVar pTMVar -- BLOCK until filled
                             retryLoop
-                        Nothing -> do
-                            pTMVar <- liftIO $ newEmptyTMVarIO -- locked lock
-                            liftIO $ atomically $ putTMVar pendingMatchesTMVar ((ms', pTMVar):pendingMatches)
-                            -- End atomic block
+                        Left pTMVar -> do
                             bracket_ (return ())
                                      (liftIO $ do
                                         atomically $ do
