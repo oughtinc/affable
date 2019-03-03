@@ -49,6 +49,7 @@ common deps
   -- Other library packages from which modules are imported.
   build-depends:
     base                    >= 4.11 && < 4.13,
+    stm                     >= 2.4.5 && < 2.6,
     containers              >= 0.5.11 && < 0.6,
     text                    >= 1.2.3 && < 1.3,
     megaparsec              >= 6.5.0 && < 7.0,

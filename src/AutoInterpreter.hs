@@ -5,8 +5,9 @@ module AutoInterpreter where
 import Control.Concurrent ( ThreadId, forkIO ) -- base
 import Control.Concurrent.Async ( mapConcurrently ) -- async
 -- import Control.Concurrent.Async.Pool ( withTaskGroup, mapTasks ) -- async-pool
-import Control.Concurrent.MVar ( MVar, newEmptyMVar, newMVar, putMVar, takeMVar, readMVar, modifyMVar_ ) -- base
-import Control.Concurrent.Chan ( Chan, newChan, readChan, writeChan ) -- base TODO: Use TChan instead?
+import Control.Concurrent.STM ( atomically ) -- stm
+import Control.Concurrent.STM.TMVar ( TMVar, newEmptyTMVarIO, newTMVarIO, putTMVar, takeTMVar, readTMVar ) -- stm
+import Control.Concurrent.STM.TChan ( TChan, newTChanIO, readTChan, writeTChan ) -- stm -- TODO: Exploit STM more.
 import qualified Control.Exception as IO ( bracket_ ) -- base
 import Control.Monad ( ap, zipWithM, zipWithM_ ) -- base
 import Control.Monad.IO.Class ( MonadIO, liftIO ) -- base
@@ -110,7 +111,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
             T.hPutStrLn stderr (toText (expToBuilder (\f -> maybe [] reverse $ M.lookup f altMap) (LetFun ANSWER (Value (Text "dummy")))))
 
     -- Store matches that are being worked on. Definitely does NOT need to be in the database.
-    pendingMatchesRef <- liftIO $ newIORef (M.empty :: M.Map Name (MVar [([Pattern], MVar ())]))
+    pendingMatchesRef <- liftIO $ newIORef (M.empty :: M.Map Name (TMVar [([Pattern], TMVar ())]))
 
     -- When we receive the Submit event, we look at the unanswered questions of the current workspace for the parameters.
     -- Expand doesn't get batched, so we only have batches of questions, i.e. multi-argument function calls are always
@@ -131,27 +132,31 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
             --  - We also need to clean out the mapping in this case before we release the lock.
             --  - We should be able to use bracket_ to do this with a trivial acquire function as the lock should be created already locked.
             let matchPending workspace = do
-                    pendingMatchesMVar <- liftIO $ do
-                        fMVar <- newMVar [] -- This will get garbage collected if we don't use it, which we won't except for the first time.
-                        mMVar <- atomicModifyIORef' pendingMatchesRef $ swap . M.insertLookupWithKey (\_ _ old -> old) f fMVar
-                        return $ maybe fMVar id mMVar
+                    pendingMatchesTMVar <- liftIO $ do
+                        fTMVar <- newTMVarIO [] -- This will get garbage collected if we don't use it, which we won't except for the first time.
+                        mTMVar <- atomicModifyIORef' pendingMatchesRef $ swap . M.insertLookupWithKey (\_ _ old -> old) f fTMVar
+                        return $ maybe fTMVar id mTMVar
 
                     -- Begin atomic block
-                    pendingMatches <- liftIO $ takeMVar pendingMatchesMVar -- BLOCK
+                    pendingMatches <- liftIO $ atomically $ takeTMVar pendingMatchesTMVar -- BLOCK
                     -- TODO: Error out if there is more than one match.
-                    -- TODO: If an error happens here, pendingMatchesMVar will not be refilled and will lead to deadlock.
-                    case asum $ map (\(ps, pMVar) -> pMVar <$ zipWithM matchMessage ps ms') pendingMatches of
-                        Just pMVar -> do
-                            liftIO $ putMVar pendingMatchesMVar pendingMatches
+                    -- TODO: If an error happens here, pendingMatchesTMVar will not be refilled and will lead to deadlock.
+                    case asum $ map (\(ps, pTMVar) -> pTMVar <$ zipWithM matchMessage ps ms') pendingMatches of
+                        Just pTMVar -> do
+                            liftIO $ atomically $ putTMVar pendingMatchesTMVar pendingMatches
                             -- End atomic block
-                            liftIO $ readMVar pMVar -- BLOCK until filled
+                            liftIO $ atomically $ readTMVar pTMVar -- BLOCK until filled
                             retryLoop
                         Nothing -> do
-                            pMVar <- liftIO $ newEmptyMVar -- locked lock
-                            liftIO $ putMVar pendingMatchesMVar ((ms', pMVar):pendingMatches)
+                            pTMVar <- liftIO $ newEmptyTMVarIO -- locked lock
+                            liftIO $ atomically $ putTMVar pendingMatchesTMVar ((ms', pTMVar):pendingMatches)
                             -- End atomic block
                             bracket_ (return ())
-                                     (liftIO $ do modifyMVar_ pendingMatchesMVar (return . filter ((pMVar/=) . snd)); putMVar pMVar ())
+                                     (liftIO $ do
+                                        atomically $ do
+                                            pendingMatches <- takeTMVar pendingMatchesTMVar
+                                            putTMVar pendingMatchesTMVar (filter ((pTMVar /=) . snd) pendingMatches)
+                                        atomically $ putTMVar pTMVar ())
                                      (matchFailed workspace ms')
 
                 retryLoop = do
@@ -256,28 +261,28 @@ makeInterpreterScheduler :: (MonadIO m, MonadFork m) => Bool -> AutoSchedulerCon
 makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     let !ctxt = schedulerContext autoCtxt
 
-    requestChan <- liftIO (newChan :: IO (Chan (Maybe WorkspaceId)))
-    responseMVarsRef <- liftIO $ newIORef (M.empty :: M.Map WorkspaceId (MVar (UserId, Event)))
+    requestTChan <- liftIO (newTChanIO :: IO (TChan (Maybe WorkspaceId)))
+    responseTMVarsRef <- liftIO $ newIORef (M.empty :: M.Map WorkspaceId (TMVar (UserId, Event)))
 
     let blockOnUser workspaceId = liftIO $ do
-            responseMVar <- newEmptyMVar
-            modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
-            writeChan requestChan (Just workspaceId)
-            takeMVar responseMVar -- BLOCK
+            responseTMVar <- newEmptyTMVarIO
+            modifyIORef' responseTMVarsRef (M.insert workspaceId responseTMVar)
+            atomically $ writeTChan requestTChan (Just workspaceId)
+            atomically $ takeTMVar responseTMVar -- BLOCK
 
         replyFromUser userId workspaceId Init = liftIO $ do
-            readChan requestChan
+            atomically $ readTChan requestTChan
         replyFromUser userId workspaceId evt = liftIO $ do
             [evt] <- canonicalizeEvents ctxt [evt]
-            Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
-            putMVar responseMVar (userId, evt)
-            readChan requestChan
+            Just responseTMVar <- atomicModifyIORef' responseTMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
+            atomically $ putTMVar responseTMVar (userId, evt)
+            atomically $ readTChan requestTChan
         begin = liftIO $ do
             initWorkspace <- getWorkspace ctxt initWorkspaceId
             let !q = stripLabel (question initWorkspace)
             return (initWorkspaceId, LetFun ANSWER (Call ANSWER [Value q]))
 
-    spawnInterpreter blockOnUser begin (liftIO $ writeChan requestChan Nothing) isSequential autoCtxt
+    spawnInterpreter blockOnUser begin (liftIO $ atomically $ writeTChan requestTChan Nothing) isSequential autoCtxt
 
     let scheduler _ workspace (Send ws msg) = liftIO $ do
             -- TODO: Think about this and support it if it makes sense.
