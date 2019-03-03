@@ -1,5 +1,7 @@
 module Util ( toText, invertMap, Lock, newLock, withLock, parseMap, mapToBuilder, parseUnsafe ) where
-import Control.Concurrent.MVar ( MVar, newMVar, newEmptyMVar, putMVar, takeMVar ) -- base
+import Control.Concurrent.STM ( atomically ) -- stm
+import Control.Concurrent.STM.TChan ( TChan, readTChan, writeTChan, newTChanIO ) -- stm
+import Control.Concurrent.STM.TMVar ( TMVar, takeTMVar, putTMVar, newTMVarIO, newEmptyTMVarIO ) -- stm
 import Control.Exception ( bracket_ ) -- base
 import Data.List ( intersperse ) -- base
 import qualified Data.Map as M -- containers
@@ -21,8 +23,8 @@ type Lock = (IO (), IO ())
 
 newLock :: IO Lock
 newLock = do
-    lockVar <- newMVar () :: IO (MVar ()) -- Initially unlocked.
-    return (takeMVar lockVar, putMVar lockVar ())
+    lockVar <- newTMVarIO () :: IO (TMVar ()) -- Initially unlocked.
+    return (atomically $ takeTMVar lockVar, atomically $ putTMVar lockVar ())
 
 withLock :: Lock -> IO a -> IO a
 withLock (lock, unlock) = bracket_ lock unlock

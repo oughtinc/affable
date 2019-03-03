@@ -4,8 +4,9 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
 module Server where
-import Control.Concurrent.Chan ( Chan, newChan, readChan, writeChan ) -- base
-import Control.Concurrent.MVar ( MVar, newEmptyMVar, putMVar, takeMVar ) -- base
+import Control.Concurrent.STM ( atomically ) -- stm
+import Control.Concurrent.STM.TChan ( TChan, newTChanIO, readTChan, writeTChan ) -- stm
+import Control.Concurrent.STM.TMVar ( TMVar, newEmptyTMVarIO, putTMVar, takeTMVar ) -- stm
 import Control.Monad.IO.Class ( liftIO ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
 import Data.Bifunctor ( second ) -- base
@@ -113,9 +114,9 @@ overallHandler compCtxt makeUser nextWorkspace deref lookupWorkspace reply
  :<|> autoCompleteHandler compCtxt
 
 data SessionState = SessionState {
-    sessionRequestChan :: Chan WorkspaceId,
-    sessionResponseMVarsRef :: IORef (M.Map WorkspaceId (MVar (UserId, Event))),
-    sessionDrainingMVarsRef :: IORef (M.Map WorkspaceId (MVar (UserId, Event))),
+    sessionRequestTChan :: TChan WorkspaceId,
+    sessionResponseTMVarsRef :: IORef (M.Map WorkspaceId (TMVar (UserId, Event))),
+    sessionDrainingTMVarsRef :: IORef (M.Map WorkspaceId (TMVar (UserId, Event))),
     sessionDoneRef :: IORef Bool }
 
 -- For a web service, we're going to want to separate reading from the channel from giving a response.
@@ -132,7 +133,7 @@ initServer dbCtxt = do
     sessionMapRef <- newIORef (M.empty :: M.Map SessionId SessionState)
     userSessionMapRef <- newIORef (M.empty :: M.Map UserId SessionId)
 
-    let newSessionState = SessionState <$> newChan <*> newIORef M.empty <*> newIORef M.empty <*> newIORef False
+    let newSessionState = SessionState <$> newTChanIO <*> newIORef M.empty <*> newIORef M.empty <*> newIORef False
 
         userSessionState userId = do
             userSessionMap  <- readIORef userSessionMapRef
@@ -150,40 +151,40 @@ initServer dbCtxt = do
 
         blockOnUser sessionId workspaceId = liftIO $ do
             (ss, False) <- sessionState sessionId -- Should never be a new SessionState.
-            let !responseMVarsRef = sessionResponseMVarsRef ss
-                !drainingMVarsRef = sessionDrainingMVarsRef ss
-                !requestChan = sessionRequestChan ss
-            mResponseMVar <- M.lookup workspaceId <$> readIORef drainingMVarsRef
-            case mResponseMVar of
+            let !responseTMVarsRef = sessionResponseTMVarsRef ss
+                !drainingTMVarsRef = sessionDrainingTMVarsRef ss
+                !requestTChan = sessionRequestTChan ss
+            mResponseTMVar <- M.lookup workspaceId <$> readIORef drainingTMVarsRef
+            case mResponseTMVar of
                 Nothing -> do
-                    responseMVar <- newEmptyMVar
-                    modifyIORef' responseMVarsRef (M.insert workspaceId responseMVar)
-                    writeChan requestChan workspaceId
-                    takeMVar responseMVar
-                Just responseMVar -> do
-                    r@(_, resp) <- takeMVar responseMVar
+                    responseTMVar <- newEmptyTMVarIO
+                    modifyIORef' responseTMVarsRef (M.insert workspaceId responseTMVar)
+                    atomically $ writeTChan requestTChan workspaceId
+                    atomically $ takeTMVar responseTMVar
+                Just responseTMVar -> do
+                    r@(_, resp) <- atomically $ takeTMVar responseTMVar
                     case resp of
-                        Submit -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return r
-                        Answer _ -> do modifyIORef' drainingMVarsRef (M.delete workspaceId); return r
+                        Submit -> do modifyIORef' drainingTMVarsRef (M.delete workspaceId); return r
+                        Answer _ -> do modifyIORef' drainingTMVarsRef (M.delete workspaceId); return r
                         _ -> return r
 
         -- TODO: Check if userID is in userIdRef. If not, then ignore.
         replyFromUser userId workspaceId evts = go =<< canonicalizeEvents ctxt evts
             where go [evt] = do
                     (ss, sessionId) <- userSessionState userId
-                    let !responseMVarsRef = sessionResponseMVarsRef ss
-                    Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
+                    let !responseTMVarsRef = sessionResponseTMVarsRef ss
+                    Just responseTMVar <- atomicModifyIORef' responseTMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
                     updateUserSession userId sessionId Nothing
-                    putMVar responseMVar (userId, evt)
+                    atomically $ putTMVar responseTMVar (userId, evt)
                   go (evt:evts) = do
                     (ss, sessionId) <- userSessionState userId
-                    let !responseMVarsRef = sessionResponseMVarsRef ss
-                        !drainingMVarsRef = sessionDrainingMVarsRef ss
-                    Just responseMVar <- atomicModifyIORef' responseMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
-                    modifyIORef' drainingMVarsRef (M.insert workspaceId responseMVar)
+                    let !responseTMVarsRef = sessionResponseTMVarsRef ss
+                        !drainingTMVarsRef = sessionDrainingTMVarsRef ss
+                    Just responseTMVar <- atomicModifyIORef' responseTMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
+                    modifyIORef' drainingTMVarsRef (M.insert workspaceId responseTMVar)
                     updateUserSession userId sessionId Nothing
-                    putMVar responseMVar (userId, evt)
-                    mapM_ (putMVar responseMVar . (,) userId) evts -- NOTE: This assumes that a sort of protocol between the interpreter and this and will block forever if it is not met.
+                    atomically $ putTMVar responseTMVar (userId, evt)
+                    mapM_ (atomically . putTMVar responseTMVar . (,) userId) evts -- NOTE: This assumes that a sort of protocol between the interpreter and this and will block forever if it is not met.
 
         begin = do
             initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
@@ -209,10 +210,10 @@ initServer dbCtxt = do
                     (ss, isNew) <- sessionState sessionId
                     if isNew then do
                         let !doneRef = sessionDoneRef ss
-                            !requestChan = sessionRequestChan ss
+                            !requestTChan = sessionRequestTChan ss
                         autoCtxt <- makeAutoSchedulerContext dbCtxt ctxt sessionId
                         runM (spawnInterpreter (blockOnUser sessionId) (liftIO begin) (liftIO $ writeIORef doneRef True) False autoCtxt) 0
-                        mWorkspaceId <- timeout 10000000 (readChan requestChan) -- Timeout after 10 seconds.
+                        mWorkspaceId <- timeout 10000000 (atomically $ readTChan requestTChan) -- Timeout after 10 seconds.
                         updateUserSession userId sessionId mWorkspaceId
                         return $ fmap (\wsId -> (wsId, sessionId)) mWorkspaceId
                       else do
@@ -221,8 +222,8 @@ initServer dbCtxt = do
                         if isDone then do -- TODO: We can clear out the session state for the old session ID now.
                             nextWorkspace user Nothing
                           else do
-                            let !requestChan = sessionRequestChan ss
-                            mWorkspaceId <- timeout 10000000 (readChan requestChan) -- Timeout after 10 seconds.
+                            let !requestTChan = sessionRequestTChan ss
+                            mWorkspaceId <- timeout 10000000 (atomically $ readTChan requestTChan) -- Timeout after 10 seconds.
                             updateUserSession userId sessionId mWorkspaceId
                             return $ fmap (\wsId -> (wsId, sessionId)) mWorkspaceId
 
