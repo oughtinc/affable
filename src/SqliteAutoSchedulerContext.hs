@@ -5,7 +5,7 @@ import qualified Data.Map as M -- containers
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), withTransaction,
                                 query, query_, queryNamed, executeMany, executeNamed, execute_, lastInsertRowId ) -- sqlite-simple
 
-import AutoScheduler ( AutoSchedulerContext(..), ProcessId, AddContinuationResult(..) )
+import AutoScheduler ( AutoSchedulerContext(..), ProcessId, FunctionId, AddContinuationResult(..), nameToId, idToName )
 import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsId', Konts(..),
              parseVarEnv, parseFunEnv,
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
@@ -14,8 +14,6 @@ import Scheduler ( SchedulerContext(..), SessionId )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
 import Util ( toText, Lock, withLock, parseUnsafe )
 import Workspace ( WorkspaceId )
-
-type FunctionId = Int64
 
 makeSqliteAutoSchedulerContext :: Connection -> SessionId -> IO (AutoSchedulerContext (Connection, Lock))
 makeSqliteAutoSchedulerContext conn sessionId = do
@@ -58,14 +56,6 @@ makeSqliteAutoSchedulerContext' ctxt sessionId = do
                     continuationArguments = continuationArgumentsSqlite lock conn answerId,
                     schedulerContext = ctxt
                 }
-
-nameToId :: FunctionId -> Name -> FunctionId
-nameToId answerId ANSWER = answerId
-nameToId        _ (LOCAL i) = fromIntegral i
-
-idToName :: FunctionId -> FunctionId -> Name
-idToName answerId fId | answerId == fId = ANSWER
-                      | otherwise = LOCAL (fromIntegral fId)
 
 -- NOT CACHEABLE
 alternativesForSqlite :: Lock -> Connection -> FunctionId -> Name -> IO [([Pattern], Exp')]

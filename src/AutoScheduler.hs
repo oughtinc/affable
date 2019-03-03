@@ -1,15 +1,17 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module AutoScheduler ( AutoSchedulerContext(..), ProcessId, AddContinuationResult(..) ) where
+module AutoScheduler ( AutoSchedulerContext(..), FunctionId, ProcessId, AddContinuationResult(..), nameToId, idToName ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 
-import Exp ( Pattern, Name, Value, Exp', EvalState', Konts', KontsId' )
+import Exp ( Pattern, Name(..), Value, Exp', EvalState', Konts', KontsId' )
 import Message ( PointerRemapping )
 import Scheduler ( SchedulerContext )
 import Workspace ( WorkspaceId )
 
 type ProcessId = Int64
+
+type FunctionId = Int64
 
 -- TODO: A better name would be nice.
 data AddContinuationResult = NEW | SAME | REPLACED deriving ( Eq, Ord, Show )
@@ -32,3 +34,11 @@ data AutoSchedulerContext extra = AutoSchedulerContext {
     continuationArguments :: KontsId' -> IO (Konts', [Value]),
     schedulerContext :: SchedulerContext extra
   }
+
+nameToId :: FunctionId -> Name -> FunctionId
+nameToId answerId ANSWER = answerId
+nameToId        _ (LOCAL i) = fromIntegral i
+
+idToName :: FunctionId -> FunctionId -> Name
+idToName answerId fId | answerId == fId = ANSWER
+                      | otherwise = LOCAL (fromIntegral fId)

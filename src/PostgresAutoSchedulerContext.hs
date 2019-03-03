@@ -4,7 +4,7 @@ import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Database.PostgreSQL.Simple ( Connection, Only(..), withTransaction, query, query_, executeMany, execute_, execute ) -- postgresql-simple
 
-import AutoScheduler ( AutoSchedulerContext(..), ProcessId, AddContinuationResult(..) )
+import AutoScheduler ( AutoSchedulerContext(..), ProcessId, FunctionId, AddContinuationResult(..), nameToId, idToName )
 import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsId', Konts(..),
              parseVarEnv, parseFunEnv,
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
@@ -13,8 +13,6 @@ import Scheduler ( SchedulerContext(..), SessionId )
 import PostgresSchedulerContext ( makePostgresSchedulerContext )
 import Util ( toText, Lock, withLock, parseUnsafe )
 import Workspace ( WorkspaceId )
-
-type FunctionId = Int64
 
 makePostgresAutoSchedulerContext :: Connection -> SessionId -> IO (AutoSchedulerContext (Connection, Lock))
 makePostgresAutoSchedulerContext conn sessionId = do
@@ -57,14 +55,6 @@ makePostgresAutoSchedulerContext' ctxt sessionId = do
                     continuationArguments = continuationArgumentsPostgres lock conn answerId,
                     schedulerContext = ctxt
                 }
-
-nameToId :: FunctionId -> Name -> FunctionId
-nameToId answerId ANSWER = answerId
-nameToId        _ (LOCAL i) = fromIntegral i
-
-idToName :: FunctionId -> FunctionId -> Name
-idToName answerId fId | answerId == fId = ANSWER
-                      | otherwise = LOCAL (fromIntegral fId)
 
 -- NOT CACHEABLE
 alternativesForPostgres :: Lock -> Connection -> FunctionId -> Name -> IO [([Pattern], Exp')]

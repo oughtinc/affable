@@ -1,5 +1,8 @@
-module Completions ( CompletionContext(..) ) where
+module Completions ( CompletionContext(..), preparePattern ) where
+import qualified Data.Text as T
+
 import Exp ( Pattern )
+import Message ( generalizeMessage, stripLabel, parsePatternsUnsafe )
 import Scheduler ( SchedulerContext, SessionId )
 
 data CompletionContext extra = CompletionContext {
@@ -7,3 +10,5 @@ data CompletionContext extra = CompletionContext {
     schedulerContext :: SchedulerContext extra
   }
 
+preparePattern :: T.Text -> Pattern
+preparePattern = snd . generalizeMessage 0 . stripLabel . head . parsePatternsUnsafe

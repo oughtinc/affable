@@ -4,14 +4,10 @@ import Data.Int ( Int64 ) -- base
 import qualified Data.Text as T -- text
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, query_, queryNamed ) -- sqlite-simple
 
-import Completions ( CompletionContext(..) )
+import Completions ( CompletionContext(..), preparePattern )
 import Exp ( Pattern )
-import Message ( generalizeMessage, stripLabel, parsePatternsUnsafe )
 import Scheduler ( SchedulerContext(..), SessionId )
 import Util ( Lock, withLock )
-
-preparePattern :: T.Text -> Pattern
-preparePattern = snd . generalizeMessage 0 . stripLabel . head . parsePatternsUnsafe
 
 makeSqliteCompletionContext :: SchedulerContext (Connection, Lock) -> IO (CompletionContext (Connection, Lock))
 makeSqliteCompletionContext ctxt = do

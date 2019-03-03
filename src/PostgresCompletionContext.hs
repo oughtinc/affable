@@ -4,14 +4,10 @@ import Data.Int ( Int64 ) -- base
 import qualified Data.Text as T -- text
 import Database.PostgreSQL.Simple ( Connection, Only(..), query, query_ ) -- postgresql-simple
 
-import Completions ( CompletionContext(..) )
+import Completions ( CompletionContext(..), preparePattern )
 import Exp ( Pattern )
-import Message ( generalizeMessage, stripLabel, parsePatternsUnsafe )
 import Scheduler ( SchedulerContext(..), SessionId )
 import Util ( Lock, withLock )
-
-preparePattern :: T.Text -> Pattern
-preparePattern = snd . generalizeMessage 0 . stripLabel . head . parsePatternsUnsafe
 
 makePostgresCompletionContext :: SchedulerContext (Connection, Lock) -> IO (CompletionContext (Connection, Lock))
 makePostgresCompletionContext ctxt = do

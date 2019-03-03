@@ -5,18 +5,16 @@ module PostgresSchedulerContext ( makePostgresSchedulerContext ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Data.Maybe ( mapMaybe ) -- base
-import Data.String ( fromString ) -- base
 import Data.Text ( Text ) -- text
 import Data.Traversable ( mapAccumL ) -- base
 import Database.PostgreSQL.Simple ( Connection, Only(..),
-                                   query, query_, execute, execute_, executeMany, withTransaction ) -- postgresql-simple
+                                    query, query_, execute, execute_, executeMany, withTransaction ) -- postgresql-simple
 
 import Command ( Command(..), commandToBuilder )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
-                 canonicalizeMessage, renumberMessage', boundPointers )
-import Scheduler ( SchedulerContext(..), Event, UserId, SessionId )
-import qualified Scheduler as Event ( Event(..) )
+                 canonicalizeMessage, boundPointers )
+import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Lock, newLock, withLock )
 import Workspace ( Workspace(..), WorkspaceId )
@@ -87,50 +85,6 @@ reifyWorkspacePostgres lock conn workspaceId = do
                                                                 expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
                                                                 time = Time t })) workspaces
     return (workspaceToMessage workspaces workspaceId)
-
--- TODO: This could also be done in a way to better reuse existing pointers rather than make new pointers.
--- TODO: Should the expanded pointers be indicated some way?
-workspaceToMessage :: M.Map WorkspaceId Workspace -> WorkspaceId -> Message
-workspaceToMessage workspaces workspaceId = go (M.lookup workspaceId workspaces)
-    where go (Just workspace) | null subQs && null msgs = Structured [Text "Question: ", question workspace]
-                              | null subQs = Structured (Text "Question: "
-                                                        : question workspace
-                                                        : Text " Messages: 1. "
-                                                        : msgs)
-                              | null msgs = Structured (Text "Question: "
-                                                       : question workspace
-                                                       : Text " Subquestions: 1. "
-                                                       : subQs)
-                              | otherwise =  Structured (Text "Question: "
-                                                        : question workspace
-                                                        : Text " Messages: 1. "
-                                                        : msgs
-                                                        ++ (Text " Subquestions: 1. "
-                                                           : subQs))
-            where subQs = goSub 1 (subQuestions workspace)
-                  msgs = goMsg 1 (messageHistory workspace)
-                  goSub !i [] = []
-                  goSub i ((_, _, Nothing):qs) = goSub i qs
-                  goSub 1 ((wsId, _, Just a):qs) -- To avoid [Text "...", Text "..."]
-                    = go (M.lookup wsId workspaces):Text " Answer:":a:goSub 2 qs
-                  goSub i ((wsId, _, Just a):qs)
-                    = Text (fromString (' ':show i ++ ". ")):go (M.lookup wsId workspaces):Text " Answer:":a:goSub (i+1) qs
-                  goMsg !i [] = []
-                  goMsg 1 (m:ms) = m:goMsg 2 ms
-                  goMsg i (m:ms) = Text (fromString (' ':show i ++ ". ")):m:goMsg (i+1) ms
-
-
-renumberEvent :: PointerRemapping -> Event -> Event
-renumberEvent mapping (Event.Create m) = Event.Create (renumberMessage' mapping m)
-renumberEvent mapping (Event.Answer m) = Event.Answer (renumberMessage' mapping m)
-renumberEvent mapping (Event.Send loc m) = Event.Send loc (renumberMessage' mapping m)
-renumberEvent mapping m = m
-
-eventMessage :: Event -> Maybe Message
-eventMessage (Event.Create m) = Just m
-eventMessage (Event.Answer m) = Just m
-eventMessage (Event.Send _ m) = Just m
-eventMessage _ = Nothing
 
 -- TODO: Rename.
 -- This takes a Message from the user where the LabeledStructures represent binding forms and produces
