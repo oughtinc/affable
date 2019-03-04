@@ -83,14 +83,14 @@ common deps
     Primitive,
     AutoScheduler,
     DatabaseContext,
-    SqliteInit,
-    SqliteAutoSchedulerContext,
-    SqliteCompletionContext,
-    SqliteSchedulerContext,
-    PostgresInit,
-    PostgresAutoSchedulerContext,
-    PostgresCompletionContext,
-    PostgresSchedulerContext
+    Sqlite.Init,
+    Sqlite.AutoSchedulerContext,
+    Sqlite.CompletionContext,
+    Sqlite.SchedulerContext,
+    Postgres.Init,
+    Postgres.AutoSchedulerContext,
+    Postgres.CompletionContext,
+    Postgres.SchedulerContext
 
   -- LANGUAGE extensions used by modules in this package.
   other-extensions:

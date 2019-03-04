@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-module SqliteCompletionContext ( makeSqliteCompletionContext ) where
+module Sqlite.CompletionContext ( makeSqliteCompletionContext ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Text as T -- text
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, query_, queryNamed ) -- sqlite-simple

@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-module PostgresCompletionContext ( makePostgresCompletionContext ) where
+module Postgres.CompletionContext ( makePostgresCompletionContext ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Text as T -- text
 import Database.PostgreSQL.Simple ( Connection, Only(..), query, query_ ) -- postgresql-simple

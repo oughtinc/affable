@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-module PostgresAutoSchedulerContext ( makePostgresAutoSchedulerContext, makePostgresAutoSchedulerContext' ) where
+module Postgres.AutoSchedulerContext ( makePostgresAutoSchedulerContext, makePostgresAutoSchedulerContext' ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Database.PostgreSQL.Simple ( Connection, Only(..), withTransaction, query, query_, executeMany, execute_, execute ) -- postgresql-simple
@@ -10,7 +10,7 @@ import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsI
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
 import Message ( PointerRemapping, messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
 import Scheduler ( SchedulerContext(..), SessionId )
-import PostgresSchedulerContext ( makePostgresSchedulerContext )
+import Postgres.SchedulerContext ( makePostgresSchedulerContext )
 import Util ( toText, Queue, enqueueAsync, enqueueSync, parseUnsafe )
 import Workspace ( WorkspaceId )
 

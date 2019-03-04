@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-module SqliteAutoSchedulerContext ( makeSqliteAutoSchedulerContext, makeSqliteAutoSchedulerContext' ) where
+module Sqlite.AutoSchedulerContext ( makeSqliteAutoSchedulerContext, makeSqliteAutoSchedulerContext' ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), withTransaction,
@@ -11,7 +11,7 @@ import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsI
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
 import Message ( PointerRemapping, messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
 import Scheduler ( SchedulerContext(..), SessionId )
-import SqliteSchedulerContext ( makeSqliteSchedulerContext )
+import Sqlite.SchedulerContext ( makeSqliteSchedulerContext )
 import Util ( toText, Queue, enqueueAsync, enqueueSync, parseUnsafe )
 import Workspace ( WorkspaceId )
 

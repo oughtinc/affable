@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-module SqliteInit ( makeSqliteDatabaseContext ) where
+module Sqlite.Init ( makeSqliteDatabaseContext ) where
 import Data.Foldable ( forM_ ) -- base
 import qualified Data.Text as T  -- text
 import qualified Data.Text.IO as T  -- text
@@ -11,9 +11,9 @@ import DatabaseContext ( DatabaseContext(..) )
 import Message ( messageToBuilderDB, messageToPattern, parseMessageUnsafe )
 import Primitive ( primitives )
 import Scheduler ( SchedulerContext )
-import SqliteAutoSchedulerContext (  makeSqliteAutoSchedulerContext' )
-import SqliteCompletionContext ( makeSqliteCompletionContext )
-import SqliteSchedulerContext ( makeSqliteSchedulerContext )
+import Sqlite.AutoSchedulerContext (  makeSqliteAutoSchedulerContext' )
+import Sqlite.CompletionContext ( makeSqliteCompletionContext )
+import Sqlite.SchedulerContext ( makeSqliteSchedulerContext )
 import Util ( Queue, toText )
 
 makeSqliteDatabaseContext :: Connection -> IO (DatabaseContext (Connection, Queue))

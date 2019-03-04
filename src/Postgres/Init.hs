@@ -1,5 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
-module PostgresInit ( makePostgresDatabaseContext ) where
+module Postgres.Init ( makePostgresDatabaseContext ) where
 import Data.Foldable ( forM_ ) -- base
 import qualified Data.Text as T  -- text
 import qualified Data.Text.IO as T  -- text
@@ -9,9 +9,9 @@ import AutoScheduler (  AutoSchedulerContext )
 import Completions ( CompletionContext )
 import DatabaseContext ( DatabaseContext(..) )
 import Message ( messageToBuilderDB, messageToPattern, parseMessageUnsafe )
-import PostgresAutoSchedulerContext (  makePostgresAutoSchedulerContext' )
-import PostgresCompletionContext ( makePostgresCompletionContext )
-import PostgresSchedulerContext ( makePostgresSchedulerContext )
+import Postgres.AutoSchedulerContext (  makePostgresAutoSchedulerContext' )
+import Postgres.CompletionContext ( makePostgresCompletionContext )
+import Postgres.SchedulerContext ( makePostgresSchedulerContext )
 import Primitive ( primitives )
 import Scheduler ( SchedulerContext )
 import Util ( Queue, toText )
@@ -71,7 +71,7 @@ initDBPostgres conn = do
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Answers (\n\
-       \    workspaceId SERIAL PRIMARY KEY, -- NOT NULL,\n\
+       \    workspaceId INTEGER PRIMARY KEY, -- NOT NULL,\n\
        \    logicalTimeAnswered INTEGER NOT NULL,\n\
        \    answer TEXT NOT NULL,\n\
        \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
