@@ -7,23 +7,24 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, que
 import Completions ( CompletionContext(..), preparePattern )
 import Exp ( Pattern )
 import Scheduler ( SchedulerContext(..), SessionId )
-import Util ( Lock, withLock )
+import Util ( Queue, enqueueSync )
 
-makeSqliteCompletionContext :: SchedulerContext (Connection, Lock) -> IO (CompletionContext (Connection, Lock))
+makeSqliteCompletionContext :: SchedulerContext (Connection, Queue) -> IO (CompletionContext (Connection, Queue))
 makeSqliteCompletionContext ctxt = do
-    let (conn, lock) = extraContent ctxt
+    let (conn, q) = extraContent ctxt
 
-    primPatterns <- map (\(Only t) -> preparePattern (T.concat ["[", t, "]"])) <$> query_ conn "SELECT pattern FROM Primitives"
+    primPatterns <- enqueueSync q $ do
+        map (\(Only t) -> preparePattern (T.concat ["[", t, "]"])) <$> query_ conn "SELECT pattern FROM Primitives"
 
     return $ CompletionContext {
-                    completionsFor = completionsForSqlite lock conn primPatterns,
+                    completionsFor = completionsForSqlite q conn primPatterns,
                     schedulerContext = ctxt
                 }
 
 -- NOT CACHEABLE
-completionsForSqlite :: Lock -> Connection -> [Pattern] -> SessionId -> IO [Pattern]
-completionsForSqlite lock conn primPatterns sessionId = do
-    withLock lock $ do
+completionsForSqlite :: Queue -> Connection -> [Pattern] -> SessionId -> IO [Pattern]
+completionsForSqlite q conn primPatterns sessionId = do
+    enqueueSync q $ do
         [fId] <- queryNamed conn "SELECT f.id \
                                  \FROM Functions f \
                                  \INNER JOIN Continuations c ON c.function = f.id \

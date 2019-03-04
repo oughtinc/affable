@@ -7,23 +7,24 @@ import Database.PostgreSQL.Simple ( Connection, Only(..), query, query_ ) -- pos
 import Completions ( CompletionContext(..), preparePattern )
 import Exp ( Pattern )
 import Scheduler ( SchedulerContext(..), SessionId )
-import Util ( Lock, withLock )
+import Util ( Queue, enqueueSync )
 
-makePostgresCompletionContext :: SchedulerContext (Connection, Lock) -> IO (CompletionContext (Connection, Lock))
+makePostgresCompletionContext :: SchedulerContext (Connection, Queue) -> IO (CompletionContext (Connection, Queue))
 makePostgresCompletionContext ctxt = do
-    let (conn, lock) = extraContent ctxt
+    let (conn, q) = extraContent ctxt
 
-    primPatterns <- map (\(Only t) -> preparePattern (T.concat ["[", t, "]"])) <$> query_ conn "SELECT pattern FROM Primitives"
+    primPatterns <- enqueueSync q $ do
+        map (\(Only t) -> preparePattern (T.concat ["[", t, "]"])) <$> query_ conn "SELECT pattern FROM Primitives"
 
     return $ CompletionContext {
-                    completionsFor = completionsForPostgres lock conn primPatterns,
+                    completionsFor = completionsForPostgres q conn primPatterns,
                     schedulerContext = ctxt
                 }
 
 -- NOT CACHEABLE
-completionsForPostgres :: Lock -> Connection -> [Pattern] -> SessionId -> IO [Pattern]
-completionsForPostgres lock conn primPatterns sessionId = do
-    withLock lock $ do
+completionsForPostgres :: Queue -> Connection -> [Pattern] -> SessionId -> IO [Pattern]
+completionsForPostgres q conn primPatterns sessionId = do
+    enqueueSync q $ do
         [fId] <- query conn "SELECT f.id \
                             \FROM Functions f \
                             \INNER JOIN Continuations c ON c.function = f.id \

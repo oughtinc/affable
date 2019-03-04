@@ -14,9 +14,9 @@ import Scheduler ( SchedulerContext )
 import SqliteAutoSchedulerContext (  makeSqliteAutoSchedulerContext' )
 import SqliteCompletionContext ( makeSqliteCompletionContext )
 import SqliteSchedulerContext ( makeSqliteSchedulerContext )
-import Util ( Lock, toText )
+import Util ( Queue, toText )
 
-makeSqliteDatabaseContext :: Connection -> IO (DatabaseContext (Connection, Lock))
+makeSqliteDatabaseContext :: Connection -> IO (DatabaseContext (Connection, Queue))
 makeSqliteDatabaseContext conn = do
     return $ DatabaseContext {
                 initDB = do initDBSqlite conn; initPrimitivesSqlite conn,

@@ -14,9 +14,9 @@ import PostgresCompletionContext ( makePostgresCompletionContext )
 import PostgresSchedulerContext ( makePostgresSchedulerContext )
 import Primitive ( primitives )
 import Scheduler ( SchedulerContext )
-import Util ( Lock, toText )
+import Util ( Queue, toText )
 
-makePostgresDatabaseContext :: Connection -> IO (DatabaseContext (Connection, Lock))
+makePostgresDatabaseContext :: Connection -> IO (DatabaseContext (Connection, Queue))
 makePostgresDatabaseContext conn = do
     return $ DatabaseContext {
                 initDB = do initDBPostgres conn; initPrimitivesPostgres conn,
