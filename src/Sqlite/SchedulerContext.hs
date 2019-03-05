@@ -35,9 +35,9 @@ makeSqliteSchedulerContext conn = do
             allWorkspaces = allWorkspacesSqlite q conn,
             getNextWorkspace = getNextWorkspaceSqlite q conn,
             labelMessage = labelMessageSqlite q conn,
-            normalize = insertMessagePointers q conn,
-            canonicalizeEvents = canonicalizeEventsSqlite q conn,
-            generalize = insertGeneralizedMessagePointers q conn,
+            normalizeEnv = insertMessagePointers q conn,
+            canonicalizeEventsEnv = canonicalizeEventsSqlite q conn,
+            generalizeEnv = insertGeneralizedMessagePointers q conn,
             dereference = dereferenceSqlite q conn,
             reifyWorkspace = reifyWorkspaceSqlite q conn,
             extraContent = (conn, q)
@@ -88,7 +88,7 @@ reifyWorkspaceSqlite q conn workspaceId = do
 
 -- This takes a Message from the user where the LabeledStructures represent binding forms and produces
 -- a Message and pointer state that corresponds to that binding structure.
-canonicalizeEventsSqlite :: Queue -> Connection -> [Event] -> IO [Event]
+canonicalizeEventsSqlite :: Queue -> Connection -> [Event] -> IO (PointerEnvironment, [Event])
 canonicalizeEventsSqlite q conn evts = do
     case traverse boundPointers $ mapMaybe eventMessage evts of
         Right envs -> do
@@ -104,7 +104,7 @@ canonicalizeEventsSqlite q conn evts = do
                             where (pEnv, _) = canonicalizeMessage top msg
                     let !pEnv = M.unions $ snd $ mapAccumL canonicalizeMsg (topPointerId + 1) (mapMaybe eventMessage evts')
                     executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-                    return evts'
+                    return (pEnv, evts')
         -- Left p -> return (Left p)
         -- TODO: XXX Either decide to assume evts is well-formed, and enforce it, or propagate the error.
 
@@ -117,23 +117,23 @@ dereferenceSqlite q conn ptr = do
         return $! parseMessageUnsafe' ptr t
 
 -- Normalize the Message, write the new pointers to the database, then return the normalized message.
-insertMessagePointers :: Queue -> Connection -> Message -> IO Message
+insertMessagePointers :: Queue -> Connection -> Message -> IO (PointerEnvironment, Message)
 insertMessagePointers q conn msg = do
     enqueueSync q $ do
         withTransaction conn $ do
             [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
             let (pEnv, normalizedMsg) = normalizeMessage (maybe 0 succ lastPointerId) msg
             executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-            return normalizedMsg
+            return (pEnv, normalizedMsg)
 
-insertGeneralizedMessagePointers :: Queue -> Connection -> Message -> IO Message
+insertGeneralizedMessagePointers :: Queue -> Connection -> Message -> IO (PointerRemapping, Message)
 insertGeneralizedMessagePointers q conn msg = do
     enqueueSync q $ do
         withTransaction conn $ do
             [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
             let (mapping, generalizedMsg) = generalizeMessage (maybe 0 succ lastPointerId) msg
             executeMany conn "INSERT INTO Pointers (id, content) SELECT ?, o.content FROM Pointers o WHERE o.id = ?" (M.assocs mapping)
-            return generalizedMsg
+            return (mapping, generalizedMsg)
 
 labelMessageSqlite :: Queue -> Connection -> Message -> IO Message
 labelMessageSqlite q conn msg@(Structured ms) = do
@@ -188,7 +188,7 @@ newSessionSqlite q conn (Just sessionId) = do
 
 createWorkspaceSqlite :: Queue -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
 createWorkspaceSqlite q conn doNormalize userId workspaceId qAsAsked qAsAnswered = do
-    qAsAnswered' <- if doNormalize then insertMessagePointers q conn qAsAnswered else return qAsAnswered
+    qAsAnswered' <- if doNormalize then snd <$> insertMessagePointers q conn qAsAnswered else return qAsAnswered
     let !qAsAskedText = toText (messageToBuilder qAsAsked)
         !qAsAnsweredText = toText (messageToBuilder qAsAnswered')
     newWorkspaceId <- enqueueSync q $ do
@@ -203,7 +203,7 @@ createWorkspaceSqlite q conn doNormalize userId workspaceId qAsAsked qAsAnswered
 
 sendAnswerSqlite :: Queue -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> IO ()
 sendAnswerSqlite q conn doNormalize userId workspaceId msg = do
-    msg' <- if doNormalize then insertMessagePointers q conn msg else return msg
+    msg' <- if doNormalize then snd <$> insertMessagePointers q conn msg else return msg
     let !msgText = toText (messageToBuilder msg')
     enqueueAsync q $ do
         -- TODO: XXX If we revisit, and thus change an answer, this will need to be an INSERT OR REPLACE or we'll need to start
@@ -217,7 +217,7 @@ sendAnswerSqlite q conn doNormalize userId workspaceId msg = do
 
 sendMessageSqlite :: Queue -> Connection -> Bool -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
 sendMessageSqlite q conn doNormalize userId srcId tgtId msg = do
-    msg' <- if doNormalize then insertMessagePointers q conn msg else return msg
+    msg' <- if doNormalize then snd <$> insertMessagePointers q conn msg else return msg
     let !msgText = toText (messageToBuilder msg')
     enqueueAsync q $ do
         executeNamed conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (:source, :target, :time, :content)" [

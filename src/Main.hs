@@ -25,6 +25,7 @@ import DatabaseContext ( DatabaseContext(..) )
 import Exp ( Exp(..), Name(..), expToHaskell )
 import Message ( messageToHaskell, messageToBuilderDB, messageToPattern, parseMessageUnsafe )
 import Scheduler ( SessionId, newSession, getWorkspace, createInitialWorkspace, makeSingleUserScheduler, fullyExpand )
+import Caching.Init ( makeCachingDatabaseContext )
 import Postgres.Init ( makePostgresDatabaseContext )
 import Sqlite.Init ( makeSqliteDatabaseContext )
 import Server ( API, initServer )
@@ -138,6 +139,7 @@ main = do
                 commandLineInteraction initWorkspace scheduler
         CommandLine False concurrent mSessionId dbFile -> do
             withDatabaseContext dbFile $ \dbCtxt -> do
+                -- dbCtxt <- makeCachingDatabaseContext dbCtxt
                 ctxt <- makeSchedulerContext dbCtxt
                 sessionId <- newSession ctxt mSessionId
                 putStrLn ("Session ID: " ++ show sessionId)

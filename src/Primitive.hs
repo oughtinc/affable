@@ -11,7 +11,7 @@ import Data.Text.Read ( signed, decimal ) -- text
 
 import Exp ( Primitive, PrimEnv, Pattern, Value )
 import Message ( Message(..), matchMessage )
-import Scheduler ( SchedulerContext(..), autoUserId, relabelMessage, fullyExpand )
+import Scheduler ( SchedulerContext(..), autoUserId, relabelMessage, fullyExpand, normalize )
 import Workspace ( WorkspaceId, parentId )
 
 type PrimFunc extra = SchedulerContext extra -> WorkspaceId -> [Value] -> IO Value

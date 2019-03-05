@@ -27,7 +27,7 @@ import DatabaseContext ( DatabaseContext(..) )
 import Exp ( Pattern, Name(..), Exp(..) )
 import Message ( Message(..), Pointer, stripLabel )
 import Scheduler ( SessionId, UserId, Event(..), SchedulerFn, SchedulerContext(..),
-                   firstUserId, getWorkspace, createInitialWorkspace, createWorkspace )
+                   canonicalizeEvents, firstUserId, getWorkspace, createInitialWorkspace, createWorkspace )
 import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 
 data Response = OK | Error T.Text deriving ( Generic )

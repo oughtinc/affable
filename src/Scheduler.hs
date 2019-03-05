@@ -3,7 +3,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), SessionId,
                    autoUserId, firstUserId, makeSingleUserScheduler, relabelMessage, fullyExpand,
-                   workspaceToMessage, renumberEvent, eventMessage ) where
+                   normalize, generalize, canonicalizeEvents, workspaceToMessage, renumberEvent, eventMessage ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Set as S -- containers
@@ -44,13 +44,22 @@ data SchedulerContext extra = SchedulerContext {
     allWorkspaces :: IO (M.Map WorkspaceId Workspace),
     getNextWorkspace :: IO (Maybe WorkspaceId),
     labelMessage :: Message -> IO Message,
-    normalize :: Message -> IO Message,
-    canonicalizeEvents :: [Event] -> IO [Event], -- TODO: Rename
-    generalize :: Message -> IO Message,
+    normalizeEnv :: Message -> IO (PointerEnvironment, Message),
+    canonicalizeEventsEnv :: [Event] -> IO (PointerEnvironment, [Event]), -- TODO: Rename
+    generalizeEnv :: Message -> IO (PointerRemapping, Message),
     dereference :: Pointer -> IO Message,
     reifyWorkspace :: WorkspaceId -> IO Message,
     extraContent :: extra -- This is to support making schedulers that can (e.g.) access SQLite directly.
   }
+
+normalize :: SchedulerContext extra -> Message -> IO Message
+normalize ctxt = fmap snd . normalizeEnv ctxt
+
+generalize :: SchedulerContext extra -> Message -> IO Message
+generalize ctxt = fmap snd . generalizeEnv ctxt
+
+canonicalizeEvents :: SchedulerContext extra -> [Event] -> IO [Event]
+canonicalizeEvents ctxt = fmap snd . canonicalizeEventsEnv ctxt
 
 relabelMessage :: SchedulerContext extra -> Message -> IO Message
 relabelMessage ctxt = labelMessage ctxt . stripLabel

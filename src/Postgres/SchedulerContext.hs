@@ -35,9 +35,9 @@ makePostgresSchedulerContext conn = do
             allWorkspaces = allWorkspacesPostgres q conn,
             getNextWorkspace = getNextWorkspacePostgres q conn,
             labelMessage = labelMessagePostgres q conn,
-            normalize = insertMessagePointers q conn,
-            canonicalizeEvents = canonicalizeEventsPostgres q conn,
-            generalize = insertGeneralizedMessagePointers q conn,
+            normalizeEnv = insertMessagePointers q conn,
+            canonicalizeEventsEnv = canonicalizeEventsPostgres q conn,
+            generalizeEnv = insertGeneralizedMessagePointers q conn,
             dereference = dereferencePostgres q conn,
             reifyWorkspace = reifyWorkspacePostgres q conn,
             extraContent = (conn, q)
@@ -88,7 +88,7 @@ reifyWorkspacePostgres q conn workspaceId = do
 
 -- This takes a Message from the user where the LabeledStructures represent binding forms and produces
 -- a Message and pointer state that corresponds to that binding structure.
-canonicalizeEventsPostgres :: Queue -> Connection -> [Event] -> IO [Event]
+canonicalizeEventsPostgres :: Queue -> Connection -> [Event] -> IO (PointerEnvironment, [Event])
 canonicalizeEventsPostgres q conn evts = do
     case traverse boundPointers $ mapMaybe eventMessage evts of
         Right envs -> do
@@ -104,7 +104,7 @@ canonicalizeEventsPostgres q conn evts = do
                             where (pEnv, _) = canonicalizeMessage top msg
                     let !pEnv = M.unions $ snd $ mapAccumL canonicalizeMsg (topPointerId + 1) (mapMaybe eventMessage evts')
                     executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-                    return evts'
+                    return (pEnv, evts')
         -- Left p -> return (Left p)
         -- TODO: XXX Either decide to assume evts is well-formed, and enforce it, or propagate the error.
 
@@ -117,16 +117,16 @@ dereferencePostgres q conn ptr = do
         return $! parseMessageUnsafe' ptr t
 
 -- Normalize the Message, write the new pointers to the database, then return the normalized message.
-insertMessagePointers :: Queue -> Connection -> Message -> IO Message
+insertMessagePointers :: Queue -> Connection -> Message -> IO (PointerEnvironment, Message)
 insertMessagePointers q conn msg = do
     enqueueSync q $ do
         withTransaction conn $ do
             [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
             let (pEnv, normalizedMsg) = normalizeMessage (maybe 0 succ lastPointerId) msg
             executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-            return normalizedMsg
+            return (pEnv, normalizedMsg)
 
-insertGeneralizedMessagePointers :: Queue -> Connection -> Message -> IO Message
+insertGeneralizedMessagePointers :: Queue -> Connection -> Message -> IO (PointerRemapping, Message)
 insertGeneralizedMessagePointers q conn msg = do
     enqueueSync q $ do
         withTransaction conn $ do
@@ -135,7 +135,7 @@ insertGeneralizedMessagePointers q conn msg = do
             executeMany conn "INSERT INTO Pointers (id, content) \
                              \SELECT t.new, o.content FROM (VALUES (?, ?)) t(new, old) \
                              \INNER JOIN Pointers o ON o.id = t.old" (M.assocs mapping)
-            return generalizedMsg
+            return (mapping, generalizedMsg)
 
 labelMessagePostgres :: Queue -> Connection -> Message -> IO Message
 labelMessagePostgres q conn msg@(Structured ms) = do
@@ -186,7 +186,7 @@ newSessionPostgres q conn (Just sessionId) = do
 
 createWorkspacePostgres :: Queue -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
 createWorkspacePostgres q conn doNormalize userId workspaceId qAsAsked qAsAnswered = do
-    qAsAnswered' <- if doNormalize then insertMessagePointers q conn qAsAnswered else return qAsAnswered
+    qAsAnswered' <- if doNormalize then snd <$> insertMessagePointers q conn qAsAnswered else return qAsAnswered
     let !qAsAskedText = toText (messageToBuilder qAsAsked)
         !qAsAnsweredText = toText (messageToBuilder qAsAnswered')
     newWorkspaceId <- enqueueSync q $ do
@@ -199,7 +199,7 @@ createWorkspacePostgres q conn doNormalize userId workspaceId qAsAsked qAsAnswer
 
 sendAnswerPostgres :: Queue -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> IO ()
 sendAnswerPostgres q conn doNormalize userId workspaceId msg = do
-    msg' <- if doNormalize then insertMessagePointers q conn msg else return msg
+    msg' <- if doNormalize then snd <$> insertMessagePointers q conn msg else return msg
     let !msgText = toText (messageToBuilder msg')
     enqueueAsync q $ do
         -- the following questions upon return, possibly referring to pointers in an answer that no longer exist.
@@ -210,7 +210,7 @@ sendAnswerPostgres q conn doNormalize userId workspaceId msg = do
 
 sendMessagePostgres :: Queue -> Connection -> Bool -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
 sendMessagePostgres q conn doNormalize userId srcId tgtId msg = do
-    msg' <- if doNormalize then insertMessagePointers q conn msg else return msg
+    msg' <- if doNormalize then snd <$> insertMessagePointers q conn msg else return msg
     let !msgText = toText (messageToBuilder msg')
     enqueueAsync q $ do
         () <$ execute conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (?, ?, ?, ?)"

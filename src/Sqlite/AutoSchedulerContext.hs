@@ -40,6 +40,7 @@ makeSqliteAutoSchedulerContext' ctxt sessionId = do
             [Only fId] -> return fId
 
     return $ AutoSchedulerContext {
+                    thisAnswerId = answerId,
                     alternativesFor = alternativesForSqlite q conn answerId,
                     allAlternatives = allAlternativesSqlite q conn answerId sessionId,
                     addCaseFor = addCaseForSqlite q conn answerId,

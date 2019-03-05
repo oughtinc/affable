@@ -17,6 +17,7 @@ type FunctionId = Int64
 data AddContinuationResult = NEW | SAME | REPLACED deriving ( Eq, Ord, Show )
 
 data AutoSchedulerContext extra = AutoSchedulerContext {
+    thisAnswerId :: FunctionId,
     alternativesFor :: Name -> IO [([Pattern], Exp')],
     allAlternatives :: IO (M.Map Name [([Pattern], Exp')]),
     addCaseFor :: Name -> [Pattern] -> Exp' -> IO (),

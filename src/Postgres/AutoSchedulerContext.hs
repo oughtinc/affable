@@ -39,6 +39,7 @@ makePostgresAutoSchedulerContext' ctxt sessionId = do
             [Only fId] -> return fId
 
     return $ AutoSchedulerContext {
+                    thisAnswerId = answerId,
                     alternativesFor = alternativesForPostgres q conn answerId,
                     allAlternatives = allAlternativesPostgres q conn answerId sessionId,
                     addCaseFor = addCaseForPostgres q conn answerId,

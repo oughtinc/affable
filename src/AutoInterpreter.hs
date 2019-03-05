@@ -32,7 +32,8 @@ import Exp ( Result(..), Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive,
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage, messageParser',
                  stripLabel, matchPointers, expandPointers, substitute, renumberMessage' )
 import Primitive ( makePrimitives )
-import Scheduler ( UserId, Event(..), SchedulerContext(..), SchedulerFn, autoUserId, relabelMessage, fullyExpand )
+import Scheduler ( UserId, Event(..), SchedulerContext(..), SchedulerFn,
+                   autoUserId, relabelMessage, fullyExpand, normalize, generalize, canonicalizeEvents  )
 import Util ( toText, invertMap )
 import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
 
@@ -398,7 +399,6 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
                 if null q then return (error "AutoInterpreter.hs:consumeConcurrent: Should this happen?") -- TODO
                           else consumeConcurrent q
             consumeConcurrent pIds = do
-
                 let go pIds = do
                         asum <$> mapTasks (map (\pId -> do
                             let loop = do
