@@ -34,6 +34,16 @@ makeCachingAutoSchedulerContext cache autoCtxt sessionId = do
                     schedulerContext = schedulerContext autoCtxt
                 }
 
+-- Backend calls:
+--      newFunction - Synchronous BAD TODO XXX
+--      linkVars - Asynchronous
+--      addCaseFor - Asynchronous
+--      saveContinuation - Asynchronous
+--      recordState - Asynchronous
+--      newProcess - Asynchronous
+--      terminate - Asynchronous
+--      addContinuationArgument - Asynchronous
+
 alternativesForCaching :: CacheState -> AutoSchedulerContext e -> FunctionId -> Name -> IO [([Pattern], Exp')]
 alternativesForCaching cache autoCtxt answerId f = do
     let !fId = nameToId answerId f

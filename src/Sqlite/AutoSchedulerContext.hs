@@ -177,7 +177,7 @@ recordStateSqlite q conn processId (varEnv, funEnv, s, e, k) = do {
         terminateSqlite q conn processId
       else do
     -- -}
-        enqueueSync q $ do
+        enqueueAsync q $ do
             executeNamed conn "INSERT INTO Trace ( processId, varEnv, funEnv, workspaceId, expression, continuation ) \
                               \VALUES (:processId, :varEnv, :funEnv, :workspaceId, :expression, :continuation)" [
                                 ":processId" := toText (processIdToBuilder processId),
@@ -229,7 +229,7 @@ addContinuationArgumentSqlite q conn answerId (workspaceId, f) argNumber v = do
     let !fId = nameToId answerId f
     let !vText = toText (messageToBuilder v)
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
-    enqueueSync q $ do
+    enqueueAsync q $ do
         {-
         vs <- queryNamed conn "SELECT value \
                               \FROM ContinuationArguments \
@@ -248,7 +248,7 @@ addContinuationArgumentSqlite q conn answerId (workspaceId, f) argNumber v = do
                                     ":function" := fId,
                                     ":argNumber" := argNumber,
                                     ":value" := vText]
-                return NEW
+                -- return NEW
         {-
             [Only v'] | vText == v' -> return SAME
                       | otherwise -> do -- TODO: Formulate an approach that doesn't involve in-place updates.
@@ -260,6 +260,7 @@ addContinuationArgumentSqlite q conn answerId (workspaceId, f) argNumber v = do
                                                 ":value" := vText]
                             return REPLACED
         -}
+    return NEW
 
 -- NOT CACHEABLE
 continuationArgumentsSqlite :: Queue -> Connection -> FunctionId -> KontsId' -> IO (Konts', [Value])

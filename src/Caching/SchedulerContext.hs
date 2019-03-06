@@ -5,12 +5,10 @@ module Caching.SchedulerContext ( CacheState(..), makeCachingSchedulerContext ) 
 import Control.Concurrent.STM ( TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar, modifyTVar' ) -- stm
 import qualified Data.Map as M -- containers
 import Data.Maybe ( mapMaybe ) -- base
-import Data.Traversable ( mapAccumL ) -- base
 
 import AutoScheduler ( FunctionId, ProcessId )
 import Exp ( Pattern, Exp', Konts', EvalState' )
-import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
-                 canonicalizeMessage, boundPointers )
+import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping )
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
 import Workspace ( Workspace(..), WorkspaceId )
@@ -30,7 +28,7 @@ data CacheState = CacheState {
     sessionsC :: TVar (M.Map SessionId [ProcessId]) }
 
 createCache :: SchedulerContext e -> IO CacheState
-createCache ctxt = do -- TODO: Somehow pull state from database.
+createCache ctxt = do -- TODO: XXX Somehow pull state from database.
     workspacesTVar <- newTVarIO M.empty
     answersTVar <- newTVarIO M.empty
     answerFunctionsTVar <- newTVarIO M.empty
@@ -68,19 +66,27 @@ makeCachingSchedulerContext ctxt = do
             sendAnswer = sendAnswerCaching cache ctxt,
             sendMessage = sendMessageCaching cache ctxt,
             expandPointer = expandPointerCaching cache ctxt,
+            nextPointer = nextPointerCaching cache ctxt,
             createPointers = createPointersCaching cache ctxt,
+            remapPointers = remapPointersCaching cache ctxt,
             pendingQuestions = pendingQuestionsCaching cache ctxt,
             getWorkspace = getWorkspaceCaching cache ctxt,
             allWorkspaces = allWorkspacesCaching cache ctxt,
             getNextWorkspace = getNextWorkspaceCaching cache ctxt,
-            labelMessage = labelMessageCaching cache ctxt,
-            normalizeEnv = insertMessagePointers cache ctxt,
-            canonicalizeEventsEnv = canonicalizeEventsCaching cache ctxt,
-            generalizeEnv = insertGeneralizedMessagePointers cache ctxt,
             dereference = dereferenceCaching cache ctxt,
             reifyWorkspace = reifyWorkspaceCaching cache ctxt,
             extraContent = extraContent ctxt
         })
+
+-- Backend calls:
+--      getWorkspace - Synchronous but only used in createInitialWorkspace
+--      createInitialWorkspace - Asynchronous
+--      newSession - Asynchronous
+--      createWorkspace - Asynchronous
+--      sendAnswer - Asynchronous
+--      expandPointer - Asynchronous
+--      createPointers - Asynchronous
+--      remapPointers - Asynchronous
 
 reifyWorkspaceCaching :: CacheState -> SchedulerContext e -> WorkspaceId -> IO Message
 reifyWorkspaceCaching cache ctxt workspaceId = do
@@ -93,30 +99,6 @@ dereferenceCaching cache ctxt ptr = do
     case mVal of
         Just msg -> return msg
         -- Intentionally incomplete.
-
-canonicalizeEventsCaching :: CacheState -> SchedulerContext e -> [Event] -> IO (PointerEnvironment, [Event])
-canonicalizeEventsCaching cache ctxt evts = do
-    r@(pEnv, _) <- canonicalizeEventsEnv ctxt evts
-    atomically $ modifyTVar' (pointersC cache) (M.union pEnv)
-    return r
-
-insertMessagePointers :: CacheState -> SchedulerContext e -> Message -> IO (PointerEnvironment, Message)
-insertMessagePointers cache ctxt msg = do
-    r@(pEnv, _) <- normalizeEnv ctxt msg
-    atomically $ modifyTVar' (pointersC cache) (M.union pEnv)
-    return r
-
-insertGeneralizedMessagePointers :: CacheState -> SchedulerContext e -> Message -> IO (PointerRemapping, Message)
-insertGeneralizedMessagePointers cache ctxt msg = do
-    r@(mapping, _) <- generalizeEnv ctxt msg
-    atomically $ modifyTVar' (pointersC cache) (\pointers -> M.union (fmap (pointers M.!) mapping) pointers) -- TODO: Better error handling.
-    return r
-
-labelMessageCaching :: CacheState -> SchedulerContext e -> Message -> IO Message
-labelMessageCaching cache ctxt msg = do
-    msg@(LabeledStructured p _) <- labelMessage ctxt msg
-    atomically $ modifyTVar' (pointersC cache) (M.insert p msg)
-    return msg
 
 createInitialWorkspaceCaching :: CacheState -> SchedulerContext e -> IO WorkspaceId
 createInitialWorkspaceCaching cache ctxt = do
@@ -171,10 +153,20 @@ expandPointerCaching cache ctxt userId workspaceId ptr = do
     expandPointer ctxt userId workspaceId ptr
   where insertPointer msg ws@(Workspace { expandedPointers = ep }) = ws { expandedPointers = M.insert ptr msg ep }
 
+nextPointerCaching :: CacheState -> SchedulerContext e -> IO Pointer
+nextPointerCaching cache ctxt = do
+    ps <- readTVarIO (pointersC cache)
+    return $! maybe 0 (succ . fst) (M.lookupMax ps)
+
 createPointersCaching :: CacheState -> SchedulerContext e -> PointerEnvironment -> IO ()
 createPointersCaching cache ctxt env = do
     atomically $ modifyTVar' (pointersC cache) (M.union env)
     createPointers ctxt env
+
+remapPointersCaching :: CacheState -> SchedulerContext e -> PointerRemapping -> IO ()
+remapPointersCaching cache ctxt mapping = do
+    atomically $ modifyTVar' (pointersC cache) (\ps -> M.union (fmap (ps M.!) mapping) ps)
+    remapPointers ctxt mapping
 
 pendingQuestionsCaching :: CacheState -> SchedulerContext e -> WorkspaceId -> IO [WorkspaceId]
 pendingQuestionsCaching cache ctxt workspaceId = do

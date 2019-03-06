@@ -2,18 +2,21 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), SessionId, sessionIdToBuilder, sessionIdFromText, newSessionId,
-                   autoUserId, makeSingleUserScheduler, relabelMessage, fullyExpand, newUserId, userIdToBuilder, userIdFromText,
+                   autoUserId, makeSingleUserScheduler, labelMessage, relabelMessage, fullyExpand, newUserId, userIdToBuilder, userIdFromText,
                    normalize, generalize, canonicalizeEvents, workspaceToMessage, renumberEvent, eventMessage ) where
 import qualified Data.Map as M -- containers
+import Data.Maybe ( mapMaybe ) -- base
 import qualified Data.Set as S -- containers
 import Data.String ( fromString ) -- base
 import qualified Data.Text as T -- text
 import Data.Text.Lazy.Builder ( Builder ) -- text
+import Data.Traversable ( mapAccumL ) -- base
 import Data.UUID ( UUID, nil ) -- uuid
 import qualified Data.UUID.V4 as UUID ( nextRandom ) -- uuid
 import Text.Megaparsec ( parseMaybe ) -- megaparsec
 
-import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, stripLabel, renumberMessage' )
+import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
+                 canonicalizeMessage, normalizeMessage, generalizeMessage, boundPointers, stripLabel, renumberMessage' )
 import Util ( parseUUID, uuidToBuilder )
 import Workspace ( Workspace(..), WorkspaceId )
 
@@ -41,28 +44,61 @@ data SchedulerContext extra = SchedulerContext {
     sendAnswer :: UserId -> WorkspaceId -> Message -> IO (),
     sendMessage :: UserId -> WorkspaceId -> WorkspaceId -> Message -> IO (),
     expandPointer :: UserId -> WorkspaceId -> Pointer -> IO (),
+    nextPointer :: IO Pointer,
     createPointers :: PointerEnvironment -> IO (),
+    remapPointers :: PointerRemapping -> IO (),
     pendingQuestions :: WorkspaceId -> IO [WorkspaceId],
     getWorkspace :: WorkspaceId -> IO Workspace,
     allWorkspaces :: IO (M.Map WorkspaceId Workspace),
     getNextWorkspace :: IO (Maybe WorkspaceId),
-    labelMessage :: Message -> IO Message,
-    normalizeEnv :: Message -> IO (PointerEnvironment, Message),
-    canonicalizeEventsEnv :: [Event] -> IO (PointerEnvironment, [Event]), -- TODO: Rename
-    generalizeEnv :: Message -> IO (PointerRemapping, Message),
     dereference :: Pointer -> IO Message,
     reifyWorkspace :: WorkspaceId -> IO Message,
     extraContent :: extra -- This is to support making schedulers that can (e.g.) access SQLite directly.
   }
 
+-- TODO: Make this atomic.
 normalize :: SchedulerContext extra -> Message -> IO Message
-normalize ctxt = fmap snd . normalizeEnv ctxt
+normalize ctxt msg = do
+    nextPointerId <- nextPointer ctxt
+    let (pEnv, normalizedMsg) = normalizeMessage nextPointerId msg
+    createPointers ctxt pEnv
+    return normalizedMsg
 
+-- TODO: Make this atomic.
 generalize :: SchedulerContext extra -> Message -> IO Message
-generalize ctxt = fmap snd . generalizeEnv ctxt
+generalize ctxt msg = do
+    nextPointerId <- nextPointer ctxt
+    let (mapping, generalizedMsg) = generalizeMessage nextPointerId msg
+    remapPointers ctxt mapping
+    return generalizedMsg
 
+-- TODO: Make this atomic.
 canonicalizeEvents :: SchedulerContext extra -> [Event] -> IO [Event]
-canonicalizeEvents ctxt = fmap snd . canonicalizeEventsEnv ctxt
+canonicalizeEvents ctxt evts = do
+    case traverse boundPointers $ mapMaybe eventMessage evts of
+        Right envs -> do
+            let !env = M.unions envs -- TODO: XXX There could be re-use of bound variables, so this needs to be handled in a smarter manner.
+            firstPointerId <- nextPointer ctxt
+            let !topPointerId = firstPointerId + M.size env - 1
+            let !mapping = M.fromList (zip (M.keys env) [firstPointerId ..])
+            let !evts' = map (renumberEvent mapping) evts
+            let canonicalizeMsg !top msg = (top + M.size pEnv, pEnv)
+                    where (pEnv, _) = canonicalizeMessage top msg
+            let !pEnv = M.unions $ snd $ mapAccumL canonicalizeMsg (topPointerId + 1) (mapMaybe eventMessage evts')
+            createPointers ctxt pEnv
+            return evts'
+        -- Left p -> return (Left p)
+        -- TODO: XXX Either decide to assume evts is well-formed, and enforce it, or propagate the error.
+
+labelMessage :: SchedulerContext extra -> Message -> IO Message
+labelMessage ctxt msg@(Structured ms) = do
+    p <- nextPointer ctxt
+    createPointers ctxt (M.singleton p msg)
+    return (LabeledStructured p ms)
+labelMessage ctxt msg = do
+    p <- nextPointer ctxt
+    createPointers ctxt (M.singleton p msg)
+    return (LabeledStructured p [msg])
 
 relabelMessage :: SchedulerContext extra -> Message -> IO Message
 relabelMessage ctxt = labelMessage ctxt . stripLabel

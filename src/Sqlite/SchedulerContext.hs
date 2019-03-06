@@ -4,16 +4,13 @@
 module Sqlite.SchedulerContext ( makeSqliteSchedulerContext ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
-import Data.Maybe ( mapMaybe ) -- base
 import Data.Text ( Text ) -- text
-import Data.Traversable ( mapAccumL ) -- base
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
                                 query, query_, execute, execute_, executeMany, executeNamed, lastInsertRowId, withTransaction ) -- sqlite-simple
 
 import Command ( Command(..), commandToBuilder )
-import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
-                 messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
-                 canonicalizeMessage, boundPointers )
+import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
+                 messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB )
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId,
                    autoUserId, userIdToBuilder, sessionIdToBuilder, newSessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
@@ -33,15 +30,13 @@ makeSqliteSchedulerContext conn = do
             sendAnswer = sendAnswerSqlite q c conn,
             sendMessage = sendMessageSqlite q c conn,
             expandPointer = expandPointerSqlite q c conn,
+            nextPointer = nextPointerSqlite q c conn,
             createPointers = createPointersSqlite q c conn,
+            remapPointers = remapPointersSqlite q c conn,
             pendingQuestions = pendingQuestionsSqlite q c conn,
             getWorkspace = getWorkspaceSqlite q c conn,
             allWorkspaces = allWorkspacesSqlite q c conn,
             getNextWorkspace = getNextWorkspaceSqlite q c conn,
-            labelMessage = labelMessageSqlite q c conn,
-            normalizeEnv = insertMessagePointers q c conn,
-            canonicalizeEventsEnv = canonicalizeEventsSqlite q c conn,
-            generalizeEnv = insertGeneralizedMessagePointers q c conn,
             dereference = dereferenceSqlite q c conn,
             reifyWorkspace = reifyWorkspaceSqlite q c conn,
             extraContent = (conn, q)
@@ -94,28 +89,6 @@ reifyWorkspaceSqlite q c conn workspaceId = do
                                                                     time = Time t })) workspaces
     return (workspaceToMessage workspaces workspaceId)
 
--- This takes a Message from the user where the LabeledStructures represent binding forms and produces
--- a Message and pointer state that corresponds to that binding structure.
-canonicalizeEventsSqlite :: Queue -> Counter -> Connection -> [Event] -> IO (PointerEnvironment, [Event])
-canonicalizeEventsSqlite q c conn evts = do
-    case traverse boundPointers $ mapMaybe eventMessage evts of
-        Right envs -> do
-            let !env = M.unions envs -- TODO: XXX There could be re-use of bound variables, so this needs to be handled in a smarter manner.
-            enqueueSync q $ do
-                withTransaction conn $ do
-                    [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-                    let !firstPointerId = maybe 0 succ lastPointerId
-                    let !topPointerId = firstPointerId + M.size env - 1
-                    let !mapping = M.fromList (zip (M.keys env) [firstPointerId ..])
-                    let !evts' = map (renumberEvent mapping) evts
-                    let canonicalizeMsg !top msg = (top + M.size pEnv, pEnv)
-                            where (pEnv, _) = canonicalizeMessage top msg
-                    let !pEnv = M.unions $ snd $ mapAccumL canonicalizeMsg (topPointerId + 1) (mapMaybe eventMessage evts')
-                    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-                    return (pEnv, evts')
-        -- Left p -> return (Left p)
-        -- TODO: XXX Either decide to assume evts is well-formed, and enforce it, or propagate the error.
-
 -- TODO: Bulkify this.
 -- CACHEABLE
 dereferenceSqlite :: Queue -> Counter -> Connection -> Pointer -> IO Message
@@ -123,39 +96,6 @@ dereferenceSqlite q c conn ptr = do
     enqueueSync q $ do
         [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
         return $! parseMessageUnsafe' ptr t
-
--- Normalize the Message, write the new pointers to the database, then return the normalized message.
-insertMessagePointers :: Queue -> Counter -> Connection -> Message -> IO (PointerEnvironment, Message)
-insertMessagePointers q c conn msg = do
-    enqueueSync q $ do
-        withTransaction conn $ do
-            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-            let (pEnv, normalizedMsg) = normalizeMessage (maybe 0 succ lastPointerId) msg
-            executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-            return (pEnv, normalizedMsg)
-
-insertGeneralizedMessagePointers :: Queue -> Counter -> Connection -> Message -> IO (PointerRemapping, Message)
-insertGeneralizedMessagePointers q c conn msg = do
-    enqueueSync q $ do
-        withTransaction conn $ do
-            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-            let (mapping, generalizedMsg) = generalizeMessage (maybe 0 succ lastPointerId) msg
-            executeMany conn "INSERT INTO Pointers (id, content) SELECT ?, o.content FROM Pointers o WHERE o.id = ?" (M.assocs mapping)
-            return (mapping, generalizedMsg)
-
-labelMessageSqlite :: Queue -> Counter -> Connection -> Message -> IO Message
-labelMessageSqlite q c conn msg@(Structured ms) = do
-    let !msgText = toText (messageToBuilderDB msg)
-    enqueueSync q $ do
-        execute conn "INSERT INTO Pointers (content) VALUES (?)" [msgText]
-        p <- fromIntegral <$> lastInsertRowId conn
-        return (LabeledStructured p ms)
-labelMessageSqlite q c conn msg = do
-    let !msgText = toText (messageToBuilderDB msg)
-    enqueueSync q $ do
-        execute conn "INSERT INTO Pointers (content) VALUES (?)" [msgText]
-        p <- fromIntegral <$> lastInsertRowId conn
-        return (LabeledStructured p [msg])
 
 insertCommand :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Command -> IO ()
 insertCommand q c conn userId workspaceId cmd = do
@@ -172,21 +112,24 @@ insertCommand q c conn userId workspaceId cmd = do
 
 createInitialWorkspaceSqlite :: Queue -> Counter -> Connection -> IO WorkspaceId
 createInitialWorkspaceSqlite q c conn = do
-    let msg = Text "What is your question?"
-    msg' <- labelMessageSqlite q c conn msg
-    let !msgText = toText (messageToBuilder msg)
-        !msgText' = toText (messageToBuilder msg')
     workspaceId <- newWorkspaceId
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     t <- increment c
+    let msg = Text "What is your question?"
     enqueueAsync q $ do
-        executeNamed conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
-                          \VALUES (:id, :time, :parent, :questionAsAsked, :questionAsAnswered)" [
-                            ":id" := wsIdText,
-                            ":time" := (t :: LogicalTime),
-                            ":parent" := (Nothing :: Maybe Text),
-                            ":questionAsAsked" := msgText,
-                            ":questionAsAnswered" := msgText']
+        withTransaction conn $ do
+            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+            let !p = maybe 0 succ lastPointerId
+            let msg' = LabeledStructured p [msg]
+            let !msgText = toText (messageToBuilder msg)
+                !msgText' = toText (messageToBuilder msg')
+            executeNamed conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
+                              \VALUES (:id, :time, :parent, :questionAsAsked, :questionAsAnswered)" [
+                                ":id" := wsIdText,
+                                ":time" := (t :: LogicalTime),
+                                ":parent" := (Nothing :: Maybe Text),
+                                ":questionAsAsked" := msgText,
+                                ":questionAsAnswered" := msgText']
     insertCommand q c conn autoUserId workspaceId (Ask msg)
     return workspaceId
 
@@ -257,10 +200,24 @@ expandPointerSqlite q c conn userId workspaceId ptr = do
                             ":time" := (t :: LogicalTime)]
     insertCommand q c conn userId workspaceId (View ptr)
 
+nextPointerSqlite :: Queue -> Counter -> Connection -> IO Pointer
+nextPointerSqlite q c conn = do
+    enqueueSync q $ do
+        [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+        return $! maybe 0 succ lastPointerId
+
 createPointersSqlite :: Queue -> Counter -> Connection -> PointerEnvironment -> IO ()
 createPointersSqlite q c conn env = do
     enqueueAsync q $
         executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) env))
+
+remapPointersSqlite :: Queue -> Counter -> Connection -> PointerRemapping -> IO ()
+remapPointersSqlite q c conn mapping = do
+    enqueueAsync q $
+        executeMany conn "INSERT INTO Pointers (id, content) \
+                         \SELECT ?, content \
+                         \FROM Pointers \
+                         \WHERE id = ?" (M.assocs mapping)
 
 -- NOT CACHEABLE
 pendingQuestionsSqlite :: Queue -> Counter -> Connection -> WorkspaceId -> IO [WorkspaceId]

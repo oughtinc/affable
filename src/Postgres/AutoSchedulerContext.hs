@@ -215,7 +215,7 @@ addContinuationArgumentPostgres :: Queue -> Connection -> FunctionId -> KontsId'
 addContinuationArgumentPostgres q conn answerId (workspaceId, f) argNumber v = do
     let !fId = nameToId answerId f
     let !vText = toText (messageToBuilder v)
-    enqueueSync q $ do
+    enqueueAsync q $ do
         {-
         vs <- queryNamed conn "SELECT value \
                               \FROM ContinuationArguments \
@@ -228,10 +228,10 @@ addContinuationArgumentPostgres q conn answerId (workspaceId, f) argNumber v = d
             [] -> do
         -}
                 -- TODO: Can remove the 'OR REPLACE' if the other code is uncommented.
-                execute conn "INSERT INTO ContinuationArguments ( workspaceId, function, argNumber, value ) VALUES (?, ?, ?, ?) \
-                             \ON CONFLICT (workspaceId, function, argNumber) DO UPDATE SET value = excluded.value"
+                () <$ execute conn "INSERT INTO ContinuationArguments ( workspaceId, function, argNumber, value ) VALUES (?, ?, ?, ?) \
+                                   \ON CONFLICT (workspaceId, function, argNumber) DO UPDATE SET value = excluded.value"
                                     (workspaceId, fId, argNumber, vText)
-                return NEW
+                -- return NEW
         {-
             [Only v'] | vText == v' -> return SAME
                       | otherwise -> do -- TODO: Formulate an approach that doesn't involve in-place updates.
@@ -243,6 +243,7 @@ addContinuationArgumentPostgres q conn answerId (workspaceId, f) argNumber v = d
                                                 ":value" := vText]
                             return REPLACED
         -}
+    return NEW
 
 -- NOT CACHEABLE
 continuationArgumentsPostgres :: Queue -> Connection -> FunctionId -> KontsId' -> IO (Konts', [Value])

@@ -4,16 +4,13 @@
 module Postgres.SchedulerContext ( makePostgresSchedulerContext ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
-import Data.Maybe ( mapMaybe ) -- base
 import Data.Text ( Text ) -- text
-import Data.Traversable ( mapAccumL ) -- base
 import Database.PostgreSQL.Simple ( Connection, Only(..),
                                     query, query_, execute, execute_, executeMany, withTransaction ) -- postgresql-simple
 
 import Command ( Command(..), commandToBuilder )
-import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
-                 messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
-                 canonicalizeMessage, boundPointers )
+import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
+                 messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB )
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId,
                    autoUserId, workspaceToMessage, eventMessage, renumberEvent, newSessionId )
 import Time ( Time(..), LogicalTime )
@@ -33,15 +30,13 @@ makePostgresSchedulerContext conn = do
             sendAnswer = sendAnswerPostgres q c conn,
             sendMessage = sendMessagePostgres q c conn,
             expandPointer = expandPointerPostgres q c conn,
+            nextPointer = nextPointerPostgres q c conn,
             createPointers = createPointersPostgres q c conn,
+            remapPointers = remapPointersPostgres q c conn,
             pendingQuestions = pendingQuestionsPostgres q c conn,
             getWorkspace = getWorkspacePostgres q c conn,
             allWorkspaces = allWorkspacesPostgres q c conn,
             getNextWorkspace = getNextWorkspacePostgres q c conn,
-            labelMessage = labelMessagePostgres q c conn,
-            normalizeEnv = insertMessagePointers q c conn,
-            canonicalizeEventsEnv = canonicalizeEventsPostgres q c conn,
-            generalizeEnv = insertGeneralizedMessagePointers q c conn,
             dereference = dereferencePostgres q c conn,
             reifyWorkspace = reifyWorkspacePostgres q c conn,
             extraContent = (conn, q)
@@ -90,28 +85,6 @@ reifyWorkspacePostgres q c conn workspaceId = do
                                                                 time = Time t })) workspaces
     return (workspaceToMessage workspaces workspaceId)
 
--- This takes a Message from the user where the LabeledStructures represent binding forms and produces
--- a Message and pointer state that corresponds to that binding structure.
-canonicalizeEventsPostgres :: Queue -> Counter -> Connection -> [Event] -> IO (PointerEnvironment, [Event])
-canonicalizeEventsPostgres q c conn evts = do
-    case traverse boundPointers $ mapMaybe eventMessage evts of
-        Right envs -> do
-            let !env = M.unions envs -- TODO: XXX There could be re-use of bound variables, so this needs to be handled in a smarter manner.
-            enqueueSync q $ do
-                withTransaction conn $ do
-                    [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-                    let !firstPointerId = maybe 0 succ lastPointerId
-                    let !topPointerId = firstPointerId + M.size env - 1
-                    let !mapping = M.fromList (zip (M.keys env) [firstPointerId ..])
-                    let !evts' = map (renumberEvent mapping) evts
-                    let canonicalizeMsg !top msg = (top + M.size pEnv, pEnv)
-                            where (pEnv, _) = canonicalizeMessage top msg
-                    let !pEnv = M.unions $ snd $ mapAccumL canonicalizeMsg (topPointerId + 1) (mapMaybe eventMessage evts')
-                    executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-                    return (pEnv, evts')
-        -- Left p -> return (Left p)
-        -- TODO: XXX Either decide to assume evts is well-formed, and enforce it, or propagate the error.
-
 -- TODO: Bulkify this.
 -- CACHEABLE
 dereferencePostgres :: Queue -> Counter -> Connection -> Pointer -> IO Message
@@ -119,43 +92,6 @@ dereferencePostgres q c conn ptr = do
     enqueueSync q $ do
         [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
         return $! parseMessageUnsafe' ptr t
-
--- Normalize the Message, write the new pointers to the database, then return the normalized message.
-insertMessagePointers :: Queue -> Counter -> Connection -> Message -> IO (PointerEnvironment, Message)
-insertMessagePointers q c conn msg = do
-    enqueueSync q $ do
-        withTransaction conn $ do
-            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-            let (pEnv, normalizedMsg) = normalizeMessage (maybe 0 succ lastPointerId) msg
-            executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
-            return (pEnv, normalizedMsg)
-
-insertGeneralizedMessagePointers :: Queue -> Counter -> Connection -> Message -> IO (PointerRemapping, Message)
-insertGeneralizedMessagePointers q c conn msg = do
-    enqueueSync q $ do
-        withTransaction conn $ do
-            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-            let (mapping, generalizedMsg) = generalizeMessage (maybe 0 succ lastPointerId) msg
-            executeMany conn "INSERT INTO Pointers (id, content) \
-                             \SELECT t.new, o.content FROM (VALUES (?, ?)) t(new, old) \
-                             \INNER JOIN Pointers o ON o.id = t.old" (M.assocs mapping)
-            return (mapping, generalizedMsg)
-
-labelMessagePostgres :: Queue -> Counter -> Connection -> Message -> IO Message
-labelMessagePostgres q c conn msg@(Structured ms) = do
-    let !msgText = toText (messageToBuilderDB msg)
-    enqueueSync q $ do
-        withTransaction conn $ do
-            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-            [Only p] <- query conn "INSERT INTO Pointers (id, content) VALUES (?, ?) RETURNING id" (maybe 0 succ lastPointerId :: Pointer, msgText)
-            return (LabeledStructured p ms)
-labelMessagePostgres q c conn msg = do
-    let !msgText = toText (messageToBuilderDB msg)
-    enqueueSync q $ do
-        withTransaction conn $ do
-            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-            [Only p] <- query conn "INSERT INTO Pointers (id, content) VALUES (?, ?) RETURNING id" (maybe 0 succ lastPointerId :: Pointer, msgText)
-            return (LabeledStructured p [msg])
 
 insertCommand :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Command -> IO ()
 insertCommand q c conn userId workspaceId cmd = do
@@ -168,16 +104,19 @@ insertCommand q c conn userId workspaceId cmd = do
 
 createInitialWorkspacePostgres :: Queue -> Counter -> Connection -> IO WorkspaceId
 createInitialWorkspacePostgres q c conn = do
-    let msg = Text "What is your question?"
-    msg' <- labelMessagePostgres q c conn msg
-    let !msgText = toText (messageToBuilder msg)
-        !msgText' = toText (messageToBuilder msg')
     workspaceId <- newWorkspaceId
     t <- increment c
+    let msg = Text "What is your question?"
     enqueueAsync q $ do
-        () <$ execute conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
-                           \VALUES (?, ?, ?, ?, ?)"
-                             (workspaceId, t :: LogicalTime, Nothing :: Maybe WorkspaceId, msgText, msgText')
+        withTransaction conn $ do
+            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+            let !p = maybe 0 succ lastPointerId
+            let msg' = LabeledStructured p [msg]
+            let !msgText = toText (messageToBuilder msg)
+                !msgText' = toText (messageToBuilder msg')
+            () <$ execute conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
+                               \VALUES (?, ?, ?, ?, ?)"
+                                 (workspaceId, t :: LogicalTime, Nothing :: Maybe WorkspaceId, msgText, msgText')
     insertCommand q c conn autoUserId workspaceId (Ask msg)
     return workspaceId
 
@@ -231,10 +170,24 @@ expandPointerPostgres q c conn userId workspaceId ptr = do
                             (workspaceId, ptr, t :: LogicalTime)
     insertCommand q c conn userId workspaceId (View ptr)
 
+nextPointerPostgres :: Queue -> Counter -> Connection -> IO Pointer
+nextPointerPostgres q c conn = do
+    enqueueSync q $ do
+        [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
+        return $! maybe 0 succ lastPointerId
+
 createPointersPostgres :: Queue -> Counter -> Connection -> PointerEnvironment -> IO ()
 createPointersPostgres q c conn env = do
     enqueueAsync q $
         () <$ executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) env))
+
+remapPointersPostgres :: Queue -> Counter -> Connection -> PointerRemapping -> IO ()
+remapPointersPostgres q c conn mapping = do
+    enqueueAsync q $
+        () <$ executeMany conn "INSERT INTO Pointers (id, content) \
+                               \SELECT m.new, p.content \
+                               \FROM Pointers p \
+                               \INNER JOIN (VALUES (?, ?)) m(new, old) ON m.old = p.id" (M.assocs mapping)
 
 -- NOT CACHEABLE
 pendingQuestionsPostgres :: Queue -> Counter -> Connection -> WorkspaceId -> IO [WorkspaceId]
