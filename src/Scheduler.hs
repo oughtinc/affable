@@ -39,6 +39,7 @@ data SchedulerContext extra = SchedulerContext {
     sendAnswer :: Bool -> UserId -> WorkspaceId -> Message -> IO (),
     sendMessage :: Bool -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO (),
     expandPointer :: UserId -> WorkspaceId -> Pointer -> IO (),
+    createPointers :: PointerEnvironment -> IO (),
     pendingQuestions :: WorkspaceId -> IO [WorkspaceId],
     getWorkspace :: WorkspaceId -> IO Workspace,
     allWorkspaces :: IO (M.Map WorkspaceId Workspace),

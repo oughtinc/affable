@@ -46,9 +46,9 @@ initDBSqlite conn = do
     execute_ conn "PRAGMA synchronous = OFF;" -- Evil, but makes it even faster and should be fine enough for testing.
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Workspaces (\n\
-       \    id INTEGER PRIMARY KEY ASC,\n\
+       \    id TEXT PRIMARY KEY ASC,\n\
        \    logicalTime INTEGER NOT NULL,\n\
-       \    parentWorkspaceId INTEGER NULL,\n\
+       \    parentWorkspaceId TEXT NULL,\n\
        \    questionAsAsked TEXT NOT NULL,\n\
        \    questionAsAnswered TEXT NOT NULL,\n\
        \    FOREIGN KEY ( parentWorkspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
@@ -58,8 +58,8 @@ initDBSqlite conn = do
        \CREATE TABLE IF NOT EXISTS Messages (\n\
        \    id INTEGER PRIMARY KEY ASC,\n\
        \    logicalTimeSent INTEGER NOT NULL,\n\
-       \    sourceWorkspaceId INTEGER NOT NULL,\n\
-       \    targetWorkspaceId INTEGER NOT NULL,\n\
+       \    sourceWorkspaceId TEXT NOT NULL,\n\
+       \    targetWorkspaceId TEXT NOT NULL,\n\
        \    content TEXT NOT NULL,\n\
        \    FOREIGN KEY ( sourceWorkspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
        \    FOREIGN KEY ( targetWorkspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
@@ -72,14 +72,14 @@ initDBSqlite conn = do
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Answers (\n\
-       \    workspaceId INTEGER PRIMARY KEY ASC, -- NOT NULL,\n\
+       \    workspaceId TEXT PRIMARY KEY ASC, -- NOT NULL,\n\
        \    logicalTimeAnswered INTEGER NOT NULL,\n\
        \    answer TEXT NOT NULL,\n\
        \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS ExpandedPointers (\n\
-       \    workspaceId INTEGER NOT NULL,\n\
+       \    workspaceId TEXT NOT NULL,\n\
        \    pointerId INTEGER NOT NULL,\n\
        \    logicalTimeExpanded INTEGER NOT NULL,\n\
        \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
@@ -88,7 +88,7 @@ initDBSqlite conn = do
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Commands (\n\
-       \    workspaceId INTEGER NOT NULL,\n\
+       \    workspaceId TEXT NOT NULL,\n\
        \    commandTime INTEGER NOT NULL,\n\
        \    userId INTEGER NOT NULL,\n\
        \    command TEXT NOT NULL,\n\
@@ -110,7 +110,7 @@ initDBSqlite conn = do
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Links (\n\
-       \    workspaceId INTEGER NOT NULL,\n\
+       \    workspaceId TEXT NOT NULL,\n\
        \    sourceId INTEGER NOT NULL,\n\
        \    targetId INTEGER NOT NULL,\n\
        \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\
@@ -120,7 +120,7 @@ initDBSqlite conn = do
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Continuations (\n\
-       \    workspaceId INTEGER NOT NULL,\n\
+       \    workspaceId TEXT NOT NULL,\n\
        \    function INTEGER NOT NULL,\n\
        \    next TEXT NOT NULL,\n\
        \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE\n\
@@ -128,7 +128,7 @@ initDBSqlite conn = do
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS ContinuationEnvironments (\n\
-       \    workspaceId INTEGER NOT NULL,\n\
+       \    workspaceId TEXT NOT NULL,\n\
        \    function INTEGER NOT NULL,\n\
        \    variable INTEGER NOT NULL,\n\
        \    value TEXT NOT NULL,\n\
@@ -139,7 +139,7 @@ initDBSqlite conn = do
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS ContinuationArguments (\n\
-       \    workspaceId INTEGER NOT NULL,\n\
+       \    workspaceId TEXT NOT NULL,\n\
        \    function INTEGER NOT NULL,\n\
        \    argNumber INTEGER NOT NULL,\n\
        \    value TEXT NOT NULL,\n\
@@ -154,7 +154,7 @@ initDBSqlite conn = do
        \    processId INTEGER NOT NULL,\n\
        \    varEnv TEXT NOT NULL,\n\
        \    funEnv TEXT NOT NULL,\n\
-       \    workspaceId INTEGER NOT NULL,\n\
+       \    workspaceId TEXT NOT NULL,\n\
        \    expression TEXT NOT NULL,\n\
        \    continuation TEXT NOT NULL,\n\
        \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE\n\

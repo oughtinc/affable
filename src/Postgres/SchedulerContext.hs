@@ -16,36 +16,38 @@ import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, nor
                  canonicalizeMessage, boundPointers )
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
-import Util ( toText, Queue, newQueue, enqueueAsync, enqueueSync )
-import Workspace ( Workspace(..), WorkspaceId )
+import Util ( toText, Counter, newCounter, increment, Queue, newQueue, enqueueAsync, enqueueSync )
+import Workspace ( Workspace(..), WorkspaceId, newWorkspaceId )
 
 makePostgresSchedulerContext :: Connection -> IO (SchedulerContext (Connection, Queue))
 makePostgresSchedulerContext conn = do
     q <- newQueue
+    c <- newCounter 0 -- TODO: XXX Initialize from database.
     return $
         SchedulerContext {
-            createInitialWorkspace = createInitialWorkspacePostgres q conn,
-            newSession = newSessionPostgres q conn,
-            createWorkspace = createWorkspacePostgres q conn,
-            sendAnswer = sendAnswerPostgres q conn,
-            sendMessage = sendMessagePostgres q conn,
-            expandPointer = expandPointerPostgres q conn,
-            pendingQuestions = pendingQuestionsPostgres q conn,
-            getWorkspace = getWorkspacePostgres q conn,
-            allWorkspaces = allWorkspacesPostgres q conn,
-            getNextWorkspace = getNextWorkspacePostgres q conn,
-            labelMessage = labelMessagePostgres q conn,
-            normalizeEnv = insertMessagePointers q conn,
-            canonicalizeEventsEnv = canonicalizeEventsPostgres q conn,
-            generalizeEnv = insertGeneralizedMessagePointers q conn,
-            dereference = dereferencePostgres q conn,
-            reifyWorkspace = reifyWorkspacePostgres q conn,
+            createInitialWorkspace = createInitialWorkspacePostgres q c conn,
+            newSession = newSessionPostgres q c conn,
+            createWorkspace = createWorkspacePostgres q c conn,
+            sendAnswer = sendAnswerPostgres q c conn,
+            sendMessage = sendMessagePostgres q c conn,
+            expandPointer = expandPointerPostgres q c conn,
+            createPointers = createPointersPostgres q c conn,
+            pendingQuestions = pendingQuestionsPostgres q c conn,
+            getWorkspace = getWorkspacePostgres q c conn,
+            allWorkspaces = allWorkspacesPostgres q c conn,
+            getNextWorkspace = getNextWorkspacePostgres q c conn,
+            labelMessage = labelMessagePostgres q c conn,
+            normalizeEnv = insertMessagePointers q c conn,
+            canonicalizeEventsEnv = canonicalizeEventsPostgres q c conn,
+            generalizeEnv = insertGeneralizedMessagePointers q c conn,
+            dereference = dereferencePostgres q c conn,
+            reifyWorkspace = reifyWorkspacePostgres q c conn,
             extraContent = (conn, q)
         }
 
 -- NOT CACHEABLE
-reifyWorkspacePostgres :: Queue -> Connection -> WorkspaceId -> IO Message
-reifyWorkspacePostgres q conn workspaceId = do
+reifyWorkspacePostgres :: Queue -> Counter -> Connection -> WorkspaceId -> IO Message
+reifyWorkspacePostgres q c conn workspaceId = do
     workspaces <- enqueueSync q $ do
         withTransaction conn $ do
             execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMARY KEY )"
@@ -66,7 +68,7 @@ reifyWorkspacePostgres q conn workspaceId = do
                                         \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
                                         \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
                                         \WHERE p.id IN (SELECT id FROM Descendants) \
-                                        \ORDER BY p.id ASC, q.id DESC"
+                                        \ORDER BY p.id ASC, q.logicalTime DESC"
             {-
             expanded <- query_ conn "SELECT workspaceId, pointerId, content \
                                     \FROM ExpandedPointers e \
@@ -88,8 +90,8 @@ reifyWorkspacePostgres q conn workspaceId = do
 
 -- This takes a Message from the user where the LabeledStructures represent binding forms and produces
 -- a Message and pointer state that corresponds to that binding structure.
-canonicalizeEventsPostgres :: Queue -> Connection -> [Event] -> IO (PointerEnvironment, [Event])
-canonicalizeEventsPostgres q conn evts = do
+canonicalizeEventsPostgres :: Queue -> Counter -> Connection -> [Event] -> IO (PointerEnvironment, [Event])
+canonicalizeEventsPostgres q c conn evts = do
     case traverse boundPointers $ mapMaybe eventMessage evts of
         Right envs -> do
             let !env = M.unions envs -- TODO: XXX There could be re-use of bound variables, so this needs to be handled in a smarter manner.
@@ -110,15 +112,15 @@ canonicalizeEventsPostgres q conn evts = do
 
 -- TODO: Bulkify this.
 -- CACHEABLE
-dereferencePostgres :: Queue -> Connection -> Pointer -> IO Message
-dereferencePostgres q conn ptr = do
+dereferencePostgres :: Queue -> Counter -> Connection -> Pointer -> IO Message
+dereferencePostgres q c conn ptr = do
     enqueueSync q $ do
         [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
         return $! parseMessageUnsafe' ptr t
 
 -- Normalize the Message, write the new pointers to the database, then return the normalized message.
-insertMessagePointers :: Queue -> Connection -> Message -> IO (PointerEnvironment, Message)
-insertMessagePointers q conn msg = do
+insertMessagePointers :: Queue -> Counter -> Connection -> Message -> IO (PointerEnvironment, Message)
+insertMessagePointers q c conn msg = do
     enqueueSync q $ do
         withTransaction conn $ do
             [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
@@ -126,8 +128,8 @@ insertMessagePointers q conn msg = do
             executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) pEnv))
             return (pEnv, normalizedMsg)
 
-insertGeneralizedMessagePointers :: Queue -> Connection -> Message -> IO (PointerRemapping, Message)
-insertGeneralizedMessagePointers q conn msg = do
+insertGeneralizedMessagePointers :: Queue -> Counter -> Connection -> Message -> IO (PointerRemapping, Message)
+insertGeneralizedMessagePointers q c conn msg = do
     enqueueSync q $ do
         withTransaction conn $ do
             [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
@@ -137,15 +139,15 @@ insertGeneralizedMessagePointers q conn msg = do
                              \INNER JOIN Pointers o ON o.id = t.old" (M.assocs mapping)
             return (mapping, generalizedMsg)
 
-labelMessagePostgres :: Queue -> Connection -> Message -> IO Message
-labelMessagePostgres q conn msg@(Structured ms) = do
+labelMessagePostgres :: Queue -> Counter -> Connection -> Message -> IO Message
+labelMessagePostgres q c conn msg@(Structured ms) = do
     let !msgText = toText (messageToBuilderDB msg)
     enqueueSync q $ do
         withTransaction conn $ do
             [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
             [Only p] <- query conn "INSERT INTO Pointers (id, content) VALUES (?, ?) RETURNING id" (maybe 0 succ lastPointerId :: Pointer, msgText)
             return (LabeledStructured p ms)
-labelMessagePostgres q conn msg = do
+labelMessagePostgres q c conn msg = do
     let !msgText = toText (messageToBuilderDB msg)
     enqueueSync q $ do
         withTransaction conn $ do
@@ -153,8 +155,8 @@ labelMessagePostgres q conn msg = do
             [Only p] <- query conn "INSERT INTO Pointers (id, content) VALUES (?, ?) RETURNING id" (maybe 0 succ lastPointerId :: Pointer, msgText)
             return (LabeledStructured p [msg])
 
-insertCommand :: Queue -> Connection -> UserId -> WorkspaceId -> Command -> IO ()
-insertCommand q conn userId workspaceId cmd = do
+insertCommand :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Command -> IO ()
+insertCommand q c conn userId workspaceId cmd = do
     let !cmdText = toText (commandToBuilder cmd)
     enqueueAsync q $ do
         mt <- query conn "SELECT commandTime FROM Commands WHERE workspaceId = ? ORDER BY commandTime DESC LIMIT 1" (Only workspaceId)
@@ -162,84 +164,94 @@ insertCommand q conn userId workspaceId cmd = do
         () <$ execute conn "INSERT INTO Commands (workspaceId, commandTime, userId, command) VALUES (?, ?, ?, ?)"
                             (workspaceId, t :: Int64, userId, cmdText)
 
-createInitialWorkspacePostgres :: Queue -> Connection -> IO WorkspaceId
-createInitialWorkspacePostgres q conn = do
+createInitialWorkspacePostgres :: Queue -> Counter -> Connection -> IO WorkspaceId
+createInitialWorkspacePostgres q c conn = do
     let msg = Text "What is your question?"
-    msg' <- labelMessagePostgres q conn msg
+    msg' <- labelMessagePostgres q c conn msg
     let !msgText = toText (messageToBuilder msg)
         !msgText' = toText (messageToBuilder msg')
-    enqueueSync q $ do
-        [Only workspaceId] <- query conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
-                                         \VALUES (?, ?, ?, ?) RETURNING id"
-                                             (0 :: LogicalTime, Nothing :: Maybe WorkspaceId, msgText, msgText')
-        return workspaceId
+    workspaceId <- newWorkspaceId
+    t <- increment c
+    enqueueAsync q $ do
+        () <$ execute conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
+                           \VALUES (?, ?, ?, ?, ?)"
+                             (workspaceId, t :: LogicalTime, Nothing :: Maybe WorkspaceId, msgText, msgText')
+    return workspaceId
 
-newSessionPostgres :: Queue -> Connection -> Maybe SessionId -> IO SessionId
-newSessionPostgres q conn Nothing = do
+newSessionPostgres :: Queue -> Counter -> Connection -> Maybe SessionId -> IO SessionId
+newSessionPostgres q c conn Nothing = do
     enqueueSync q $ do
         [Only sessionId] <- query_ conn "INSERT INTO Sessions DEFAULT VALUES RETURNING sessionId"
         return sessionId
-newSessionPostgres q conn (Just sessionId) = do
+newSessionPostgres q c conn (Just sessionId) = do
     enqueueSync q $ do
         execute conn "INSERT INTO Sessions VALUES (?) ON CONFLICT DO NOTHING" (Only sessionId)
         return sessionId
 
-createWorkspacePostgres :: Queue -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
-createWorkspacePostgres q conn doNormalize userId workspaceId qAsAsked qAsAnswered = do
-    qAsAnswered' <- if doNormalize then snd <$> insertMessagePointers q conn qAsAnswered else return qAsAnswered
+createWorkspacePostgres :: Queue -> Counter -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
+createWorkspacePostgres q c conn doNormalize userId workspaceId qAsAsked qAsAnswered = do
+    qAsAnswered' <- if doNormalize then snd <$> insertMessagePointers q c conn qAsAnswered else return qAsAnswered
     let !qAsAskedText = toText (messageToBuilder qAsAsked)
         !qAsAnsweredText = toText (messageToBuilder qAsAnswered')
-    newWorkspaceId <- enqueueSync q $ do
-        [Only workspaceId] <- query conn "INSERT INTO Workspaces (logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
-                                         \VALUES (?, ?, ?, ?) RETURNING id"
-                                            (0 :: LogicalTime, Just workspaceId, qAsAskedText, qAsAnsweredText)
-        return workspaceId
-    insertCommand q conn userId workspaceId (Ask qAsAsked)
-    return newWorkspaceId
-
-sendAnswerPostgres :: Queue -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> IO ()
-sendAnswerPostgres q conn doNormalize userId workspaceId msg = do
-    msg' <- if doNormalize then snd <$> insertMessagePointers q conn msg else return msg
-    let !msgText = toText (messageToBuilder msg')
+    wsId <- newWorkspaceId
+    t <- increment c
     enqueueAsync q $ do
-        -- the following questions upon return, possibly referring to pointers in an answer that no longer exist.
+        () <$ execute conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
+                           \VALUES (?, ?, ?, ?, ?)"
+                            (wsId, t :: LogicalTime, Just workspaceId, qAsAskedText, qAsAnsweredText)
+    insertCommand q c conn userId workspaceId (Ask qAsAsked)
+    return wsId
+
+sendAnswerPostgres :: Queue -> Counter -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> IO ()
+sendAnswerPostgres q c conn doNormalize userId workspaceId msg = do
+    msg' <- if doNormalize then snd <$> insertMessagePointers q c conn msg else return msg
+    let !msgText = toText (messageToBuilder msg')
+    t <- increment c
+    enqueueAsync q $ do
         () <$ execute conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (?, ?, ?) \
                            \ON CONFLICT(workspaceId) DO UPDATE SET logicalTimeAnswered = excluded.logicalTimeAnswered, answer = excluded.answer"
-                            (workspaceId, 0 :: LogicalTime, msgText)
-    insertCommand q conn userId workspaceId (Reply msg)
+                            (workspaceId, t :: LogicalTime, msgText)
+    insertCommand q c conn userId workspaceId (Reply msg)
 
-sendMessagePostgres :: Queue -> Connection -> Bool -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
-sendMessagePostgres q conn doNormalize userId srcId tgtId msg = do
-    msg' <- if doNormalize then snd <$> insertMessagePointers q conn msg else return msg
+sendMessagePostgres :: Queue -> Counter -> Connection -> Bool -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
+sendMessagePostgres q c conn doNormalize userId srcId tgtId msg = do
+    msg' <- if doNormalize then snd <$> insertMessagePointers q c conn msg else return msg
     let !msgText = toText (messageToBuilder msg')
+    t <- increment c
     enqueueAsync q $ do
         () <$ execute conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (?, ?, ?, ?)"
-                            (srcId, tgtId, 0 :: LogicalTime, msgText)
-    insertCommand q conn userId srcId (Send (fromIntegral tgtId) msg)
+                            (srcId, tgtId, t :: LogicalTime, msgText)
+    insertCommand q c conn userId srcId (Send tgtId msg)
 
 -- TODO: Bulkify this.
-expandPointerPostgres :: Queue -> Connection -> UserId -> WorkspaceId -> Pointer -> IO ()
-expandPointerPostgres q conn userId workspaceId ptr = do
+expandPointerPostgres :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Pointer -> IO ()
+expandPointerPostgres q c conn userId workspaceId ptr = do
+    t <- increment c
     enqueueAsync q $ do
         () <$ execute conn "INSERT INTO ExpandedPointers (workspaceId, pointerId, logicalTimeExpanded) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
-                            (workspaceId, ptr, 0 :: LogicalTime)
-    insertCommand q conn userId workspaceId (View ptr)
+                            (workspaceId, ptr, t :: LogicalTime)
+    insertCommand q c conn userId workspaceId (View ptr)
+
+createPointersPostgres :: Queue -> Counter -> Connection -> PointerEnvironment -> IO ()
+createPointersPostgres q c conn env = do
+    enqueueAsync q $
+        () <$ executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) env))
 
 -- NOT CACHEABLE
-pendingQuestionsPostgres :: Queue -> Connection -> WorkspaceId -> IO [WorkspaceId]
-pendingQuestionsPostgres q conn workspaceId = do
+pendingQuestionsPostgres :: Queue -> Counter -> Connection -> WorkspaceId -> IO [WorkspaceId]
+pendingQuestionsPostgres q c conn workspaceId = do
     enqueueSync q $ do
         subquestions <- query conn "SELECT w.id \
                                    \FROM Workspaces w \
                                    \LEFT OUTER JOIN Answers a ON a.workspaceId = w.id \
                                    \WHERE w.parentWorkspaceId = ? \
-                                   \  AND a.answer IS NULL ORDER BY id ASC" (Only workspaceId)
+                                   \  AND a.answer IS NULL ORDER BY logicalTime ASC" (Only workspaceId)
         return $ map (\(Only qId) -> qId) subquestions
 
 -- TODO: Maybe maintain a cache of workspaces.
 -- NOT CACHEABLE but the components should be. Cacheable if answered, for now at least.
-getWorkspacePostgres :: Queue -> Connection -> WorkspaceId -> IO Workspace
-getWorkspacePostgres q conn workspaceId = do
+getWorkspacePostgres :: Queue -> Counter -> Connection -> WorkspaceId -> IO Workspace
+getWorkspacePostgres q c conn workspaceId = do
     enqueueSync q $ do
         withTransaction conn $ do
             [(p, t, q)] <- query conn "SELECT parentWorkspaceId, logicalTime, questionAsAnswered \
@@ -251,7 +263,7 @@ getWorkspacePostgres q conn workspaceId = do
                                        \FROM Workspaces w \
                                        \LEFT OUTER JOIN Answers a ON w.id = a.workspaceId \
                                        \WHERE w.parentWorkspaceId = ? \
-                                       \ORDER BY w.id ASC" (Only workspaceId)
+                                       \ORDER BY w.logicalTime ASC" (Only workspaceId)
             expanded <- query conn "SELECT pointerId, content \
                                    \FROM ExpandedPointers e \
                                    \INNER JOIN Pointers p ON e.pointerId = p.id \
@@ -266,8 +278,8 @@ getWorkspacePostgres q conn workspaceId = do
                 time = Time t }
 
 -- NOT CACHEABLE
-allWorkspacesPostgres :: Queue -> Connection -> IO (M.Map WorkspaceId Workspace)
-allWorkspacesPostgres q conn = do
+allWorkspacesPostgres :: Queue -> Counter -> Connection -> IO (M.Map WorkspaceId Workspace)
+allWorkspacesPostgres q c conn = do
     enqueueSync q $ do
         withTransaction conn $ do
             workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
@@ -277,7 +289,7 @@ allWorkspacesPostgres q conn = do
                                         \FROM Workspaces p \
                                         \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
                                         \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
-                                        \ORDER BY p.id ASC, q.id DESC"
+                                        \ORDER BY p.id ASC, q.logicalTime DESC"
             expanded <- query_ conn "SELECT workspaceId, pointerId, content \
                                     \FROM ExpandedPointers e \
                                     \INNER JOIN Pointers p ON e.pointerId = p.id"
@@ -294,13 +306,13 @@ allWorkspacesPostgres q conn = do
                                                                 time = Time t })) workspaces
 
 -- NOT CACHEABLE
-getNextWorkspacePostgres :: Queue -> Connection -> IO (Maybe WorkspaceId)
-getNextWorkspacePostgres q conn = do
+getNextWorkspacePostgres :: Queue -> Counter -> Connection -> IO (Maybe WorkspaceId)
+getNextWorkspacePostgres q c conn = do
     enqueueSync q $ do
         -- This gets a workspace that doesn't currently have an answer.
         result <- query_ conn "SELECT w.id \
                               \FROM Workspaces w \
-                              \WHERE NOT EXISTS(SELECT * FROM Answers a WHERE a.workspaceId = w.id) ORDER BY w.id DESC LIMIT 1"
+                              \WHERE NOT EXISTS(SELECT * FROM Answers a WHERE a.workspaceId = w.id) ORDER BY w.logicalTime DESC LIMIT 1"
         case result of
             [] -> return Nothing
             [Only workspaceId] -> return (Just workspaceId)

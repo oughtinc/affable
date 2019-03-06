@@ -35,7 +35,7 @@ import Primitive ( makePrimitives )
 import Scheduler ( UserId, Event(..), SchedulerContext(..), SchedulerFn,
                    autoUserId, relabelMessage, fullyExpand, normalize, generalize, canonicalizeEvents  )
 import Util ( toText, invertMap )
-import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
+import Workspace ( WorkspaceId, Workspace(..) )
 
 class MonadFork m where
     fork :: m () -> m ThreadId

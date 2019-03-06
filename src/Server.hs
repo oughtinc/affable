@@ -28,7 +28,7 @@ import Exp ( Pattern, Name(..), Exp(..) )
 import Message ( Message(..), Pointer, stripLabel )
 import Scheduler ( SessionId, UserId, Event(..), SchedulerFn, SchedulerContext(..),
                    canonicalizeEvents, firstUserId, getWorkspace, createInitialWorkspace, createWorkspace )
-import Workspace ( WorkspaceId, Workspace(..), emptyWorkspace )
+import Workspace ( WorkspaceId, Workspace(..) )
 
 data Response = OK | Error T.Text deriving ( Generic )
 

@@ -22,7 +22,7 @@ import Message ( Message(..), PointerRemapping, messageToBuilder, expandPointers
 import Scheduler ( UserId, Event, SchedulerFn, firstUserId )
 import qualified Scheduler as Event ( Event (..) )
 import Util ( toText, invertMap )
-import Workspace ( Workspace(..), emptyWorkspace )
+import Workspace ( Workspace(..) )
 
 putMessageLn :: Message -> InputT IO ()
 putMessageLn = liftIO . T.putStrLn . toText . messageToBuilder
@@ -102,5 +102,5 @@ commandToEvent :: PointerRemapping -> Command -> Maybe Event
 commandToEvent mapping (Ask msg) = Just (Event.Create $ renumberMessage' mapping msg)
 commandToEvent mapping (Reply msg) = Just (Event.Answer $ renumberMessage' mapping msg)
 commandToEvent mapping (View p) = Event.Expand <$> M.lookup p mapping
-commandToEvent mapping (Send addr msg) = Just (Event.Send (fromIntegral addr) $ renumberMessage' mapping msg)
+commandToEvent mapping (Send addr msg) = Just (Event.Send addr $ renumberMessage' mapping msg)
 commandToEvent mapping Wait = Just Event.Submit

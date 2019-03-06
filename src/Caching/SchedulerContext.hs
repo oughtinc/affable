@@ -13,7 +13,7 @@ import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, nor
                  canonicalizeMessage, boundPointers )
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
-import Workspace ( Workspace(..), WorkspaceId, emptyWorkspace )
+import Workspace ( Workspace(..), WorkspaceId )
 
 data CacheState = CacheState {
     workspacesC :: TVar (M.Map WorkspaceId Workspace),
@@ -68,6 +68,7 @@ makeCachingSchedulerContext ctxt = do
             sendAnswer = sendAnswerCaching cache ctxt,
             sendMessage = sendMessageCaching cache ctxt,
             expandPointer = expandPointerCaching cache ctxt,
+            createPointers = createPointersCaching cache ctxt,
             pendingQuestions = pendingQuestionsCaching cache ctxt,
             getWorkspace = getWorkspaceCaching cache ctxt,
             allWorkspaces = allWorkspacesCaching cache ctxt,
@@ -134,10 +135,15 @@ createWorkspaceCaching :: CacheState -> SchedulerContext e -> Bool -> UserId -> 
 createWorkspaceCaching cache ctxt doNormalize userId workspaceId qAsAsked qAsAnswered = do
     qAsAnswered' <- if doNormalize then snd <$> insertMessagePointers cache ctxt qAsAnswered else return qAsAnswered
     wsId <- createWorkspace ctxt False userId workspaceId qAsAsked qAsAnswered'
-    atomically $ do
-        modifyTVar' (workspacesC cache)
-            $ M.insert wsId ((emptyWorkspace qAsAnswered') { identity = wsId, parentId = Just workspaceId })
-              . M.adjust (insertSubQuestion wsId) workspaceId
+    let newWorkspace = Workspace {
+                        identity = wsId,
+                        parentId = Just workspaceId,
+                        question = qAsAnswered',
+                        subQuestions = [],
+                        messageHistory = [],
+                        expandedPointers = M.empty,
+                        time = 0 }
+    atomically $ modifyTVar' (workspacesC cache) (M.insert wsId newWorkspace . M.adjust (insertSubQuestion wsId) workspaceId)
     return wsId
   where insertSubQuestion wsId ws@(Workspace { subQuestions = sqs }) = ws { subQuestions = sqs ++ [(wsId, qAsAsked, Nothing)] }
 
@@ -166,6 +172,11 @@ expandPointerCaching cache ctxt userId workspaceId ptr = do
         modifyTVar' (workspacesC cache) $ M.adjust (insertPointer msg) workspaceId
     expandPointer ctxt userId workspaceId ptr
   where insertPointer msg ws@(Workspace { expandedPointers = ep }) = ws { expandedPointers = M.insert ptr msg ep }
+
+createPointersCaching :: CacheState -> SchedulerContext e -> PointerEnvironment -> IO ()
+createPointersCaching cache ctxt env = do
+    atomically $ modifyTVar' (pointersC cache) (M.union env)
+    createPointers ctxt env
 
 pendingQuestionsCaching :: CacheState -> SchedulerContext e -> WorkspaceId -> IO [WorkspaceId]
 pendingQuestionsCaching cache ctxt workspaceId = do

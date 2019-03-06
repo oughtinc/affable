@@ -22,14 +22,17 @@ import Data.Text ( Text ) -- text
 import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
 import qualified Data.Text.Lazy.Builder.Int as T ( decimal ) -- text
 import Data.Traversable ( sequenceA, traverse ) -- base
+import Data.UUID ( UUID ) -- uuid
 import Data.Void ( Void ) -- base
 import GHC.Generics ( Generic ) -- ghc
 import Text.Megaparsec ( Parsec, parse, many, some, takeWhile1P, (<|>), (<?>) ) -- megaparsec
 import Text.Megaparsec.Char ( char, string ) -- megaparsec
 import Text.Megaparsec.Char.Lexer ( decimal ) -- megaparsec
 
+import Util ( parseUUID, uuidToBuilder )
+
 type Pointer = Int
-type Address = Int
+type Address = UUID
 
 -- TODO: Perhaps add support for logic variables (?X perhaps) so this code can be shared.
 data Message
@@ -65,10 +68,12 @@ pointerToBuilder :: Pointer -> Builder
 pointerToBuilder p = singleton '$' <> T.decimal p
 
 addressParser :: Parsec Void Text Address
-addressParser =  (char '@' *> decimal) <?> "address"
+addressParser =  (char '@' *> parseUUID) <?> "address"
+-- addressParser =  (char '@' *> decimal) <?> "address"
 
 addressToBuilder :: Address -> Builder
-addressToBuilder a = singleton '@' <> T.decimal a
+addressToBuilder a = singleton '@' <> uuidToBuilder a
+-- addressToBuilder a = singleton '@' <> T.decimal a
 
 messageParser :: Parsec Void Text Message
 messageParser = messageParser'
@@ -117,7 +122,7 @@ parseMessageUnsafeDB t = case parse messageParser' "" t of
 messageToHaskell :: Message -> Builder
 messageToHaskell (Text t) = fromText (fromString (show t))
 messageToHaskell (Reference p) = singleton 'p' <> T.decimal p
-messageToHaskell (Location a) = fromText "(Location " <> T.decimal a <> singleton ')'
+-- messageToHaskell (Location a) = fromText "(Location " <> T.decimal a <> singleton ')' -- TODO
 messageToHaskell (Structured [Reference p]) = singleton 'p' <> T.decimal p
 messageToHaskell (Structured ms) = fromText "S [" <> mconcat (intersperse (singleton ',') (map messageToHaskell ms)) <> fromText "]"
 messageToHaskell (LabeledStructured _ ms) = fromText "S [" <> mconcat (intersperse (singleton ',') (map messageToHaskell ms)) <> fromText "]"
@@ -131,7 +136,7 @@ messageToPattern = go True
           go False (Structured ms) = fromText "S [" <> mconcat (intersperse (singleton ',') (map (go False) ms)) <> fromText "]"
           go False (LabeledStructured p ms) = fromText "S [" <> mconcat (intersperse (singleton ',') (map (go False) ms)) <> fromText "]"
           go _ (Reference p) = singleton 'p' <> T.decimal p
-          go _ (Location a) = fromText "(Location " <> T.decimal a <> singleton ')'
+          -- go _ (Location a) = fromText "(Location " <> T.decimal a <> singleton ')' -- TODO
 
 messageToBuilder :: Message -> Builder
 messageToBuilder = go True

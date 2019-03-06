@@ -1,20 +1,25 @@
-module Util ( Lock, Queue,
+{-# LANGUAGE OverloadedStrings #-}
+module Util ( Lock, Queue, Counter, uuidToBuilder, parseUUID, newCounter, increment,
               toText, invertMap, newLock, withLock, newQueue, enqueueAsync, enqueueSync, parseMap, mapToBuilder, parseUnsafe ) where
 import Control.Concurrent ( forkIO ) -- base
 import Control.Concurrent.STM ( atomically ) -- stm
 import Control.Concurrent.STM.TChan ( TChan, readTChan, writeTChan, newTChanIO ) -- stm
 import Control.Concurrent.STM.TMVar ( TMVar, takeTMVar, putTMVar, newTMVarIO, newEmptyTMVarIO ) -- stm
 import Control.Exception ( bracket_ ) -- base
-import Control.Monad ( forever ) -- base
+import Control.Monad ( forever, replicateM ) -- base
+import Data.IORef ( IORef, newIORef, atomicModifyIORef' ) -- base
+import Data.Int ( Int64 ) -- base
 import Data.List ( intersperse ) -- base
 import qualified Data.Map as M -- containers
+import Data.String ( fromString ) -- base
 import qualified Data.Text as S ( Text ) -- text
-import Data.Text.Lazy.Builder ( Builder, toLazyText, singleton ) -- text
+import Data.Text.Lazy.Builder ( Builder, toLazyText, singleton, fromText ) -- text
 import Data.Text.Lazy ( toStrict ) -- text
 import Data.Tuple ( swap ) -- base
+import qualified Data.UUID as UUID -- uuid
 import Data.Void ( Void ) -- base
-import Text.Megaparsec ( Parsec, sepBy, parse, parseErrorPretty ) -- megaparsec
-import Text.Megaparsec.Char ( char ) -- megaparsec
+import Text.Megaparsec ( Parsec, sepBy, parse, parseErrorPretty, (<?>) ) -- megaparsec
+import Text.Megaparsec.Char ( char, hexDigitChar ) -- megaparsec
 
 toText :: Builder -> S.Text
 toText = toStrict . toLazyText
@@ -66,3 +71,24 @@ enqueueSync q action = do
     resultTMVar <- newEmptyTMVarIO
     enqueueAsync q (action >>= atomically . putTMVar resultTMVar)
     atomically $ takeTMVar resultTMVar
+
+type Counter = IORef Int64
+
+newCounter :: Int64 -> IO Counter
+newCounter = newIORef
+
+increment :: Counter -> IO Int64
+increment c = atomicModifyIORef' c (\n -> (n+1, n))
+
+uuidToBuilder :: UUID.UUID -> Builder
+uuidToBuilder = fromText . UUID.toText
+
+parseUUID :: Parsec Void S.Text UUID.UUID
+parseUUID = (do
+    p1 <- fromString <$> replicateM 8 hexDigitChar
+    p2 <- fromString <$> (char '-' *> replicateM 4 hexDigitChar)
+    p3 <- fromString <$> (char '-' *> replicateM 4 hexDigitChar)
+    p4 <- fromString <$> (char '-' *> replicateM 4 hexDigitChar)
+    p5 <- fromString <$> (char '-' *> replicateM 12 hexDigitChar)
+    Just uuid <- return $ UUID.fromText (mconcat [p1,"-",p2,"-",p3,"-",p4,"-",p5])
+    return uuid) <?> "UUID"

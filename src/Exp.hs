@@ -17,7 +17,7 @@ import Text.Megaparsec.Char ( char, string ) -- megaparsec
 import Text.Megaparsec.Char.Lexer ( decimal ) -- megaparsec
 
 import Message ( Message(..), Pointer, messageToBuilder, messageToBuilderDB, messageParser', messageToHaskell, messageToPattern )
-import Workspace ( WorkspaceId )
+import Workspace ( WorkspaceId, workspaceIdToBuilder, parseWorkspaceId )
 import Util ( mapToBuilder, parseMap, parseUnsafe )
 
 type Value = Message
@@ -195,7 +195,7 @@ expToHaskell alternativesFor = go 0
 kont1ToBuilderDB' :: (p -> Builder) -> (f -> Builder) -> Kont1 WorkspaceId p f v -> Builder
 kont1ToBuilderDB' pBuilder fBuilder = go
     where go Done = fromText "Done"
-          go (PrimKont p s k) = fromText "(PrimKont " <> pBuilder p <> singleton ' ' <> T.decimal s <> singleton ' ' <> go k <> singleton ')'
+          go (PrimKont p s k) = fromText "(PrimKont " <> pBuilder p <> singleton ' ' <> workspaceIdToBuilder s <> singleton ' ' <> go k <> singleton ')'
           go (NotifyKont argNumber numArgs kId) = fromText "(NotifyKont " <> T.decimal argNumber <> singleton ' '
                                                                           <> T.decimal numArgs <> singleton ' '
                                                                           <> kontsIdToBuilderDB fBuilder kId <> singleton ')'
@@ -205,7 +205,7 @@ kont1ToBuilderDB = kont1ToBuilderDB' T.decimal nameToBuilder
 
 kont1ParserDB :: Parsec Void T.Text Kont1'
 kont1ParserDB = (Done <$ string "Done")
-            <|> (PrimKont <$> (string "(PrimKont " *> decimal) <*> (char ' ' *> decimal) <*> (char ' ' *> kont1ParserDB) <* char ')')
+            <|> (PrimKont <$> (string "(PrimKont " *> decimal) <*> (char ' ' *> parseWorkspaceId) <*> (char ' ' *> kont1ParserDB) <* char ')')
             <|> (NotifyKont <$> (string "(NotifyKont " *> decimal) <*> (char ' ' *> decimal) <*> (char ' ' *> kontsIdParserDB) <* char ')')
             <?> "kont1"
 
@@ -214,10 +214,10 @@ parseKont1UnsafeDB :: T.Text -> Kont1'
 parseKont1UnsafeDB = parseUnsafe kont1ParserDB
 
 kontsIdParserDB :: Parsec Void T.Text KontsId'
-kontsIdParserDB = (,) <$> (char '(' *> decimal) <*> (char ',' *> nameParser) <* char ')' <?> "continuation ID"
+kontsIdParserDB = (,) <$> (char '(' *> parseWorkspaceId) <*> (char ',' *> nameParser) <* char ')' <?> "continuation ID"
 
 kontsIdToBuilderDB :: (f -> Builder) -> KontsId WorkspaceId f -> Builder
-kontsIdToBuilderDB fBuilder (s, f) = singleton '(' <> T.decimal s <> singleton ',' <> fBuilder f <> singleton ')'
+kontsIdToBuilderDB fBuilder (s, f) = singleton '(' <> workspaceIdToBuilder s <> singleton ',' <> fBuilder f <> singleton ')'
 
 -- I don't really want to store these as strings or really at all, but, for now, it is the most direct thing to do.
 varEnvToBuilder :: VarEnv Var -> Builder
