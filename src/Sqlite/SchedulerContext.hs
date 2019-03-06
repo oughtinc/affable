@@ -2,9 +2,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 module Sqlite.SchedulerContext ( makeSqliteSchedulerContext ) where
-import Control.Exception ( bracket_ ) -- base
+import Control.Concurrent ( myThreadId ) -- base
 import Data.Int ( Int64 ) -- base
-import Data.IORef ( IORef, newIORef, writeIORef, readIORef ) -- base
 import qualified Data.Map as M -- containers
 import Data.Text ( Text ) -- text
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
@@ -23,10 +22,11 @@ makeSqliteSchedulerContext :: Queue -> Connection -> IO (SchedulerContext (Conne
 makeSqliteSchedulerContext q conn = do
     [Only t] <- enqueueSync q $ query_ conn "SELECT COUNT(*) FROM Commands"
     c <- newCounter t
-    nestedRef <- newIORef False
+    qThreadId <- enqueueSync q myThreadId
     let sync action = do
-            nested <- readIORef nestedRef
-            if nested then action else enqueueSync q (bracket_ (writeIORef nestedRef True) (writeIORef nestedRef False) action)
+            tId <- myThreadId
+            if qThreadId == tId then action -- If we're already on the Queue's thread, no need to enqueue.
+                                else enqueueSync q (withTransaction conn action)
     return $
         SchedulerContext {
             doAtomically = sync,
@@ -53,46 +53,45 @@ reifyWorkspaceSqlite :: SyncFunc -> Queue -> Counter -> Connection -> WorkspaceI
 reifyWorkspaceSqlite sync q c conn workspaceId = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     workspaces <- sync $ do
-        withTransaction conn $ do
-            execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMARY KEY ASC )"
-            execute_ conn "DELETE FROM Descendants"
-            executeNamed conn "WITH RECURSIVE ds(id) AS ( \
-                              \     VALUES (:root) \
-                              \ UNION ALL \
-                              \     SELECT w.id FROM Workspaces w INNER JOIN ds ON w.parentWorkspaceId = ds.id \
-                              \) INSERT INTO Descendants ( id ) SELECT id FROM ds" [":root" := wsIdText]
-            workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
-                                      \FROM Workspaces WHERE id IN (SELECT id FROM Descendants)"
-            messages <- query_ conn "SELECT targetWorkspaceId, content \
-                                    \FROM Messages \
-                                    \WHERE targetWorkspaceId IN (SELECT id FROM Descendants) \
-                                    \ORDER BY id ASC"
-            subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
-                                        \FROM Workspaces p \
-                                        \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
-                                        \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
-                                        \WHERE p.id IN (SELECT id FROM Descendants) \
-                                        \ORDER BY p.id ASC, q.logicalTime DESC"
-            {-
-            expanded <- query_ conn "SELECT workspaceId, pointerId, content \
-                                    \FROM ExpandedPointers e \
-                                    \INNER JOIN Pointers p ON e.pointerId = p.id \
-                                    \WHERE workspaceId IN (SELECT id FROM Descendants)"
-            -}
-            let messageMap = M.fromListWith (++) $ map (\(i, m) -> (workspaceIdFromText i, [parseMessageUnsafe m])) messages
-                subquestionsMap = M.fromListWith (++) $
-                                    map (\(i, qId, q, ma) ->
-                                            (workspaceIdFromText i, [(workspaceIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
-                expandedMap = M.empty -- M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
-            return $ M.fromList $ map (\(i, p, t, q) -> let !wsId = workspaceIdFromText i
-                                                        in (wsId, Workspace {
-                                                                    identity = wsId,
-                                                                    parentId = workspaceIdFromText <$> p,
-                                                                    question = parseMessageUnsafeDB q,
-                                                                    subQuestions = maybe [] id $ M.lookup wsId subquestionsMap,
-                                                                    messageHistory = maybe [] id $ M.lookup wsId messageMap,
-                                                                    expandedPointers = maybe M.empty id $ M.lookup wsId expandedMap,
-                                                                    time = Time t })) workspaces
+        execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMARY KEY ASC )"
+        execute_ conn "DELETE FROM Descendants"
+        executeNamed conn "WITH RECURSIVE ds(id) AS ( \
+                          \     VALUES (:root) \
+                          \ UNION ALL \
+                          \     SELECT w.id FROM Workspaces w INNER JOIN ds ON w.parentWorkspaceId = ds.id \
+                          \) INSERT INTO Descendants ( id ) SELECT id FROM ds" [":root" := wsIdText]
+        workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
+                                  \FROM Workspaces WHERE id IN (SELECT id FROM Descendants)"
+        messages <- query_ conn "SELECT targetWorkspaceId, content \
+                                \FROM Messages \
+                                \WHERE targetWorkspaceId IN (SELECT id FROM Descendants) \
+                                \ORDER BY id ASC"
+        subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
+                                    \FROM Workspaces p \
+                                    \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
+                                    \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
+                                    \WHERE p.id IN (SELECT id FROM Descendants) \
+                                    \ORDER BY p.id ASC, q.logicalTime DESC"
+        {-
+        expanded <- query_ conn "SELECT workspaceId, pointerId, content \
+                                \FROM ExpandedPointers e \
+                                \INNER JOIN Pointers p ON e.pointerId = p.id \
+                                \WHERE workspaceId IN (SELECT id FROM Descendants)"
+        -}
+        let messageMap = M.fromListWith (++) $ map (\(i, m) -> (workspaceIdFromText i, [parseMessageUnsafe m])) messages
+            subquestionsMap = M.fromListWith (++) $
+                                map (\(i, qId, q, ma) ->
+                                        (workspaceIdFromText i, [(workspaceIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
+            expandedMap = M.empty -- M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
+        return $ M.fromList $ map (\(i, p, t, q) -> let !wsId = workspaceIdFromText i
+                                                    in (wsId, Workspace {
+                                                                identity = wsId,
+                                                                parentId = workspaceIdFromText <$> p,
+                                                                question = parseMessageUnsafeDB q,
+                                                                subQuestions = maybe [] id $ M.lookup wsId subquestionsMap,
+                                                                messageHistory = maybe [] id $ M.lookup wsId messageMap,
+                                                                expandedPointers = maybe M.empty id $ M.lookup wsId expandedMap,
+                                                                time = Time t })) workspaces
     return (workspaceToMessage workspaces workspaceId)
 
 -- TODO: Bulkify this.
@@ -243,62 +242,60 @@ getWorkspaceSqlite :: SyncFunc -> Queue -> Counter -> Connection -> WorkspaceId 
 getWorkspaceSqlite sync q c conn workspaceId = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     sync $ do
-        withTransaction conn $ do
-            [(p, t, q)] <- query conn "SELECT parentWorkspaceId, logicalTime, questionAsAnswered \
-                                      \FROM Workspaces \
-                                      \WHERE id = ? \
-                                      \ORDER BY logicalTime DESC LIMIT 1" (Only wsIdText)
-            messages <- query conn "SELECT content FROM Messages WHERE targetWorkspaceId = ?" (Only wsIdText) -- TODO: ORDER
-            subquestions <- query conn "SELECT w.id, w.questionAsAsked, a.answer \
-                                       \FROM Workspaces w \
-                                       \LEFT OUTER JOIN Answers a ON w.id = a.workspaceId \
-                                       \WHERE w.parentWorkspaceId = ? \
-                                       \ORDER BY w.logicalTime ASC" (Only wsIdText)
-            expanded <- query conn "SELECT pointerId, content \
-                                   \FROM ExpandedPointers e \
-                                   \INNER JOIN Pointers p ON e.pointerId = p.id \
-                                   \WHERE e.workspaceId = ?" (Only wsIdText)
-            return $ Workspace {
-                identity = workspaceId,
-                parentId = workspaceIdFromText <$> p,
-                question = parseMessageUnsafeDB q,
-                subQuestions = map (\(qId, q, ma) -> (workspaceIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)) subquestions,
-                messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
-                expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
-                time = Time t }
+        [(p, t, q)] <- query conn "SELECT parentWorkspaceId, logicalTime, questionAsAnswered \
+                                  \FROM Workspaces \
+                                  \WHERE id = ? \
+                                  \ORDER BY logicalTime DESC LIMIT 1" (Only wsIdText)
+        messages <- query conn "SELECT content FROM Messages WHERE targetWorkspaceId = ?" (Only wsIdText) -- TODO: ORDER
+        subquestions <- query conn "SELECT w.id, w.questionAsAsked, a.answer \
+                                   \FROM Workspaces w \
+                                   \LEFT OUTER JOIN Answers a ON w.id = a.workspaceId \
+                                   \WHERE w.parentWorkspaceId = ? \
+                                   \ORDER BY w.logicalTime ASC" (Only wsIdText)
+        expanded <- query conn "SELECT pointerId, content \
+                               \FROM ExpandedPointers e \
+                               \INNER JOIN Pointers p ON e.pointerId = p.id \
+                               \WHERE e.workspaceId = ?" (Only wsIdText)
+        return $ Workspace {
+            identity = workspaceId,
+            parentId = workspaceIdFromText <$> p,
+            question = parseMessageUnsafeDB q,
+            subQuestions = map (\(qId, q, ma) -> (workspaceIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)) subquestions,
+            messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
+            expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
+            time = Time t }
 
 -- NOT CACHEABLE
 allWorkspacesSqlite :: SyncFunc -> Queue -> Counter -> Connection -> IO (M.Map WorkspaceId Workspace)
 allWorkspacesSqlite sync q c conn = do
     sync $ do
-        withTransaction conn $ do
-            workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
-                                      \FROM Workspaces"
-            messages <- query_ conn "SELECT targetWorkspaceId, content FROM Messages" -- TODO: ORDER
-            subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
-                                        \FROM Workspaces p \
-                                        \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
-                                        \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
-                                        \ORDER BY p.id ASC, q.logicalTime DESC"
-            expanded <- query_ conn "SELECT workspaceId, pointerId, content \
-                                    \FROM ExpandedPointers e \
-                                    \INNER JOIN Pointers p ON e.pointerId = p.id"
-            let messageMap = M.fromListWith (++) $
-                                map (\(i, m) -> (workspaceIdFromText i, [parseMessageUnsafe m])) messages
-                subquestionsMap = M.fromListWith (++) $
-                                    map (\(i, qId, q, ma) ->
-                                        (workspaceIdFromText i, [(workspaceIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
-                expandedMap = M.fromListWith M.union $
-                                map (\(i, p, m) -> (workspaceIdFromText i, M.singleton p (parseMessageUnsafe' p m))) expanded
-            return $ M.fromList $ map (\(i, p, t, q) -> let !wsId = workspaceIdFromText i
-                                                        in (wsId, Workspace {
-                                                                    identity = wsId,
-                                                                    parentId = workspaceIdFromText <$> p,
-                                                                    question = parseMessageUnsafeDB q,
-                                                                    subQuestions = maybe [] id $ M.lookup wsId subquestionsMap,
-                                                                    messageHistory = maybe [] id $ M.lookup wsId messageMap,
-                                                                    expandedPointers = maybe M.empty id $ M.lookup wsId expandedMap,
-                                                                    time = Time t })) workspaces
+        workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
+                                  \FROM Workspaces"
+        messages <- query_ conn "SELECT targetWorkspaceId, content FROM Messages" -- TODO: ORDER
+        subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
+                                    \FROM Workspaces p \
+                                    \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
+                                    \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
+                                    \ORDER BY p.id ASC, q.logicalTime DESC"
+        expanded <- query_ conn "SELECT workspaceId, pointerId, content \
+                                \FROM ExpandedPointers e \
+                                \INNER JOIN Pointers p ON e.pointerId = p.id"
+        let messageMap = M.fromListWith (++) $
+                            map (\(i, m) -> (workspaceIdFromText i, [parseMessageUnsafe m])) messages
+            subquestionsMap = M.fromListWith (++) $
+                                map (\(i, qId, q, ma) ->
+                                    (workspaceIdFromText i, [(workspaceIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
+            expandedMap = M.fromListWith M.union $
+                            map (\(i, p, m) -> (workspaceIdFromText i, M.singleton p (parseMessageUnsafe' p m))) expanded
+        return $ M.fromList $ map (\(i, p, t, q) -> let !wsId = workspaceIdFromText i
+                                                    in (wsId, Workspace {
+                                                                identity = wsId,
+                                                                parentId = workspaceIdFromText <$> p,
+                                                                question = parseMessageUnsafeDB q,
+                                                                subQuestions = maybe [] id $ M.lookup wsId subquestionsMap,
+                                                                messageHistory = maybe [] id $ M.lookup wsId messageMap,
+                                                                expandedPointers = maybe M.empty id $ M.lookup wsId expandedMap,
+                                                                time = Time t })) workspaces
 
 -- NOT CACHEABLE
 getNextWorkspaceSqlite :: SyncFunc -> Queue -> Counter -> Connection -> IO (Maybe WorkspaceId)

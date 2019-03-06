@@ -1,7 +1,7 @@
 import axios from "axios";
 import { WorkspaceRaw, Message, Either, Pointer, FetchResult, Result } from "./types";
 
-export function postView(body: [{userId: number}, number, Array<Message>, Pointer]): Promise<FetchResult<Result<void>>>
+export function postView(body: [{userId: string}, number, Array<Message>, Pointer]): Promise<FetchResult<Result<void>>>
 {
   return axios({ url: '/view'
     , method: 'post'
@@ -10,7 +10,7 @@ export function postView(body: [{userId: number}, number, Array<Message>, Pointe
     });
 }
 
-export function postReply(body: [{userId: number}, number, Array<Either<Message, Pointer>>, Message]): Promise<FetchResult<Result<void>>>
+export function postReply(body: [{userId: string}, number, Array<Either<Message, Pointer>>, Message]): Promise<FetchResult<Result<void>>>
 {
   return axios({ url: '/reply'
     , method: 'post'
@@ -19,7 +19,7 @@ export function postReply(body: [{userId: number}, number, Array<Either<Message,
     });
 }
 
-export function postWait(body: [{userId: number}, number, Array<Either<Message, Pointer>>]): Promise<FetchResult<Result<void>>>
+export function postWait(body: [{userId: string}, number, Array<Either<Message, Pointer>>]): Promise<FetchResult<Result<void>>>
 {
   return axios({ url: '/wait'
     , method: 'post'
@@ -28,7 +28,7 @@ export function postWait(body: [{userId: number}, number, Array<Either<Message, 
     });
 }
 
-export function postNext(body: [{userId: number}, number | null]): Promise<FetchResult<[WorkspaceRaw, number] | null>>
+export function postNext(body: [{userId: string}, string | null]): Promise<FetchResult<[WorkspaceRaw, string] | null>>
 {
   return axios({ url: '/next'
     , method: 'post'
@@ -37,9 +37,9 @@ export function postNext(body: [{userId: number}, number | null]): Promise<Fetch
     });
 }
 
-export function getJoin(userId: number): Promise<FetchResult<{userId: number}>>
+export function getJoin(userId: string | undefined): Promise<FetchResult<{userId: string}>>
 {
-  return axios({ url: '/join' + (isNaN(userId) ? '' : '?userId=' + encodeURIComponent(''+userId))
+  return axios({ url: '/join' + (userId === void(0) ? '' : '?userId=' + encodeURIComponent(userId))
     , method: 'get'
     });
 }
@@ -51,9 +51,9 @@ export function getPointer(p: Pointer): Promise<FetchResult<Message | null>>
     });
 }
 
-export function getCompletions(sessionId: number): Promise<FetchResult<Array<Message>>>
+export function getCompletions(sessionId: string): Promise<FetchResult<Array<Message>>>
 {
-  return axios({ url: '/completions/' + encodeURIComponent(''+sessionId) + ''
+  return axios({ url: '/completions/' + encodeURIComponent(sessionId) + ''
     , method: 'get'
     });
 }

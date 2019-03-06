@@ -304,8 +304,8 @@ const SubQuestionComponent: React.FunctionComponent<SubQuestionProps> = (props) 
 };
 
 class User {
-    constructor(private readonly userId: number,
-                readonly sessionId: number | null,
+    constructor(private readonly userId: string,
+                readonly sessionId: string | null,
                 private readonly pending = List<Either<Message, Pointer>>(),
                 readonly workspace: Workspace | null = null,
                 readonly expandedOccurrences = Set<string>(),
@@ -544,8 +544,8 @@ const WaitComponent: React.FunctionComponent<WaitProps> = (props) =>
     <div className="wait cell"><ButtonComponent label="Wait" onClick={props.onClick} /></div>;
 
 interface MainProps {
-    userId: number,
-    sessionId: number | null
+    userId: string,
+    sessionId: string | null
 }
 
 interface MainState {
@@ -627,7 +627,7 @@ class MainComponent extends React.Component<MainProps, MainState> {
             if(user === null) {
                 // Do nothing but probably want to tell the user that.
             } else {
-                return getCompletions(user.sessionId as number).then(r => {
+                return getCompletions(user.sessionId as string).then(r => {
                     const q = (user.workspace as Workspace).question;
                     const completions = addCompletion(List<Message>(r.data), q);
                     this.setState({user: user, completions: completions, askInputText: '', replyInputText: ''});
@@ -670,9 +670,9 @@ class MainComponent extends React.Component<MainProps, MainState> {
 }
 
 const mainDiv: HTMLElement = document.getElementById('main') as HTMLElement;
-getJoin(parseInt(localStorage.userId, 10)).then(joinResponse => {
+getJoin(localStorage.userId).then(joinResponse => {
     const userId = joinResponse.data.userId;
     localStorage.userId = userId;
-    const maybeSessionId = parseInt(location.hash.slice(1), 10);
-    render(<MainComponent userId={userId} sessionId={isNaN(maybeSessionId) ? null : maybeSessionId} />, mainDiv);
+    const maybeSessionId = location.hash.slice(1);
+    render(<MainComponent userId={userId} sessionId={maybeSessionId === '' ? null : maybeSessionId} />, mainDiv);
 }).catch(e => console.log(e));

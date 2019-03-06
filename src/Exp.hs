@@ -21,7 +21,7 @@ import Workspace ( WorkspaceId, workspaceIdToBuilder, parseWorkspaceId )
 import Util ( mapToBuilder, parseMap, parseUnsafe )
 
 type Value = Message
-data Result a = Finished Value | Died [a] | Paused
+data Result a = Finished Value | Died [a] | Paused deriving ( Show )
 
 -- NOTE: Currently only ever use LetFun f (Call f _) pattern which is essentially, unsurprisingly,
 -- equivalent to doing a case analysis on _. It's possible having Call be separate could be useful

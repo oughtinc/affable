@@ -1098,28 +1098,28 @@
     var specialPropKeyWarningShown = void 0;
     var specialPropRefWarningShown = void 0;
 
-    function hasValidRef(config$$1) {
+    function hasValidRef(config) {
       {
-        if (hasOwnProperty.call(config$$1, 'ref')) {
-          var getter = Object.getOwnPropertyDescriptor(config$$1, 'ref').get;
+        if (hasOwnProperty.call(config, 'ref')) {
+          var getter = Object.getOwnPropertyDescriptor(config, 'ref').get;
           if (getter && getter.isReactWarning) {
             return false;
           }
         }
       }
-      return config$$1.ref !== undefined;
+      return config.ref !== undefined;
     }
 
-    function hasValidKey(config$$1) {
+    function hasValidKey(config) {
       {
-        if (hasOwnProperty.call(config$$1, 'key')) {
-          var getter = Object.getOwnPropertyDescriptor(config$$1, 'key').get;
+        if (hasOwnProperty.call(config, 'key')) {
+          var getter = Object.getOwnPropertyDescriptor(config, 'key').get;
           if (getter && getter.isReactWarning) {
             return false;
           }
         }
       }
-      return config$$1.key !== undefined;
+      return config.key !== undefined;
     }
 
     function defineKeyPropWarningGetter(props, displayName) {
@@ -1230,7 +1230,7 @@
      * Create and return a new ReactElement of the given type.
      * See https://reactjs.org/docs/react-api.html#createelement
      */
-    function createElement(type, config$$1, children) {
+    function createElement(type, config, children) {
       var propName = void 0;
 
       // Reserved names are extracted
@@ -1241,20 +1241,20 @@
       var self = null;
       var source = null;
 
-      if (config$$1 != null) {
-        if (hasValidRef(config$$1)) {
-          ref = config$$1.ref;
+      if (config != null) {
+        if (hasValidRef(config)) {
+          ref = config.ref;
         }
-        if (hasValidKey(config$$1)) {
-          key = '' + config$$1.key;
+        if (hasValidKey(config)) {
+          key = '' + config.key;
         }
 
-        self = config$$1.__self === undefined ? null : config$$1.__self;
-        source = config$$1.__source === undefined ? null : config$$1.__source;
+        self = config.__self === undefined ? null : config.__self;
+        source = config.__source === undefined ? null : config.__source;
         // Remaining properties are added to a new props object
-        for (propName in config$$1) {
-          if (hasOwnProperty.call(config$$1, propName) && !RESERVED_PROPS.hasOwnProperty(propName)) {
-            props[propName] = config$$1[propName];
+        for (propName in config) {
+          if (hasOwnProperty.call(config, propName) && !RESERVED_PROPS.hasOwnProperty(propName)) {
+            props[propName] = config[propName];
           }
         }
       }
@@ -1316,7 +1316,7 @@
      * Clone and return a new ReactElement using element as the starting point.
      * See https://reactjs.org/docs/react-api.html#cloneelement
      */
-    function cloneElement(element, config$$1, children) {
+    function cloneElement(element, config, children) {
       !!(element === null || element === undefined) ? invariant(false, 'React.cloneElement(...): The argument must be a React element, but you passed %s.', element) : void 0;
 
       var propName = void 0;
@@ -1337,14 +1337,14 @@
       // Owner will be preserved, unless ref is overridden
       var owner = element._owner;
 
-      if (config$$1 != null) {
-        if (hasValidRef(config$$1)) {
+      if (config != null) {
+        if (hasValidRef(config)) {
           // Silently steal the ref from the parent.
-          ref = config$$1.ref;
+          ref = config.ref;
           owner = ReactCurrentOwner.current;
         }
-        if (hasValidKey(config$$1)) {
-          key = '' + config$$1.key;
+        if (hasValidKey(config)) {
+          key = '' + config.key;
         }
 
         // Remaining properties override existing props
@@ -1352,13 +1352,13 @@
         if (element.type && element.type.defaultProps) {
           defaultProps = element.type.defaultProps;
         }
-        for (propName in config$$1) {
-          if (hasOwnProperty.call(config$$1, propName) && !RESERVED_PROPS.hasOwnProperty(propName)) {
-            if (config$$1[propName] === undefined && defaultProps !== undefined) {
+        for (propName in config) {
+          if (hasOwnProperty.call(config, propName) && !RESERVED_PROPS.hasOwnProperty(propName)) {
+            if (config[propName] === undefined && defaultProps !== undefined) {
               // Resolve default props
               props[propName] = defaultProps[propName];
             } else {
-              props[propName] = config$$1[propName];
+              props[propName] = config[propName];
             }
           }
         }
@@ -3726,8 +3726,8 @@
     var React = react;
     var _assign = objectAssign;
     var checkPropTypes = checkPropTypes_1;
-    var scheduler$$1 = scheduler;
-    var tracing$$1 = tracing;
+    var scheduler$1 = scheduler;
+    var tracing$1 = tracing;
 
     /**
      * Use invariant() to assert state which your program assumes to be true.
@@ -8242,8 +8242,8 @@
       eventTypes: eventTypes$4,
 
       isInteractiveTopLevelEventType: function (topLevelType) {
-        var config$$1 = topLevelEventsToDispatchConfig[topLevelType];
-        return config$$1 !== undefined && config$$1.isInteractive === true;
+        var config = topLevelEventsToDispatchConfig[topLevelType];
+        return config !== undefined && config.isInteractive === true;
       },
 
 
@@ -12326,8 +12326,8 @@
     var scheduleTimeout = typeof setTimeout === 'function' ? setTimeout : undefined;
     var cancelTimeout = typeof clearTimeout === 'function' ? clearTimeout : undefined;
     var noTimeout = -1;
-    var schedulePassiveEffects = scheduler$$1.unstable_scheduleCallback;
-    var cancelPassiveEffects = scheduler$$1.unstable_cancelCallback;
+    var schedulePassiveEffects = scheduler$1.unstable_scheduleCallback;
+    var cancelPassiveEffects = scheduler$1.unstable_cancelCallback;
 
     function commitMount(domElement, type, newProps, internalInstanceHandle) {
       // Despite the naming that might imply otherwise, this method only
@@ -13850,7 +13850,7 @@
           firstBatch: null,
           nextScheduledRoot: null,
 
-          interactionThreadID: tracing$$1.unstable_getThreadID(),
+          interactionThreadID: tracing$1.unstable_getThreadID(),
           memoizedInteractions: new Set(),
           pendingInteractionMap: new Map()
         };
@@ -17250,15 +17250,15 @@
     }
 
     function recordCommitTime() {
-      commitTime = scheduler$$1.unstable_now();
+      commitTime = scheduler$1.unstable_now();
     }
 
     function startProfilerTimer(fiber) {
 
-      profilerStartTime = scheduler$$1.unstable_now();
+      profilerStartTime = scheduler$1.unstable_now();
 
       if (fiber.actualStartTime < 0) {
-        fiber.actualStartTime = scheduler$$1.unstable_now();
+        fiber.actualStartTime = scheduler$1.unstable_now();
       }
     }
 
@@ -17269,7 +17269,7 @@
     function stopProfilerTimerIfRunningAndRecordDelta(fiber, overrideBaseTime) {
 
       if (profilerStartTime >= 0) {
-        var elapsedTime = scheduler$$1.unstable_now() - profilerStartTime;
+        var elapsedTime = scheduler$1.unstable_now() - profilerStartTime;
         fiber.actualDuration += elapsedTime;
         if (overrideBaseTime) {
           fiber.selfBaseDuration = elapsedTime;
@@ -20662,7 +20662,7 @@
                 // Memoize using the boundary fiber to prevent redundant listeners.
                 var retry = retryTimedOutBoundary.bind(null, finishedWork, thenable);
                 {
-                  retry = tracing$$1.unstable_wrap(retry);
+                  retry = tracing$1.unstable_wrap(retry);
                 }
                 if (!retryCache.has(thenable)) {
                   retryCache.add(thenable);
@@ -20871,7 +20871,7 @@
               threadIDs.add(renderExpirationTime);
               var ping = pingSuspendedRoot.bind(null, root, thenable, renderExpirationTime);
               {
-                ping = tracing$$1.unstable_wrap(ping);
+                ping = tracing$1.unstable_wrap(ping);
               }
               thenable.then(ping, ping);
             }
@@ -21051,7 +21051,7 @@
     {
       // Provide explicit error message when production+profiling bundle of e.g. react-dom
       // is used with production (non-profiling) bundle of scheduler/tracing
-      !(tracing$$1.__interactionsRef != null && tracing$$1.__interactionsRef.current != null) ? invariant(false, 'It is not supported to run the profiling version of a renderer (for example, `react-dom/profiling`) without also replacing the `scheduler/tracing` module with `scheduler/tracing-profiling`. Your bundler might have a setting for aliasing both modules. Learn more at http://fb.me/react-profiling') : void 0;
+      !(tracing$1.__interactionsRef != null && tracing$1.__interactionsRef.current != null) ? invariant(false, 'It is not supported to run the profiling version of a renderer (for example, `react-dom/profiling`) without also replacing the `scheduler/tracing` module with `scheduler/tracing-profiling`. Your bundler might have a setting for aliasing both modules. Learn more at http://fb.me/react-profiling') : void 0;
     }
 
     {
@@ -21436,8 +21436,8 @@
       {
         // Restore any pending interactions at this point,
         // So that cascading work triggered during the render phase will be accounted for.
-        prevInteractions = tracing$$1.__interactionsRef.current;
-        tracing$$1.__interactionsRef.current = root.memoizedInteractions;
+        prevInteractions = tracing$1.__interactionsRef.current;
+        tracing$1.__interactionsRef.current = root.memoizedInteractions;
       }
 
       // Reset this to null before calling lifecycles
@@ -21561,7 +21561,7 @@
           // TODO: Avoid this extra callback by mutating the tracing ref directly,
           // like we do at the beginning of commitRoot. I've opted not to do that
           // here because that code is still in flux.
-          callback = tracing$$1.unstable_wrap(callback);
+          callback = tracing$1.unstable_wrap(callback);
         }
         passiveEffectCallbackHandle = schedulePassiveEffects(callback);
         passiveEffectCallback = callback;
@@ -21584,12 +21584,12 @@
       onCommit(root, earliestRemainingTimeAfterCommit);
 
       {
-        tracing$$1.__interactionsRef.current = prevInteractions;
+        tracing$1.__interactionsRef.current = prevInteractions;
 
         var subscriber = void 0;
 
         try {
-          subscriber = tracing$$1.__subscriberRef.current;
+          subscriber = tracing$1.__subscriberRef.current;
           if (subscriber !== null && root.memoizedInteractions.size > 0) {
             var threadID = computeThreadID(committedExpirationTime, root.interactionThreadID);
             subscriber.onWorkStopped(root.memoizedInteractions, threadID);
@@ -21966,7 +21966,7 @@
           root.memoizedInteractions = interactions;
 
           if (interactions.size > 0) {
-            var subscriber = tracing$$1.__subscriberRef.current;
+            var subscriber = tracing$1.__subscriberRef.current;
             if (subscriber !== null) {
               var threadID = computeThreadID(expirationTime, root.interactionThreadID);
               try {
@@ -21989,8 +21989,8 @@
       {
         // We're about to start new traced work.
         // Restore pending interactions so cascading work triggered during the render phase will be accounted for.
-        prevInteractions = tracing$$1.__interactionsRef.current;
-        tracing$$1.__interactionsRef.current = root.memoizedInteractions;
+        prevInteractions = tracing$1.__interactionsRef.current;
+        tracing$1.__interactionsRef.current = root.memoizedInteractions;
       }
 
       var didFatal = false;
@@ -22064,7 +22064,7 @@
 
       {
         // Traced work is done for now; restore the previous interactions.
-        tracing$$1.__interactionsRef.current = prevInteractions;
+        tracing$1.__interactionsRef.current = prevInteractions;
       }
 
       // We're done performing work. Time to clean up.
@@ -22387,7 +22387,7 @@
 
       {
         if (root !== null) {
-          var interactions = tracing$$1.__interactionsRef.current;
+          var interactions = tracing$1.__interactionsRef.current;
           if (interactions.size > 0) {
             var pendingInteractionMap = root.pendingInteractionMap;
             var pendingInteractions = pendingInteractionMap.get(expirationTime);
@@ -22409,7 +22409,7 @@
               });
             }
 
-            var subscriber = tracing$$1.__subscriberRef.current;
+            var subscriber = tracing$1.__subscriberRef.current;
             if (subscriber !== null) {
               var threadID = computeThreadID(expirationTime, root.interactionThreadID);
               subscriber.onWorkScheduled(interactions, threadID);
@@ -22501,7 +22501,7 @@
 
     var completedBatches = null;
 
-    var originalStartTimeMs = scheduler$$1.unstable_now();
+    var originalStartTimeMs = scheduler$1.unstable_now();
     var currentRendererTime = msToExpirationTime(originalStartTimeMs);
     var currentSchedulerTime = currentRendererTime;
 
@@ -22511,7 +22511,7 @@
     var lastCommittedRootDuringThisBatch = null;
 
     function recomputeCurrentRendererTime() {
-      var currentTimeMs = scheduler$$1.unstable_now() - originalStartTimeMs;
+      var currentTimeMs = scheduler$1.unstable_now() - originalStartTimeMs;
       currentRendererTime = msToExpirationTime(currentTimeMs);
     }
 
@@ -22525,7 +22525,7 @@
           if (callbackID !== null) {
             // Existing callback has insufficient timeout. Cancel and schedule a
             // new one.
-            scheduler$$1.unstable_cancelCallback(callbackID);
+            scheduler$1.unstable_cancelCallback(callbackID);
           }
         }
         // The request callback timer is already running. Don't start a new one.
@@ -22534,10 +22534,10 @@
       }
 
       callbackExpirationTime = expirationTime;
-      var currentMs = scheduler$$1.unstable_now() - originalStartTimeMs;
+      var currentMs = scheduler$1.unstable_now() - originalStartTimeMs;
       var expirationTimeMs = expirationTimeToMs(expirationTime);
       var timeout = expirationTimeMs - currentMs;
-      callbackID = scheduler$$1.unstable_scheduleCallback(performAsyncWork, { timeout: timeout });
+      callbackID = scheduler$1.unstable_scheduleCallback(performAsyncWork, { timeout: timeout });
     }
 
     // For every call to renderRoot, one of onFatal, onComplete, onSuspend, and
@@ -22750,7 +22750,7 @@
       if (didYield) {
         return true;
       }
-      if (scheduler$$1.unstable_shouldYield()) {
+      if (scheduler$1.unstable_shouldYield()) {
         didYield = true;
         return true;
       }
@@ -29448,106 +29448,6 @@
       }
     }
 
-    /**
-     * Returns a lazy Seq of `value` repeated `times` times. When `times` is
-     * undefined, returns an infinite sequence of `value`.
-     */
-    var Repeat = /*@__PURE__*/(function (IndexedSeq$$1) {
-      function Repeat(value, times) {
-        if (!(this instanceof Repeat)) {
-          return new Repeat(value, times);
-        }
-        this._value = value;
-        this.size = times === undefined ? Infinity : Math.max(0, times);
-        if (this.size === 0) {
-          if (EMPTY_REPEAT) {
-            return EMPTY_REPEAT;
-          }
-          EMPTY_REPEAT = this;
-        }
-      }
-
-      if ( IndexedSeq$$1 ) Repeat.__proto__ = IndexedSeq$$1;
-      Repeat.prototype = Object.create( IndexedSeq$$1 && IndexedSeq$$1.prototype );
-      Repeat.prototype.constructor = Repeat;
-
-      Repeat.prototype.toString = function toString () {
-        if (this.size === 0) {
-          return 'Repeat []';
-        }
-        return 'Repeat [ ' + this._value + ' ' + this.size + ' times ]';
-      };
-
-      Repeat.prototype.get = function get (index, notSetValue) {
-        return this.has(index) ? this._value : notSetValue;
-      };
-
-      Repeat.prototype.includes = function includes (searchValue) {
-        return is(this._value, searchValue);
-      };
-
-      Repeat.prototype.slice = function slice (begin, end) {
-        var size = this.size;
-        return wholeSlice(begin, end, size)
-          ? this
-          : new Repeat(
-              this._value,
-              resolveEnd(end, size) - resolveBegin(begin, size)
-            );
-      };
-
-      Repeat.prototype.reverse = function reverse () {
-        return this;
-      };
-
-      Repeat.prototype.indexOf = function indexOf (searchValue) {
-        if (is(this._value, searchValue)) {
-          return 0;
-        }
-        return -1;
-      };
-
-      Repeat.prototype.lastIndexOf = function lastIndexOf (searchValue) {
-        if (is(this._value, searchValue)) {
-          return this.size;
-        }
-        return -1;
-      };
-
-      Repeat.prototype.__iterate = function __iterate (fn, reverse) {
-        var size = this.size;
-        var i = 0;
-        while (i !== size) {
-          if (fn(this._value, reverse ? size - ++i : i++, this) === false) {
-            break;
-          }
-        }
-        return i;
-      };
-
-      Repeat.prototype.__iterator = function __iterator (type, reverse) {
-        var this$1 = this;
-
-        var size = this.size;
-        var i = 0;
-        return new Iterator(
-          function () { return i === size
-              ? iteratorDone()
-              : iteratorValue(type, reverse ? size - ++i : i++, this$1._value); }
-        );
-      };
-
-      Repeat.prototype.equals = function equals (other) {
-        return other instanceof Repeat
-          ? is(this._value, other._value)
-          : deepEqual(other);
-      };
-
-      return Repeat;
-    }(IndexedSeq));
-
-    var EMPTY_REPEAT;
-
     function createCommonjsModule$1(fn, module) {
     	return module = { exports: {} }, fn(module, module.exports), module.exports;
     }
@@ -33707,11 +33607,11 @@
      * @param {Object} obj1 Object to merge
      * @returns {Object} Result of all merge properties
      */
-    function merge$2(/* obj1, obj2, obj3, ... */) {
+    function merge$1(/* obj1, obj2, obj3, ... */) {
       var result = {};
       function assignValue(val, key) {
         if (typeof result[key] === 'object' && typeof val === 'object') {
-          result[key] = merge$2(result[key], val);
+          result[key] = merge$1(result[key], val);
         } else {
           result[key] = val;
         }
@@ -33760,7 +33660,7 @@
       isURLSearchParams: isURLSearchParams,
       isStandardBrowserEnv: isStandardBrowserEnv,
       forEach: forEach,
-      merge: merge$2,
+      merge: merge$1,
       extend: extend,
       trim: trim
     };
@@ -34097,10 +33997,10 @@
 
     var btoa$1 = (typeof window !== 'undefined' && window.btoa && window.btoa.bind(window)) || btoa_1;
 
-    var xhr = function xhrAdapter(config$$1) {
+    var xhr = function xhrAdapter(config) {
       return new Promise(function dispatchXhrRequest(resolve, reject) {
-        var requestData = config$$1.data;
-        var requestHeaders = config$$1.headers;
+        var requestData = config.data;
+        var requestHeaders = config.headers;
 
         if (utils.isFormData(requestData)) {
           delete requestHeaders['Content-Type']; // Let the browser set it
@@ -34115,7 +34015,7 @@
         // DON'T do this for testing b/c XMLHttpRequest is mocked, not XDomainRequest.
         if (typeof window !== 'undefined' &&
             window.XDomainRequest && !('withCredentials' in request) &&
-            !isURLSameOrigin(config$$1.url)) {
+            !isURLSameOrigin(config.url)) {
           request = new window.XDomainRequest();
           loadEvent = 'onload';
           xDomain = true;
@@ -34124,16 +34024,16 @@
         }
 
         // HTTP basic authentication
-        if (config$$1.auth) {
-          var username = config$$1.auth.username || '';
-          var password = config$$1.auth.password || '';
+        if (config.auth) {
+          var username = config.auth.username || '';
+          var password = config.auth.password || '';
           requestHeaders.Authorization = 'Basic ' + btoa$1(username + ':' + password);
         }
 
-        request.open(config$$1.method.toUpperCase(), buildURL(config$$1.url, config$$1.params, config$$1.paramsSerializer), true);
+        request.open(config.method.toUpperCase(), buildURL(config.url, config.params, config.paramsSerializer), true);
 
         // Set the request timeout in MS
-        request.timeout = config$$1.timeout;
+        request.timeout = config.timeout;
 
         // Listen for ready state
         request[loadEvent] = function handleLoad() {
@@ -34151,14 +34051,14 @@
 
           // Prepare the response
           var responseHeaders = 'getAllResponseHeaders' in request ? parseHeaders(request.getAllResponseHeaders()) : null;
-          var responseData = !config$$1.responseType || config$$1.responseType === 'text' ? request.responseText : request.response;
+          var responseData = !config.responseType || config.responseType === 'text' ? request.responseText : request.response;
           var response = {
             data: responseData,
             // IE sends 1223 instead of 204 (https://github.com/axios/axios/issues/201)
             status: request.status === 1223 ? 204 : request.status,
             statusText: request.status === 1223 ? 'No Content' : request.statusText,
             headers: responseHeaders,
-            config: config$$1,
+            config: config,
             request: request
           };
 
@@ -34172,7 +34072,7 @@
         request.onerror = function handleError() {
           // Real errors are hidden from us by the browser
           // onerror should only fire if it's a network error
-          reject(createError('Network Error', config$$1, null, request));
+          reject(createError('Network Error', config, null, request));
 
           // Clean up request
           request = null;
@@ -34180,7 +34080,7 @@
 
         // Handle timeout
         request.ontimeout = function handleTimeout() {
-          reject(createError('timeout of ' + config$$1.timeout + 'ms exceeded', config$$1, 'ECONNABORTED',
+          reject(createError('timeout of ' + config.timeout + 'ms exceeded', config, 'ECONNABORTED',
             request));
 
           // Clean up request
@@ -34191,15 +34091,15 @@
         // This is only done if running in a standard browser environment.
         // Specifically not if we're in a web worker, or react-native.
         if (utils.isStandardBrowserEnv()) {
-          var cookies$$1 = cookies;
+          var cookies$1 = cookies;
 
           // Add xsrf header
-          var xsrfValue = (config$$1.withCredentials || isURLSameOrigin(config$$1.url)) && config$$1.xsrfCookieName ?
-              cookies$$1.read(config$$1.xsrfCookieName) :
+          var xsrfValue = (config.withCredentials || isURLSameOrigin(config.url)) && config.xsrfCookieName ?
+              cookies$1.read(config.xsrfCookieName) :
               undefined;
 
           if (xsrfValue) {
-            requestHeaders[config$$1.xsrfHeaderName] = xsrfValue;
+            requestHeaders[config.xsrfHeaderName] = xsrfValue;
           }
         }
 
@@ -34217,36 +34117,36 @@
         }
 
         // Add withCredentials to request if needed
-        if (config$$1.withCredentials) {
+        if (config.withCredentials) {
           request.withCredentials = true;
         }
 
         // Add responseType to request if needed
-        if (config$$1.responseType) {
+        if (config.responseType) {
           try {
-            request.responseType = config$$1.responseType;
+            request.responseType = config.responseType;
           } catch (e) {
             // Expected DOMException thrown by browsers not compatible XMLHttpRequest Level 2.
             // But, this can be suppressed for 'json' type as it can be parsed by default 'transformResponse' function.
-            if (config$$1.responseType !== 'json') {
+            if (config.responseType !== 'json') {
               throw e;
             }
           }
         }
 
         // Handle progress if needed
-        if (typeof config$$1.onDownloadProgress === 'function') {
-          request.addEventListener('progress', config$$1.onDownloadProgress);
+        if (typeof config.onDownloadProgress === 'function') {
+          request.addEventListener('progress', config.onDownloadProgress);
         }
 
         // Not all browsers support upload events
-        if (typeof config$$1.onUploadProgress === 'function' && request.upload) {
-          request.upload.addEventListener('progress', config$$1.onUploadProgress);
+        if (typeof config.onUploadProgress === 'function' && request.upload) {
+          request.upload.addEventListener('progress', config.onUploadProgress);
         }
 
-        if (config$$1.cancelToken) {
+        if (config.cancelToken) {
           // Handle cancellation
-          config$$1.cancelToken.promise.then(function onCanceled(cancel) {
+          config.cancelToken.promise.then(function onCanceled(cancel) {
             if (!request) {
               return;
             }
@@ -34775,7 +34675,7 @@
         });
     }
     function getJoin(userId) {
-        return axios$1({ url: '/join' + (isNaN(userId) ? '' : '?userId=' + encodeURIComponent('' + userId)),
+        return axios$1({ url: '/join' + (userId === void (0) ? '' : '?userId=' + encodeURIComponent(userId)),
             method: 'get'
         });
     }
@@ -34785,7 +34685,7 @@
         });
     }
     function getCompletions(sessionId) {
-        return axios$1({ url: '/completions/' + encodeURIComponent('' + sessionId) + '',
+        return axios$1({ url: '/completions/' + encodeURIComponent(sessionId) + '',
             method: 'get'
         });
     }
@@ -35339,11 +35239,11 @@
         return MainComponent;
     }(react_2));
     var mainDiv = document.getElementById('main');
-    getJoin(parseInt(localStorage.userId, 10)).then(function (joinResponse) {
+    getJoin(localStorage.userId).then(function (joinResponse) {
         var userId = joinResponse.data.userId;
         localStorage.userId = userId;
-        var maybeSessionId = parseInt(location.hash.slice(1), 10);
-        reactDom_1(react_4(MainComponent, { userId: userId, sessionId: isNaN(maybeSessionId) ? null : maybeSessionId }), mainDiv);
+        var maybeSessionId = location.hash.slice(1);
+        reactDom_1(react_4(MainComponent, { userId: userId, sessionId: maybeSessionId === '' ? null : maybeSessionId }), mainDiv);
     }).catch(function (e) { return console.log(e); });
 
 }());

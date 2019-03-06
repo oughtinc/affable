@@ -10,7 +10,6 @@ import AutoScheduler ( FunctionId, ProcessId )
 import Exp ( Pattern, Exp', Konts', EvalState' )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping )
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent )
-import Time ( Time(..), LogicalTime )
 import Util ( Counter, newCounter )
 import Workspace ( Workspace(..), WorkspaceId )
 
