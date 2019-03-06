@@ -15,7 +15,7 @@ import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, nor
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
                  canonicalizeMessage, boundPointers )
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId,
-                   userIdToBuilder, sessionIdToBuilder, newSessionId, workspaceToMessage, eventMessage, renumberEvent )
+                   autoUserId, userIdToBuilder, sessionIdToBuilder, newSessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Counter, newCounter, increment, Queue, newQueue, enqueueAsync, enqueueSync )
 import Workspace ( Workspace(..), WorkspaceId, newWorkspaceId, workspaceIdFromText, workspaceIdToBuilder )
@@ -23,7 +23,8 @@ import Workspace ( Workspace(..), WorkspaceId, newWorkspaceId, workspaceIdFromTe
 makeSqliteSchedulerContext :: Connection -> IO (SchedulerContext (Connection, Queue))
 makeSqliteSchedulerContext conn = do
     q <- newQueue
-    c <- newCounter 0 -- TODO: XXX Initialize from database.
+    [Only t] <- enqueueSync q $ query_ conn "SELECT COUNT(*) FROM Commands"
+    c <- newCounter t
     return $
         SchedulerContext {
             createInitialWorkspace = createInitialWorkspaceSqlite q c conn,
@@ -186,6 +187,7 @@ createInitialWorkspaceSqlite q c conn = do
                             ":parent" := (Nothing :: Maybe Text),
                             ":questionAsAsked" := msgText,
                             ":questionAsAnswered" := msgText']
+    insertCommand q c conn autoUserId workspaceId (Ask msg)
     return workspaceId
 
 newSessionSqlite :: Queue -> Counter -> Connection -> Maybe SessionId -> IO SessionId

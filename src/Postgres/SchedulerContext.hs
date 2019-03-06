@@ -14,7 +14,8 @@ import Command ( Command(..), commandToBuilder )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
                  canonicalizeMessage, boundPointers )
-import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent, newSessionId )
+import Scheduler ( SchedulerContext(..), Event, UserId, SessionId,
+                   autoUserId, workspaceToMessage, eventMessage, renumberEvent, newSessionId )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Counter, newCounter, increment, Queue, newQueue, enqueueAsync, enqueueSync )
 import Workspace ( Workspace(..), WorkspaceId, newWorkspaceId )
@@ -22,7 +23,8 @@ import Workspace ( Workspace(..), WorkspaceId, newWorkspaceId )
 makePostgresSchedulerContext :: Connection -> IO (SchedulerContext (Connection, Queue))
 makePostgresSchedulerContext conn = do
     q <- newQueue
-    c <- newCounter 0 -- TODO: XXX Initialize from database.
+    [Only t] <- enqueueSync q $ query_ conn "SELECT COUNT(*) FROM Commands"
+    c <- newCounter t
     return $
         SchedulerContext {
             createInitialWorkspace = createInitialWorkspacePostgres q c conn,
@@ -176,6 +178,7 @@ createInitialWorkspacePostgres q c conn = do
         () <$ execute conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
                            \VALUES (?, ?, ?, ?, ?)"
                              (workspaceId, t :: LogicalTime, Nothing :: Maybe WorkspaceId, msgText, msgText')
+    insertCommand q c conn autoUserId workspaceId (Ask msg)
     return workspaceId
 
 newSessionPostgres :: Queue -> Counter -> Connection -> Maybe SessionId -> IO SessionId
