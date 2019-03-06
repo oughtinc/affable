@@ -1,3 +1,4 @@
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Sqlite.AutoSchedulerContext ( makeSqliteAutoSchedulerContext, makeSqliteAutoSchedulerContext' ) where
 import Data.Int ( Int64 ) -- base
@@ -11,9 +12,9 @@ import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsI
              parseVarEnv, parseFunEnv,
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
 import Message ( PointerRemapping, messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
-import Scheduler ( SchedulerContext(..), SessionId, sessionIdToBuilder )
+import Scheduler ( SchedulerContext(..), SessionId, SyncFunc, sessionIdToBuilder )
 import Sqlite.SchedulerContext ( makeSqliteSchedulerContext )
-import Util ( toText, Queue, enqueueAsync, enqueueSync, parseUnsafe )
+import Util ( toText, Queue, enqueueAsync, parseUnsafe )
 import Workspace ( WorkspaceId, workspaceIdFromText, workspaceIdToBuilder )
 
 makeSqliteAutoSchedulerContext :: Connection -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
@@ -24,8 +25,9 @@ makeSqliteAutoSchedulerContext conn sessionId = do
 makeSqliteAutoSchedulerContext' :: SchedulerContext (Connection, Queue) -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
 makeSqliteAutoSchedulerContext' ctxt sessionId = do
     let (conn, q) = extraContent ctxt
+    let sync = doAtomically ctxt
 
-    answerId <- enqueueSync q $ do
+    answerId <- sync $ do
         ss <- queryNamed conn "SELECT f.id \
                               \FROM Functions f \
                               \INNER JOIN Continuations c ON c.function = f.id \
@@ -42,36 +44,36 @@ makeSqliteAutoSchedulerContext' ctxt sessionId = do
 
     return $ AutoSchedulerContext {
                     thisAnswerId = answerId,
-                    alternativesFor = alternativesForSqlite q conn answerId,
-                    allAlternatives = allAlternativesSqlite q conn answerId sessionId,
-                    addCaseFor = addCaseForSqlite q conn answerId,
-                    newFunction = newFunctionSqlite q conn,
-                    linkVars = linkVarsSqlite q conn,
-                    links = linksSqlite q conn,
-                    saveContinuation = saveContinuationSqlite q conn answerId,
-                    loadContinuation = loadContinuationSqlite q conn answerId,
-                    recordState = recordStateSqlite q conn,
-                    currentState = currentStateSqlite q conn,
-                    newProcess = newProcessSqlite q conn sessionId,
-                    runQueue = runQueueSqlite q conn sessionId,
-                    terminate = terminateSqlite q conn,
-                    addContinuationArgument = addContinuationArgumentSqlite q conn answerId,
-                    continuationArguments = continuationArgumentsSqlite q conn answerId,
+                    alternativesFor = alternativesForSqlite sync q conn answerId,
+                    allAlternatives = allAlternativesSqlite sync q conn answerId sessionId,
+                    addCaseFor = addCaseForSqlite sync q conn answerId,
+                    newFunction = newFunctionSqlite sync q conn,
+                    linkVars = linkVarsSqlite sync q conn,
+                    links = linksSqlite sync q conn,
+                    saveContinuation = saveContinuationSqlite sync q conn answerId,
+                    loadContinuation = loadContinuationSqlite sync q conn answerId,
+                    recordState = recordStateSqlite sync q conn,
+                    currentState = currentStateSqlite sync q conn,
+                    newProcess = newProcessSqlite sync q conn sessionId,
+                    runQueue = runQueueSqlite sync q conn sessionId,
+                    terminate = terminateSqlite sync q conn,
+                    addContinuationArgument = addContinuationArgumentSqlite sync q conn answerId,
+                    continuationArguments = continuationArgumentsSqlite sync q conn answerId,
                     schedulerContext = ctxt
                 }
 
 -- NOT CACHEABLE
-alternativesForSqlite :: Queue -> Connection -> FunctionId -> Name -> IO [([Pattern], Exp')]
-alternativesForSqlite q conn answerId f = do
+alternativesForSqlite :: SyncFunc -> Queue -> Connection -> FunctionId -> Name -> IO [([Pattern], Exp')]
+alternativesForSqlite sync q conn answerId f = do
     let !fId = nameToId answerId f
-    enqueueSync q $ do
+    sync $ do
         alts <- query conn "SELECT pattern, body FROM Alternatives WHERE function = ?" (Only fId)
         return $ map (\(ps, e) -> (parsePatternsUnsafe ps, expFromDB e)) alts
 
 -- NOT CACHEABLE
-allAlternativesSqlite :: Queue -> Connection -> FunctionId -> SessionId -> IO (M.Map Name [([Pattern], Exp')])
-allAlternativesSqlite q conn answerId sessionId = do
-    enqueueSync q $ do
+allAlternativesSqlite :: SyncFunc -> Queue -> Connection -> FunctionId -> SessionId -> IO (M.Map Name [([Pattern], Exp')])
+allAlternativesSqlite sync q conn answerId sessionId = do
+    sync $ do
         alts <- queryNamed conn "SELECT function, pattern, body \
                                 \FROM Alternatives \
                                 \WHERE function IN (SELECT c.function \
@@ -82,28 +84,28 @@ allAlternativesSqlite q conn answerId sessionId = do
                                 \ORDER BY rowid ASC" [":sessionId" := toText (sessionIdToBuilder sessionId)]
         return $ M.fromListWith (++) $ map (\(f, ps, e) -> (idToName answerId f, [(parsePatternsUnsafe ps, expFromDB e)])) alts
 
-newFunctionSqlite :: Queue -> Connection -> IO Name
-newFunctionSqlite q conn = do
-    enqueueSync q $ do
+newFunctionSqlite :: SyncFunc -> Queue -> Connection -> IO Name
+newFunctionSqlite sync q conn = do
+    sync $ do
         execute_ conn "INSERT INTO Functions DEFAULT VALUES"
         (LOCAL . fromIntegral) <$> lastInsertRowId conn
 
-linkVarsSqlite :: Queue -> Connection -> WorkspaceId -> PointerRemapping -> IO ()
-linkVarsSqlite q conn workspaceId mapping = do
+linkVarsSqlite :: SyncFunc -> Queue -> Connection -> WorkspaceId -> PointerRemapping -> IO ()
+linkVarsSqlite sync q conn workspaceId mapping = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     enqueueAsync q $ do -- TODO: Need 'INSERT OR REPLACE' ?
         executeMany conn "INSERT OR REPLACE INTO Links ( workspaceId, sourceId, targetId ) VALUES (?, ?, ?)" $
             map (\(srcId, tgtId) -> (wsIdText, srcId, tgtId)) (M.toList mapping)
 
-linksSqlite :: Queue -> Connection -> WorkspaceId -> IO PointerRemapping
-linksSqlite q conn workspaceId = do
+linksSqlite :: SyncFunc -> Queue -> Connection -> WorkspaceId -> IO PointerRemapping
+linksSqlite sync q conn workspaceId = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
-    enqueueSync q $ do
+    sync $ do
         srcTgts <- query conn "SELECT sourceId, targetId FROM Links WHERE workspaceId = ?" (Only wsIdText)
         return $ M.fromList srcTgts
 
-addCaseForSqlite :: Queue -> Connection -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()
-addCaseForSqlite q conn answerId f patterns e = do
+addCaseForSqlite :: SyncFunc -> Queue -> Connection -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()
+addCaseForSqlite sync q conn answerId f patterns e = do
     let !fId = nameToId answerId f
     enqueueAsync q $ do
         -- TODO: XXX This will also need to change to an INSERT OR REPLACE if we just naively have revisits update
@@ -113,8 +115,8 @@ addCaseForSqlite q conn answerId f patterns e = do
                             ":patterns" := toText (patternsToBuilder patterns),
                             ":body" := toText (expToBuilderDB e)]
 
-saveContinuationSqlite :: Queue -> Connection -> FunctionId -> Konts' -> IO ()
-saveContinuationSqlite q conn answerId (CallKont funEnv f workspaceId k) = do
+saveContinuationSqlite :: SyncFunc -> Queue -> Connection -> FunctionId -> Konts' -> IO ()
+saveContinuationSqlite sync q conn answerId (CallKont funEnv f workspaceId k) = do
     let !fId = nameToId answerId f
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     enqueueAsync q $ do
@@ -134,11 +136,11 @@ saveContinuationSqlite q conn answerId (CallKont funEnv f workspaceId k) = do
                      (M.toList (maybe M.empty id $ M.lookup f funEnv)))
 
 -- CACHEABLE
-loadContinuationSqlite :: Queue -> Connection -> FunctionId -> KontsId' -> IO Konts'
-loadContinuationSqlite q conn answerId (workspaceId, f) = do
+loadContinuationSqlite :: SyncFunc -> Queue -> Connection -> FunctionId -> KontsId' -> IO Konts'
+loadContinuationSqlite sync q conn answerId (workspaceId, f) = do
     let !fId = nameToId answerId f
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
-    enqueueSync q $ do
+    sync $ do
         [Only k] <- query conn "SELECT next FROM Continuations WHERE workspaceId = ? AND function = ? LIMIT 1" (wsIdText, fId)
         -- TODO: Here we just get every VarEnv for every function in the Workspace. I don't know if this is right.
         -- It definitely gets more than we need or than was there when the continuation was saved, but that's harmless.
@@ -149,8 +151,8 @@ loadContinuationSqlite q conn answerId (workspaceId, f) = do
         let !funEnv = M.fromListWith M.union $ map (\(g, x, v) -> (idToName answerId g, M.singleton x (parseMessageUnsafeDB v))) vars
         return (CallKont funEnv f workspaceId (parseKont1UnsafeDB k))
 
-recordStateSqlite :: Queue -> Connection -> ProcessId -> EvalState' -> IO ()
-recordStateSqlite q conn processId (varEnv, funEnv, s, e, k) = do {
+recordStateSqlite :: SyncFunc -> Queue -> Connection -> ProcessId -> EvalState' -> IO ()
+recordStateSqlite sync q conn processId (varEnv, funEnv, s, e, k) = do {
     -- To support brute-force revisit, we can add a check here that checks if the state is already in Trace, and if so terminates
     -- processId.
     let { !varEnvText = toText (varEnvToBuilder varEnv);
@@ -160,7 +162,7 @@ recordStateSqlite q conn processId (varEnv, funEnv, s, e, k) = do {
           !wsIdText = toText (workspaceIdToBuilder s) };
 
     {--
-    seen <- enqueueSync q $ do {
+    seen <- sync $ do {
         rs <- queryNamed conn "SELECT 1 \
                               \FROM Trace \
                               \WHERE varEnv = :varEnv AND funEnv = :funEnv AND workspaceId = :workspaceId \
@@ -174,7 +176,7 @@ recordStateSqlite q conn processId (varEnv, funEnv, s, e, k) = do {
         return (not (null (rs :: [Only Int64]))) };
 
     if seen then do
-        terminateSqlite q conn processId
+        terminateSqlite sync q conn processId
       else do
     -- -}
         enqueueAsync q $ do
@@ -188,9 +190,9 @@ recordStateSqlite q conn processId (varEnv, funEnv, s, e, k) = do {
                                 ":continuation" := continuationText]
     }
 
-currentStateSqlite :: Queue -> Connection -> ProcessId -> IO EvalState'
-currentStateSqlite q conn pId = do
-    enqueueSync q $ do
+currentStateSqlite :: SyncFunc -> Queue -> Connection -> ProcessId -> IO EvalState'
+currentStateSqlite sync q conn pId = do
+    sync $ do
         [(varEnv, funEnv, s, e, k)] <- queryNamed conn "SELECT varEnv, funEnv, workspaceId, expression, continuation \
                                                        \FROM Trace \
                                                        \WHERE processId = :processId \
@@ -198,8 +200,8 @@ currentStateSqlite q conn pId = do
                                                        \LIMIT 1" [":processId" := toText (processIdToBuilder pId)]
         return (parseUnsafe parseVarEnv varEnv, parseUnsafe parseFunEnv funEnv, workspaceIdFromText s, expFromDB e, parseKont1UnsafeDB k)
 
-newProcessSqlite :: Queue -> Connection -> SessionId -> IO ProcessId
-newProcessSqlite q conn sessionId = do
+newProcessSqlite :: SyncFunc -> Queue -> Connection -> SessionId -> IO ProcessId
+newProcessSqlite sync q conn sessionId = do
     processId <- newProcessId
     enqueueAsync q $ do
         withTransaction conn $ do
@@ -210,22 +212,22 @@ newProcessSqlite q conn sessionId = do
                                 ":processId" := pIdText]
     return processId
 
-runQueueSqlite :: Queue -> Connection -> SessionId -> IO [ProcessId]
-runQueueSqlite q conn sessionId = do
-    enqueueSync q $ do
+runQueueSqlite :: SyncFunc -> Queue -> Connection -> SessionId -> IO [ProcessId]
+runQueueSqlite sync q conn sessionId = do
+    sync $ do
         map (\(Only pId) -> processIdFromText pId) <$>
             queryNamed conn "SELECT processId \
                             \FROM RunQueue q \
                             \WHERE processId IN (SELECT processId FROM SessionProcesses WHERE sessionId = :sessionId)" [
                                 ":sessionId" := toText (sessionIdToBuilder sessionId)]
 
-terminateSqlite :: Queue -> Connection -> ProcessId -> IO ()
-terminateSqlite q conn processId = do
+terminateSqlite :: SyncFunc -> Queue -> Connection -> ProcessId -> IO ()
+terminateSqlite sync q conn processId = do
     enqueueAsync q $ do
         executeNamed conn "DELETE FROM RunQueue WHERE processId = :processId" [":processId" := toText (processIdToBuilder processId)]
 
-addContinuationArgumentSqlite :: Queue -> Connection -> FunctionId -> KontsId' -> Int -> Value -> IO AddContinuationResult
-addContinuationArgumentSqlite q conn answerId (workspaceId, f) argNumber v = do
+addContinuationArgumentSqlite :: SyncFunc -> Queue -> Connection -> FunctionId -> KontsId' -> Int -> Value -> IO AddContinuationResult
+addContinuationArgumentSqlite sync q conn answerId (workspaceId, f) argNumber v = do
     let !fId = nameToId answerId f
     let !vText = toText (messageToBuilder v)
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
@@ -263,14 +265,14 @@ addContinuationArgumentSqlite q conn answerId (workspaceId, f) argNumber v = do
     return NEW
 
 -- NOT CACHEABLE
-continuationArgumentsSqlite :: Queue -> Connection -> FunctionId -> KontsId' -> IO (Konts', [Value])
-continuationArgumentsSqlite q conn answerId kId@(workspaceId, f) = do
+continuationArgumentsSqlite :: SyncFunc -> Queue -> Connection -> FunctionId -> KontsId' -> IO (Konts', [Value])
+continuationArgumentsSqlite sync q conn answerId kId@(workspaceId, f) = do
     let !fId = nameToId answerId f
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
-    vs <- enqueueSync q $ do
+    vs <- sync $ do
         vals <- queryNamed conn "SELECT value \
                                 \FROM ContinuationArguments \
                                 \WHERE workspaceId = :workspaceId AND function = :function \
                                 \ORDER BY argNumber ASC" [":workspaceId" := wsIdText, ":function" := fId]
         return $ map (\(Only v) -> parseMessageUnsafeDB v) vals
-    fmap (\k -> (k, vs)) $ loadContinuationSqlite q conn answerId kId
+    fmap (\k -> (k, vs)) $ loadContinuationSqlite sync q conn answerId kId

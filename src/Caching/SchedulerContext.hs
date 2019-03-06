@@ -1,4 +1,4 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 module Caching.SchedulerContext ( CacheState(..), makeCachingSchedulerContext ) where
@@ -60,6 +60,7 @@ makeCachingSchedulerContext ctxt = do
     cache <- createCache ctxt
     return (cache,
         SchedulerContext {
+            doAtomically = doAtomically ctxt,
             createInitialWorkspace = createInitialWorkspaceCaching cache ctxt,
             newSession = newSessionCaching cache ctxt,
             createWorkspace = createWorkspaceCaching cache ctxt,

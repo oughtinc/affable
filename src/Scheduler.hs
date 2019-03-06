@@ -1,7 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), SessionId, sessionIdToBuilder, sessionIdFromText, newSessionId,
+module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), SessionId, SyncFunc, sessionIdToBuilder, sessionIdFromText, newSessionId,
                    autoUserId, makeSingleUserScheduler, labelMessage, relabelMessage, fullyExpand, newUserId, userIdToBuilder, userIdFromText,
                    normalize, generalize, canonicalizeEvents, workspaceToMessage, renumberEvent, eventMessage ) where
 import qualified Data.Map as M -- containers
@@ -37,7 +37,10 @@ autoUserId = nil
 
 type SchedulerFn = UserId -> Workspace -> Event -> IO (Maybe Workspace)
 
+type SyncFunc = forall a. IO a -> IO a
+
 data SchedulerContext extra = SchedulerContext {
+    doAtomically :: SyncFunc,
     createInitialWorkspace :: IO WorkspaceId,
     newSession :: Maybe SessionId -> IO SessionId,
     createWorkspace :: UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId,
@@ -56,37 +59,37 @@ data SchedulerContext extra = SchedulerContext {
     extraContent :: extra -- This is to support making schedulers that can (e.g.) access SQLite directly.
   }
 
--- TODO: Make this atomic.
 normalize :: SchedulerContext extra -> Message -> IO Message
 normalize ctxt msg = do
-    nextPointerId <- nextPointer ctxt
-    let (pEnv, normalizedMsg) = normalizeMessage nextPointerId msg
-    createPointers ctxt pEnv
-    return normalizedMsg
+    doAtomically ctxt $ do
+        nextPointerId <- nextPointer ctxt
+        let (pEnv, normalizedMsg) = normalizeMessage nextPointerId msg
+        createPointers ctxt pEnv
+        return normalizedMsg
 
--- TODO: Make this atomic.
 generalize :: SchedulerContext extra -> Message -> IO Message
 generalize ctxt msg = do
-    nextPointerId <- nextPointer ctxt
-    let (mapping, generalizedMsg) = generalizeMessage nextPointerId msg
-    remapPointers ctxt mapping
-    return generalizedMsg
+    doAtomically ctxt $ do
+        nextPointerId <- nextPointer ctxt
+        let (mapping, generalizedMsg) = generalizeMessage nextPointerId msg
+        remapPointers ctxt mapping
+        return generalizedMsg
 
--- TODO: Make this atomic.
 canonicalizeEvents :: SchedulerContext extra -> [Event] -> IO [Event]
 canonicalizeEvents ctxt evts = do
     case traverse boundPointers $ mapMaybe eventMessage evts of
         Right envs -> do
-            let !env = M.unions envs -- TODO: XXX There could be re-use of bound variables, so this needs to be handled in a smarter manner.
-            firstPointerId <- nextPointer ctxt
-            let !topPointerId = firstPointerId + M.size env - 1
-            let !mapping = M.fromList (zip (M.keys env) [firstPointerId ..])
-            let !evts' = map (renumberEvent mapping) evts
-            let canonicalizeMsg !top msg = (top + M.size pEnv, pEnv)
-                    where (pEnv, _) = canonicalizeMessage top msg
-            let !pEnv = M.unions $ snd $ mapAccumL canonicalizeMsg (topPointerId + 1) (mapMaybe eventMessage evts')
-            createPointers ctxt pEnv
-            return evts'
+            doAtomically ctxt $ do
+                let !env = M.unions envs -- TODO: XXX There could be re-use of bound variables, so this needs to be handled in a smarter manner.
+                firstPointerId <- nextPointer ctxt
+                let !topPointerId = firstPointerId + M.size env - 1
+                let !mapping = M.fromList (zip (M.keys env) [firstPointerId ..])
+                let !evts' = map (renumberEvent mapping) evts
+                let canonicalizeMsg !top msg = (top + M.size pEnv, pEnv)
+                        where (pEnv, _) = canonicalizeMessage top msg
+                let !pEnv = M.unions $ snd $ mapAccumL canonicalizeMsg (topPointerId + 1) (mapMaybe eventMessage evts')
+                createPointers ctxt pEnv
+                return evts'
         -- Left p -> return (Left p)
         -- TODO: XXX Either decide to assume evts is well-formed, and enforce it, or propagate the error.
 

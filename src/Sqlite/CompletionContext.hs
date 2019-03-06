@@ -1,3 +1,4 @@
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Sqlite.CompletionContext ( makeSqliteCompletionContext ) where
 import Data.Int ( Int64 ) -- base
@@ -6,25 +7,26 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, que
 
 import Completions ( CompletionContext(..), preparePattern )
 import Exp ( Pattern )
-import Scheduler ( SchedulerContext(..), SessionId, sessionIdToBuilder )
-import Util ( Queue, enqueueSync, toText )
+import Scheduler ( SchedulerContext(..), SessionId, SyncFunc, sessionIdToBuilder )
+import Util ( Queue, toText )
 
 makeSqliteCompletionContext :: SchedulerContext (Connection, Queue) -> IO (CompletionContext (Connection, Queue))
 makeSqliteCompletionContext ctxt = do
     let (conn, q) = extraContent ctxt
+    let sync = doAtomically ctxt
 
-    primPatterns <- enqueueSync q $ do
+    primPatterns <- sync $ do
         map (\(Only t) -> preparePattern (T.concat ["[", t, "]"])) <$> query_ conn "SELECT pattern FROM Primitives"
 
     return $ CompletionContext {
-                    completionsFor = completionsForSqlite q conn primPatterns,
+                    completionsFor = completionsForSqlite sync q conn primPatterns,
                     schedulerContext = ctxt
                 }
 
 -- NOT CACHEABLE
-completionsForSqlite :: Queue -> Connection -> [Pattern] -> SessionId -> IO [Pattern]
-completionsForSqlite q conn primPatterns sessionId = do
-    enqueueSync q $ do
+completionsForSqlite :: SyncFunc -> Queue -> Connection -> [Pattern] -> SessionId -> IO [Pattern]
+completionsForSqlite sync q conn primPatterns sessionId = do
+    sync $ do
         [fId] <- queryNamed conn "SELECT f.id \
                                  \FROM Functions f \
                                  \INNER JOIN Continuations c ON c.function = f.id \

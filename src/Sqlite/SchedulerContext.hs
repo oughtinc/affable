@@ -1,8 +1,10 @@
-{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 module Sqlite.SchedulerContext ( makeSqliteSchedulerContext ) where
+import Control.Exception ( bracket_ ) -- base
 import Data.Int ( Int64 ) -- base
+import Data.IORef ( IORef, newIORef, writeIORef, readIORef ) -- base
 import qualified Data.Map as M -- containers
 import Data.Text ( Text ) -- text
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
@@ -11,7 +13,7 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..),
 import Command ( Command(..), commandToBuilder )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB )
-import Scheduler ( SchedulerContext(..), Event, UserId, SessionId,
+import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, SyncFunc,
                    autoUserId, userIdToBuilder, sessionIdToBuilder, newSessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Counter, newCounter, increment, Queue, newQueue, enqueueAsync, enqueueSync )
@@ -22,31 +24,36 @@ makeSqliteSchedulerContext conn = do
     q <- newQueue
     [Only t] <- enqueueSync q $ query_ conn "SELECT COUNT(*) FROM Commands"
     c <- newCounter t
+    nestedRef <- newIORef False
+    let sync action = do
+            nested <- readIORef nestedRef
+            if nested then action else enqueueSync q (bracket_ (writeIORef nestedRef True) (writeIORef nestedRef False) action)
     return $
         SchedulerContext {
-            createInitialWorkspace = createInitialWorkspaceSqlite q c conn,
-            newSession = newSessionSqlite q c conn,
-            createWorkspace = createWorkspaceSqlite q c conn,
-            sendAnswer = sendAnswerSqlite q c conn,
-            sendMessage = sendMessageSqlite q c conn,
-            expandPointer = expandPointerSqlite q c conn,
-            nextPointer = nextPointerSqlite q c conn,
-            createPointers = createPointersSqlite q c conn,
-            remapPointers = remapPointersSqlite q c conn,
-            pendingQuestions = pendingQuestionsSqlite q c conn,
-            getWorkspace = getWorkspaceSqlite q c conn,
-            allWorkspaces = allWorkspacesSqlite q c conn,
-            getNextWorkspace = getNextWorkspaceSqlite q c conn,
-            dereference = dereferenceSqlite q c conn,
-            reifyWorkspace = reifyWorkspaceSqlite q c conn,
+            doAtomically = sync,
+            createInitialWorkspace = createInitialWorkspaceSqlite sync q c conn,
+            newSession = newSessionSqlite sync q c conn,
+            createWorkspace = createWorkspaceSqlite sync q c conn,
+            sendAnswer = sendAnswerSqlite sync q c conn,
+            sendMessage = sendMessageSqlite sync q c conn,
+            expandPointer = expandPointerSqlite sync q c conn,
+            nextPointer = nextPointerSqlite sync q c conn,
+            createPointers = createPointersSqlite sync q c conn,
+            remapPointers = remapPointersSqlite sync q c conn,
+            pendingQuestions = pendingQuestionsSqlite sync q c conn,
+            getWorkspace = getWorkspaceSqlite sync q c conn,
+            allWorkspaces = allWorkspacesSqlite sync q c conn,
+            getNextWorkspace = getNextWorkspaceSqlite sync q c conn,
+            dereference = dereferenceSqlite sync q c conn,
+            reifyWorkspace = reifyWorkspaceSqlite sync q c conn,
             extraContent = (conn, q)
         }
 
 -- NOT CACHEABLE
-reifyWorkspaceSqlite :: Queue -> Counter -> Connection -> WorkspaceId -> IO Message
-reifyWorkspaceSqlite q c conn workspaceId = do
+reifyWorkspaceSqlite :: SyncFunc -> Queue -> Counter -> Connection -> WorkspaceId -> IO Message
+reifyWorkspaceSqlite sync q c conn workspaceId = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
-    workspaces <- enqueueSync q $ do
+    workspaces <- sync $ do
         withTransaction conn $ do
             execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMARY KEY ASC )"
             execute_ conn "DELETE FROM Descendants"
@@ -91,14 +98,14 @@ reifyWorkspaceSqlite q c conn workspaceId = do
 
 -- TODO: Bulkify this.
 -- CACHEABLE
-dereferenceSqlite :: Queue -> Counter -> Connection -> Pointer -> IO Message
-dereferenceSqlite q c conn ptr = do
-    enqueueSync q $ do
+dereferenceSqlite :: SyncFunc -> Queue -> Counter -> Connection -> Pointer -> IO Message
+dereferenceSqlite sync q c conn ptr = do
+    sync $ do
         [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
         return $! parseMessageUnsafe' ptr t
 
-insertCommand :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Command -> IO ()
-insertCommand q c conn userId workspaceId cmd = do
+insertCommand :: SyncFunc -> Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Command -> IO ()
+insertCommand sync q c conn userId workspaceId cmd = do
     let !cmdText = toText (commandToBuilder cmd)
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     enqueueAsync q $ do
@@ -110,8 +117,8 @@ insertCommand q c conn userId workspaceId cmd = do
                             ":userId" := toText (userIdToBuilder userId),
                             ":cmd" := cmdText]
 
-createInitialWorkspaceSqlite :: Queue -> Counter -> Connection -> IO WorkspaceId
-createInitialWorkspaceSqlite q c conn = do
+createInitialWorkspaceSqlite :: SyncFunc -> Queue -> Counter -> Connection -> IO WorkspaceId
+createInitialWorkspaceSqlite sync q c conn = do
     workspaceId <- newWorkspaceId
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     t <- increment c
@@ -130,20 +137,20 @@ createInitialWorkspaceSqlite q c conn = do
                                 ":parent" := (Nothing :: Maybe Text),
                                 ":questionAsAsked" := msgText,
                                 ":questionAsAnswered" := msgText']
-    insertCommand q c conn autoUserId workspaceId (Ask msg)
+    insertCommand sync q c conn autoUserId workspaceId (Ask msg)
     return workspaceId
 
-newSessionSqlite :: Queue -> Counter -> Connection -> Maybe SessionId -> IO SessionId
-newSessionSqlite q c conn Nothing = do
+newSessionSqlite :: SyncFunc -> Queue -> Counter -> Connection -> Maybe SessionId -> IO SessionId
+newSessionSqlite sync q c conn Nothing = do
     sessionId <- newSessionId
-    newSessionSqlite q c conn (Just sessionId)
-newSessionSqlite q c conn (Just sessionId) = do
+    newSessionSqlite sync q c conn (Just sessionId)
+newSessionSqlite sync q c conn (Just sessionId) = do
     enqueueAsync q $
         execute conn "INSERT OR IGNORE INTO Sessions (sessionId) VALUES (?)" (Only (toText (sessionIdToBuilder sessionId)))
     return sessionId
 
-createWorkspaceSqlite :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
-createWorkspaceSqlite q c conn userId workspaceId qAsAsked qAsAnswered = do
+createWorkspaceSqlite :: SyncFunc -> Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
+createWorkspaceSqlite sync q c conn userId workspaceId qAsAsked qAsAnswered = do
     let !qAsAskedText = toText (messageToBuilder qAsAsked)
         !qAsAnsweredText = toText (messageToBuilder qAsAnswered)
     wsId <- newWorkspaceId
@@ -158,11 +165,11 @@ createWorkspaceSqlite q c conn userId workspaceId qAsAsked qAsAnswered = do
                             ":parent" := Just workspaceIdText,
                             ":asAsked" := qAsAskedText,
                             ":asAnswered" := qAsAnsweredText]
-    insertCommand q c conn userId workspaceId (Ask qAsAsked)
+    insertCommand sync q c conn userId workspaceId (Ask qAsAsked)
     return wsId
 
-sendAnswerSqlite :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> IO ()
-sendAnswerSqlite q c conn userId workspaceId msg = do
+sendAnswerSqlite :: SyncFunc -> Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> IO ()
+sendAnswerSqlite sync q c conn userId workspaceId msg = do
     let !msgText = toText (messageToBuilder msg)
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     t <- increment c
@@ -174,10 +181,10 @@ sendAnswerSqlite q c conn userId workspaceId msg = do
                             ":workspace" := wsIdText,
                             ":time" := (t :: LogicalTime),
                             ":answer" := msgText]
-    insertCommand q c conn userId workspaceId (Reply msg)
+    insertCommand sync q c conn userId workspaceId (Reply msg)
 
-sendMessageSqlite :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
-sendMessageSqlite q c conn userId srcId tgtId msg = do
+sendMessageSqlite :: SyncFunc -> Queue -> Counter -> Connection -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
+sendMessageSqlite sync q c conn userId srcId tgtId msg = do
     let !msgText = toText (messageToBuilder msg)
     t <- increment c
     enqueueAsync q $ do
@@ -186,11 +193,11 @@ sendMessageSqlite q c conn userId srcId tgtId msg = do
                             ":target" := toText (workspaceIdToBuilder tgtId),
                             ":time" := (t :: LogicalTime),
                             ":content" := msgText]
-    insertCommand q c conn userId srcId (Send tgtId msg)
+    insertCommand sync q c conn userId srcId (Send tgtId msg)
 
 -- TODO: Bulkify this.
-expandPointerSqlite :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Pointer -> IO ()
-expandPointerSqlite q c conn userId workspaceId ptr = do
+expandPointerSqlite :: SyncFunc -> Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Pointer -> IO ()
+expandPointerSqlite sync q c conn userId workspaceId ptr = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     t <- increment c
     enqueueAsync q $ do
@@ -198,21 +205,21 @@ expandPointerSqlite q c conn userId workspaceId ptr = do
                             ":workspace" := wsIdText,
                             ":pointer" := ptr,
                             ":time" := (t :: LogicalTime)]
-    insertCommand q c conn userId workspaceId (View ptr)
+    insertCommand sync q c conn userId workspaceId (View ptr)
 
-nextPointerSqlite :: Queue -> Counter -> Connection -> IO Pointer
-nextPointerSqlite q c conn = do
-    enqueueSync q $ do
+nextPointerSqlite :: SyncFunc -> Queue -> Counter -> Connection -> IO Pointer
+nextPointerSqlite sync q c conn = do
+    sync $ do
         [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
         return $! maybe 0 succ lastPointerId
 
-createPointersSqlite :: Queue -> Counter -> Connection -> PointerEnvironment -> IO ()
-createPointersSqlite q c conn env = do
+createPointersSqlite :: SyncFunc -> Queue -> Counter -> Connection -> PointerEnvironment -> IO ()
+createPointersSqlite sync q c conn env = do
     enqueueAsync q $
         executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) env))
 
-remapPointersSqlite :: Queue -> Counter -> Connection -> PointerRemapping -> IO ()
-remapPointersSqlite q c conn mapping = do
+remapPointersSqlite :: SyncFunc -> Queue -> Counter -> Connection -> PointerRemapping -> IO ()
+remapPointersSqlite sync q c conn mapping = do
     enqueueAsync q $
         executeMany conn "INSERT INTO Pointers (id, content) \
                          \SELECT ?, content \
@@ -220,10 +227,10 @@ remapPointersSqlite q c conn mapping = do
                          \WHERE id = ?" (M.assocs mapping)
 
 -- NOT CACHEABLE
-pendingQuestionsSqlite :: Queue -> Counter -> Connection -> WorkspaceId -> IO [WorkspaceId]
-pendingQuestionsSqlite q c conn workspaceId = do
+pendingQuestionsSqlite :: SyncFunc -> Queue -> Counter -> Connection -> WorkspaceId -> IO [WorkspaceId]
+pendingQuestionsSqlite sync q c conn workspaceId = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
-    enqueueSync q $ do
+    sync $ do
         subquestions <- query conn "SELECT w.id \
                                    \FROM Workspaces w \
                                    \LEFT OUTER JOIN Answers a ON a.workspaceId = w.id \
@@ -233,10 +240,10 @@ pendingQuestionsSqlite q c conn workspaceId = do
 
 -- TODO: Maybe maintain a cache of workspaces.
 -- NOT CACHEABLE but the components should be. Cacheable if answered, for now at least.
-getWorkspaceSqlite :: Queue -> Counter -> Connection -> WorkspaceId -> IO Workspace
-getWorkspaceSqlite q c conn workspaceId = do
+getWorkspaceSqlite :: SyncFunc -> Queue -> Counter -> Connection -> WorkspaceId -> IO Workspace
+getWorkspaceSqlite sync q c conn workspaceId = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
-    enqueueSync q $ do
+    sync $ do
         withTransaction conn $ do
             [(p, t, q)] <- query conn "SELECT parentWorkspaceId, logicalTime, questionAsAnswered \
                                       \FROM Workspaces \
@@ -262,9 +269,9 @@ getWorkspaceSqlite q c conn workspaceId = do
                 time = Time t }
 
 -- NOT CACHEABLE
-allWorkspacesSqlite :: Queue -> Counter -> Connection -> IO (M.Map WorkspaceId Workspace)
-allWorkspacesSqlite q c conn = do
-    enqueueSync q $ do
+allWorkspacesSqlite :: SyncFunc -> Queue -> Counter -> Connection -> IO (M.Map WorkspaceId Workspace)
+allWorkspacesSqlite sync q c conn = do
+    sync $ do
         withTransaction conn $ do
             workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
                                       \FROM Workspaces"
@@ -295,9 +302,9 @@ allWorkspacesSqlite q c conn = do
                                                                     time = Time t })) workspaces
 
 -- NOT CACHEABLE
-getNextWorkspaceSqlite :: Queue -> Counter -> Connection -> IO (Maybe WorkspaceId)
-getNextWorkspaceSqlite q c conn = do
-    enqueueSync q $ do
+getNextWorkspaceSqlite :: SyncFunc -> Queue -> Counter -> Connection -> IO (Maybe WorkspaceId)
+getNextWorkspaceSqlite sync q c conn = do
+    sync $ do
         -- This gets a workspace that doesn't currently have an answer.
         result <- query_ conn "SELECT w.id \
                               \FROM Workspaces w \

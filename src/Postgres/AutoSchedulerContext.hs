@@ -1,3 +1,4 @@
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Postgres.AutoSchedulerContext ( makePostgresAutoSchedulerContext, makePostgresAutoSchedulerContext' ) where
 import Data.Int ( Int64 ) -- base
@@ -9,9 +10,9 @@ import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsI
              parseVarEnv, parseFunEnv,
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
 import Message ( PointerRemapping, messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
-import Scheduler ( SchedulerContext(..), SessionId )
+import Scheduler ( SchedulerContext(..), SessionId, SyncFunc )
 import Postgres.SchedulerContext ( makePostgresSchedulerContext )
-import Util ( toText, Queue, enqueueAsync, enqueueSync, parseUnsafe )
+import Util ( toText, Queue, enqueueAsync, parseUnsafe )
 import Workspace ( WorkspaceId )
 
 makePostgresAutoSchedulerContext :: Connection -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
@@ -22,8 +23,9 @@ makePostgresAutoSchedulerContext conn sessionId = do
 makePostgresAutoSchedulerContext' :: SchedulerContext (Connection, Queue) -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
 makePostgresAutoSchedulerContext' ctxt sessionId = do
     let (conn, q) = extraContent ctxt
+    let sync = doAtomically ctxt
 
-    answerId <- enqueueSync q $ do
+    answerId <- sync $ do
         ss <- query conn "SELECT f.id \
                          \FROM Functions f \
                          \INNER JOIN Continuations c ON c.function = f.id \
@@ -40,36 +42,36 @@ makePostgresAutoSchedulerContext' ctxt sessionId = do
 
     return $ AutoSchedulerContext {
                     thisAnswerId = answerId,
-                    alternativesFor = alternativesForPostgres q conn answerId,
-                    allAlternatives = allAlternativesPostgres q conn answerId sessionId,
-                    addCaseFor = addCaseForPostgres q conn answerId,
-                    newFunction = newFunctionPostgres q conn,
-                    linkVars = linkVarsPostgres q conn,
-                    links = linksPostgres q conn,
-                    saveContinuation = saveContinuationPostgres q conn answerId,
-                    loadContinuation = loadContinuationPostgres q conn answerId,
-                    recordState = recordStatePostgres q conn,
-                    currentState = currentStatePostgres q conn,
-                    newProcess = newProcessPostgres q conn sessionId,
-                    runQueue = runQueuePostgres q conn sessionId,
-                    terminate = terminatePostgres q conn,
-                    addContinuationArgument = addContinuationArgumentPostgres q conn answerId,
-                    continuationArguments = continuationArgumentsPostgres q conn answerId,
+                    alternativesFor = alternativesForPostgres sync q conn answerId,
+                    allAlternatives = allAlternativesPostgres sync q conn answerId sessionId,
+                    addCaseFor = addCaseForPostgres sync q conn answerId,
+                    newFunction = newFunctionPostgres sync q conn,
+                    linkVars = linkVarsPostgres sync q conn,
+                    links = linksPostgres sync q conn,
+                    saveContinuation = saveContinuationPostgres sync q conn answerId,
+                    loadContinuation = loadContinuationPostgres sync q conn answerId,
+                    recordState = recordStatePostgres sync q conn,
+                    currentState = currentStatePostgres sync q conn,
+                    newProcess = newProcessPostgres sync q conn sessionId,
+                    runQueue = runQueuePostgres sync q conn sessionId,
+                    terminate = terminatePostgres sync q conn,
+                    addContinuationArgument = addContinuationArgumentPostgres sync q conn answerId,
+                    continuationArguments = continuationArgumentsPostgres sync q conn answerId,
                     schedulerContext = ctxt
                 }
 
 -- NOT CACHEABLE
-alternativesForPostgres :: Queue -> Connection -> FunctionId -> Name -> IO [([Pattern], Exp')]
-alternativesForPostgres q conn answerId f = do
+alternativesForPostgres :: SyncFunc -> Queue -> Connection -> FunctionId -> Name -> IO [([Pattern], Exp')]
+alternativesForPostgres sync q conn answerId f = do
     let !fId = nameToId answerId f
-    enqueueSync q $ do
+    sync $ do
         alts <- query conn "SELECT pattern, body FROM Alternatives WHERE function = ?" (Only fId)
         return $ map (\(ps, e) -> (parsePatternsUnsafe ps, expFromDB e)) alts
 
 -- NOT CACHEABLE
-allAlternativesPostgres :: Queue -> Connection -> FunctionId -> SessionId -> IO (M.Map Name [([Pattern], Exp')])
-allAlternativesPostgres q conn answerId sessionId = do
-    enqueueSync q $ do
+allAlternativesPostgres :: SyncFunc -> Queue -> Connection -> FunctionId -> SessionId -> IO (M.Map Name [([Pattern], Exp')])
+allAlternativesPostgres sync q conn answerId sessionId = do
+    sync $ do
         alts <- query conn "SELECT function, pattern, body \
                            \FROM Alternatives \
                            \WHERE function IN (SELECT c.function \
@@ -80,27 +82,27 @@ allAlternativesPostgres q conn answerId sessionId = do
                            (Only sessionId) -- TODO: ORDER BY
         return $ M.fromListWith (++) $ map (\(f, ps, e) -> (idToName answerId f, [(parsePatternsUnsafe ps, expFromDB e)])) alts
 
-newFunctionPostgres :: Queue -> Connection -> IO Name
-newFunctionPostgres q conn = do
-    enqueueSync q $ do
+newFunctionPostgres :: SyncFunc -> Queue -> Connection -> IO Name
+newFunctionPostgres sync q conn = do
+    sync $ do
         [Only fId] <- query_ conn "INSERT INTO Functions DEFAULT VALUES RETURNING id"
         return (LOCAL fId)
 
-linkVarsPostgres :: Queue -> Connection -> WorkspaceId -> PointerRemapping -> IO ()
-linkVarsPostgres q conn workspaceId mapping = do
+linkVarsPostgres :: SyncFunc -> Queue -> Connection -> WorkspaceId -> PointerRemapping -> IO ()
+linkVarsPostgres sync q conn workspaceId mapping = do
     enqueueAsync q $ do
         () <$ executeMany conn "INSERT INTO Links ( workspaceId, sourceId, targetId ) VALUES (?, ?, ?) \
                                \ON CONFLICT (workspaceId, sourceId) DO UPDATE SET targetId = excluded.targetId"
                 (map (\(srcId, tgtId) -> (workspaceId, srcId, tgtId)) (M.toList mapping))
 
-linksPostgres :: Queue -> Connection -> WorkspaceId -> IO PointerRemapping
-linksPostgres q conn workspaceId = do
-    enqueueSync q $ do
+linksPostgres :: SyncFunc -> Queue -> Connection -> WorkspaceId -> IO PointerRemapping
+linksPostgres sync q conn workspaceId = do
+    sync $ do
         srcTgts <- query conn "SELECT sourceId, targetId FROM Links WHERE workspaceId = ?" (Only workspaceId)
         return $ M.fromList srcTgts
 
-addCaseForPostgres :: Queue -> Connection -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()
-addCaseForPostgres q conn answerId f patterns e = do
+addCaseForPostgres :: SyncFunc -> Queue -> Connection -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()
+addCaseForPostgres sync q conn answerId f patterns e = do
     let !fId = nameToId answerId f
     enqueueAsync q $ do
         -- TODO: XXX This will also need to change to an INSERT OR REPLACE if we just naively have revisits update
@@ -108,8 +110,8 @@ addCaseForPostgres q conn answerId f patterns e = do
         () <$ execute conn "INSERT INTO Alternatives ( function, pattern, body ) VALUES (?, ?, ?)"
                             (fId, toText (patternsToBuilder patterns), toText (expToBuilderDB e))
 
-saveContinuationPostgres :: Queue -> Connection -> FunctionId -> Konts' -> IO ()
-saveContinuationPostgres q conn answerId (CallKont funEnv f workspaceId k) = do
+saveContinuationPostgres :: SyncFunc -> Queue -> Connection -> FunctionId -> Konts' -> IO ()
+saveContinuationPostgres sync q conn answerId (CallKont funEnv f workspaceId k) = do
     let !fId = nameToId answerId f
     enqueueAsync q $ do
         withTransaction conn $ do
@@ -128,10 +130,10 @@ saveContinuationPostgres q conn answerId (CallKont funEnv f workspaceId k) = do
                          (M.toList (maybe M.empty id $ M.lookup f funEnv)))
 
 -- CACHEABLE
-loadContinuationPostgres :: Queue -> Connection -> FunctionId -> KontsId' -> IO Konts'
-loadContinuationPostgres q conn answerId (workspaceId, f) = do
+loadContinuationPostgres :: SyncFunc -> Queue -> Connection -> FunctionId -> KontsId' -> IO Konts'
+loadContinuationPostgres sync q conn answerId (workspaceId, f) = do
     let !fId = nameToId answerId f
-    enqueueSync q $ do
+    sync $ do
         [Only k] <- query conn "SELECT next FROM Continuations WHERE workspaceId = ? AND function = ? LIMIT 1" (workspaceId, fId)
         -- TODO: Here we just get every VarEnv for every function in the Workspace. I don't know if this is right.
         -- It definitely gets more than we need or than was there when the continuation was saved, but that's harmless.
@@ -142,8 +144,8 @@ loadContinuationPostgres q conn answerId (workspaceId, f) = do
         let !funEnv = M.fromListWith M.union $ map (\(g, x, v) -> (idToName answerId g, M.singleton x (parseMessageUnsafeDB v))) vars
         return (CallKont funEnv f workspaceId (parseKont1UnsafeDB k))
 
-recordStatePostgres :: Queue -> Connection -> ProcessId -> EvalState' -> IO ()
-recordStatePostgres q conn processId (varEnv, funEnv, s, e, k) = do {
+recordStatePostgres :: SyncFunc -> Queue -> Connection -> ProcessId -> EvalState' -> IO ()
+recordStatePostgres sync q conn processId (varEnv, funEnv, s, e, k) = do {
     -- To support brute-force revisit, we can add a check here that checks if the state is already in Trace, and if so terminates
     -- processId.
     let { !varEnvText = toText (varEnvToBuilder varEnv);
@@ -152,7 +154,7 @@ recordStatePostgres q conn processId (varEnv, funEnv, s, e, k) = do {
           !continuationText = toText (kont1ToBuilderDB k) };
 
     {--
-    seen <- enqueueSync q $ do {
+    seen <- sync $ do {
         rs <- queryNamed conn "SELECT 1 \
                               \FROM Trace \
                               \WHERE varEnv = :varEnv AND funEnv = :funEnv AND workspaceId = :workspaceId \
@@ -166,7 +168,7 @@ recordStatePostgres q conn processId (varEnv, funEnv, s, e, k) = do {
         return (not (null (rs :: [Only Int64]))) };
 
     if seen then do
-        terminatePostgres q conn processId
+        terminatePostgres sync q conn processId
       else do
     -- -}
         enqueueAsync q $ do
@@ -179,9 +181,9 @@ recordStatePostgres q conn processId (varEnv, funEnv, s, e, k) = do {
                                  continuationText)
     }
 
-currentStatePostgres :: Queue -> Connection -> ProcessId -> IO EvalState'
-currentStatePostgres q conn pId = do
-    enqueueSync q $ do
+currentStatePostgres :: SyncFunc -> Queue -> Connection -> ProcessId -> IO EvalState'
+currentStatePostgres sync q conn pId = do
+    sync $ do
         [(varEnv, funEnv, s, e, k)] <- query conn "SELECT varEnv, funEnv, workspaceId, expression, continuation \
                                                   \FROM Trace \
                                                   \WHERE processId = ? \
@@ -189,8 +191,8 @@ currentStatePostgres q conn pId = do
                                                   \LIMIT 1" (Only pId)
         return (parseUnsafe parseVarEnv varEnv, parseUnsafe parseFunEnv funEnv, s, expFromDB e, parseKont1UnsafeDB k)
 
-newProcessPostgres :: Queue -> Connection -> SessionId -> IO ProcessId
-newProcessPostgres q conn sessionId = do
+newProcessPostgres :: SyncFunc -> Queue -> Connection -> SessionId -> IO ProcessId
+newProcessPostgres sync q conn sessionId = do
     processId <- newProcessId
     enqueueAsync q $ do
         withTransaction conn $ do
@@ -198,21 +200,21 @@ newProcessPostgres q conn sessionId = do
             () <$ execute conn "INSERT INTO SessionProcesses ( sessionId, processId ) VALUES (?, ?)" (sessionId, processId)
     return processId
 
-runQueuePostgres :: Queue -> Connection -> SessionId -> IO [ProcessId]
-runQueuePostgres q conn sessionId = do
-    enqueueSync q $ do
+runQueuePostgres :: SyncFunc -> Queue -> Connection -> SessionId -> IO [ProcessId]
+runQueuePostgres sync q conn sessionId = do
+    sync $ do
         map (\(Only pId) -> pId) <$> query conn "SELECT processId \
                                                 \FROM RunQueue q \
                                                 \WHERE processId IN (SELECT processId FROM SessionProcesses WHERE sessionId = ?)"
                                                         (Only sessionId)
 
-terminatePostgres :: Queue -> Connection -> ProcessId -> IO ()
-terminatePostgres q conn processId = do
+terminatePostgres :: SyncFunc -> Queue -> Connection -> ProcessId -> IO ()
+terminatePostgres sync q conn processId = do
     enqueueAsync q $ do
         () <$ execute conn "DELETE FROM RunQueue WHERE processId = ?" (Only processId)
 
-addContinuationArgumentPostgres :: Queue -> Connection -> FunctionId -> KontsId' -> Int -> Value -> IO AddContinuationResult
-addContinuationArgumentPostgres q conn answerId (workspaceId, f) argNumber v = do
+addContinuationArgumentPostgres :: SyncFunc -> Queue -> Connection -> FunctionId -> KontsId' -> Int -> Value -> IO AddContinuationResult
+addContinuationArgumentPostgres sync q conn answerId (workspaceId, f) argNumber v = do
     let !fId = nameToId answerId f
     let !vText = toText (messageToBuilder v)
     enqueueAsync q $ do
@@ -246,13 +248,13 @@ addContinuationArgumentPostgres q conn answerId (workspaceId, f) argNumber v = d
     return NEW
 
 -- NOT CACHEABLE
-continuationArgumentsPostgres :: Queue -> Connection -> FunctionId -> KontsId' -> IO (Konts', [Value])
-continuationArgumentsPostgres q conn answerId kId@(workspaceId, f) = do
+continuationArgumentsPostgres :: SyncFunc -> Queue -> Connection -> FunctionId -> KontsId' -> IO (Konts', [Value])
+continuationArgumentsPostgres sync q conn answerId kId@(workspaceId, f) = do
     let !fId = nameToId answerId f
-    vs <- enqueueSync q $ do
+    vs <- sync $ do
         vals <- query conn "SELECT value \
                            \FROM ContinuationArguments \
                            \WHERE workspaceId = ? AND function = ? \
                            \ORDER BY argNumber ASC" (workspaceId, fId)
         return $ map (\(Only v) -> parseMessageUnsafeDB v) vals
-    fmap (\k -> (k, vs)) $ loadContinuationPostgres q conn answerId kId
+    fmap (\k -> (k, vs)) $ loadContinuationPostgres sync q conn answerId kId
