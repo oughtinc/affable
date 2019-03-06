@@ -37,9 +37,9 @@ type SchedulerFn = UserId -> Workspace -> Event -> IO (Maybe Workspace)
 data SchedulerContext extra = SchedulerContext {
     createInitialWorkspace :: IO WorkspaceId,
     newSession :: Maybe SessionId -> IO SessionId,
-    createWorkspace :: Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId,
-    sendAnswer :: Bool -> UserId -> WorkspaceId -> Message -> IO (),
-    sendMessage :: Bool -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO (),
+    createWorkspace :: UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId,
+    sendAnswer :: UserId -> WorkspaceId -> Message -> IO (),
+    sendMessage :: UserId -> WorkspaceId -> WorkspaceId -> Message -> IO (),
     expandPointer :: UserId -> WorkspaceId -> Pointer -> IO (),
     createPointers :: PointerEnvironment -> IO (),
     pendingQuestions :: WorkspaceId -> IO [WorkspaceId],
@@ -78,18 +78,21 @@ fullyExpand ctxt m = go S.empty m -- TODO: Maybe maintain seen Messages to avoid
 makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeSingleUserScheduler ctxt = do
     let scheduler userId workspace (Create msg) = do
-            newWorkspaceId <- createWorkspace ctxt True userId (identity workspace) msg msg
+            msg' <- normalize ctxt msg
+            newWorkspaceId <- createWorkspace ctxt userId (identity workspace) msg msg'
             Just <$> getWorkspace ctxt newWorkspaceId
 
         scheduler userId workspace (Answer msg) = do
-            sendAnswer ctxt True userId (identity workspace) msg
+            msg <- normalize ctxt msg
+            sendAnswer ctxt userId (identity workspace) msg
             mNewWorkspaceId <- getNextWorkspace ctxt
             case mNewWorkspaceId of
                 Just newWorkspaceId -> Just <$> getWorkspace ctxt newWorkspaceId
                 Nothing -> return Nothing
 
         scheduler userId workspace (Send ws msg) = do
-            sendMessage ctxt True userId (identity workspace) ws msg
+            msg <- normalize ctxt msg
+            sendMessage ctxt userId (identity workspace) ws msg
             Just <$> getWorkspace ctxt (identity workspace)
 
         scheduler userId workspace (Expand ptr) = do

@@ -24,7 +24,7 @@ makePrimitive :: SchedulerContext extra -> Pattern -> PrimFunc extra -> (Workspa
 makePrimitive ctxt pattern body workspaceId msg = do
     answer <- maybe (return don'tKnow) (body ctxt workspaceId . M.elems) . matchMessage pattern =<< fullyExpand ctxt msg
     answer <- relabelMessage ctxt =<< normalize ctxt answer
-    sendAnswer ctxt False autoUserId workspaceId answer
+    sendAnswer ctxt autoUserId workspaceId answer
     return answer
 
 makePrimitives :: SchedulerContext extra -> IO (PrimEnv WorkspaceId IO Primitive, Value -> Maybe Primitive)

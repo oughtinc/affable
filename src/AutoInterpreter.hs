@@ -203,12 +203,12 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                                 let !m = case argExp of Call ANSWER [Value m] -> m; Prim _ (Value m) -> m
                                                 let !arg = substitute bindings m
                                                 pattern <- liftIO $ relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt arg
-                                                liftIO $ createWorkspace ctxt False autoUserId workspaceId (renumberMessage' localToGlobal m) pattern
+                                                liftIO $ createWorkspace ctxt autoUserId workspaceId (renumberMessage' localToGlobal m) pattern
                                             eval varEnv' funEnv workspaceId e k -- TODO: Think about this.
                                         Value msg -> do -- reply case
                                             let !msg' = substitute bindings msg
                                             msg <- liftIO $ normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
-                                            liftIO $ sendAnswer ctxt False autoUserId workspaceId msg
+                                            liftIO $ sendAnswer ctxt autoUserId workspaceId msg
                                             eval varEnv' funEnv workspaceId e k -- TODO: Think about this.
                                         -- _ -> eval varEnv' funEnv workspaceId e k -- Intentionally missing this case.
                                 Nothing -> matchPending workspace
@@ -227,7 +227,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                     let loop = blockOnUser workspaceId >>= processEvent
                         processEvent (userId, Create msg) = do
                             pattern <- liftIO $ relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
-                            liftIO $ createWorkspace ctxt False userId workspaceId msg pattern
+                            liftIO $ createWorkspace ctxt userId workspaceId msg pattern
                             loop
                         processEvent (userId, Expand ptr) = do -- TODO: Make this more resilient to pointers that are not in scope.
                             liftIO $ expandPointer ctxt userId workspaceId ptr
@@ -238,11 +238,11 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                             return (M.singleton ptr' arg, LetFun g (Call g [Var ptr']))
                         processEvent (userId, Answer msg@(Structured [Reference p])) = do -- dereference pointers -- TODO: Do this?
                             msg' <- liftIO $ dereference ctxt p
-                            liftIO $ sendAnswer ctxt False userId workspaceId msg'
+                            liftIO $ sendAnswer ctxt userId workspaceId msg'
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         processEvent (userId, Answer msg) = do
                             msg' <- liftIO $ relabelMessage ctxt =<< normalize ctxt msg
-                            liftIO $ sendAnswer ctxt False userId workspaceId msg'
+                            liftIO $ sendAnswer ctxt userId workspaceId msg'
                             return (M.empty, Value $ renumberMessage' globalToLocal msg)
                         -- processEvent (userId, Send ws msg) = -- Intentionally incomplete pattern match. Should never get here.
                         processEvent (userId, Submit) = do

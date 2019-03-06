@@ -131,14 +131,13 @@ newSessionCaching cache ctxt mSessionId = do
     atomically $ modifyTVar' (sessionsC cache) (M.unionWith (++) (M.singleton sessionId []))
     return sessionId
 
-createWorkspaceCaching :: CacheState -> SchedulerContext e -> Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
-createWorkspaceCaching cache ctxt doNormalize userId workspaceId qAsAsked qAsAnswered = do
-    qAsAnswered' <- if doNormalize then snd <$> insertMessagePointers cache ctxt qAsAnswered else return qAsAnswered
-    wsId <- createWorkspace ctxt False userId workspaceId qAsAsked qAsAnswered'
+createWorkspaceCaching :: CacheState -> SchedulerContext e -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
+createWorkspaceCaching cache ctxt userId workspaceId qAsAsked qAsAnswered = do
+    wsId <- createWorkspace ctxt userId workspaceId qAsAsked qAsAnswered
     let newWorkspace = Workspace {
                         identity = wsId,
                         parentId = Just workspaceId,
-                        question = qAsAnswered',
+                        question = qAsAnswered,
                         subQuestions = [],
                         messageHistory = [],
                         expandedPointers = M.empty,
@@ -147,23 +146,22 @@ createWorkspaceCaching cache ctxt doNormalize userId workspaceId qAsAsked qAsAns
     return wsId
   where insertSubQuestion wsId ws@(Workspace { subQuestions = sqs }) = ws { subQuestions = sqs ++ [(wsId, qAsAsked, Nothing)] }
 
-sendAnswerCaching :: CacheState -> SchedulerContext e -> Bool -> UserId -> WorkspaceId -> Message -> IO ()
-sendAnswerCaching cache ctxt doNormalize userId workspaceId msg = do
-    msg' <- if doNormalize then snd <$> insertMessagePointers cache ctxt msg else return msg
+sendAnswerCaching :: CacheState -> SchedulerContext e -> UserId -> WorkspaceId -> Message -> IO ()
+sendAnswerCaching cache ctxt userId workspaceId msg = do
     Workspace { parentId = mParentWorkspaceId } <- getWorkspaceCaching cache ctxt workspaceId
     case mParentWorkspaceId of
-        Nothing -> atomically $ modifyTVar' (answersC cache) (M.insert workspaceId msg')
+        Nothing -> atomically $ modifyTVar' (answersC cache) (M.insert workspaceId msg)
         Just parentWorkspaceId -> do
             atomically $ do
-                modifyTVar' (workspacesC cache) (M.adjust (insertSubQuestion workspaceId msg') parentWorkspaceId)
-                modifyTVar' (answersC cache) (M.insert workspaceId msg')
-    sendAnswer ctxt False userId workspaceId msg'
+                modifyTVar' (workspacesC cache) (M.adjust (insertSubQuestion workspaceId msg) parentWorkspaceId)
+                modifyTVar' (answersC cache) (M.insert workspaceId msg)
+    sendAnswer ctxt userId workspaceId msg
   where insertSubQuestion wsId msg ws@(Workspace { subQuestions = sqs }) = ws { subQuestions = map addAnswer sqs }
             where addAnswer sq@(qId, q, _) | qId == wsId = (qId, q, Just msg)
                                            | otherwise = sq
 
-sendMessageCaching :: CacheState -> SchedulerContext e -> Bool -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
-sendMessageCaching cache ctxt doNormalize userId srcId tgtId msg = error "sendMessageCaching: not implemented"
+sendMessageCaching :: CacheState -> SchedulerContext e -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
+sendMessageCaching cache ctxt userId srcId tgtId msg = error "sendMessageCaching: not implemented"
 
 expandPointerCaching :: CacheState -> SchedulerContext e -> UserId -> WorkspaceId -> Pointer -> IO ()
 expandPointerCaching cache ctxt userId workspaceId ptr = do

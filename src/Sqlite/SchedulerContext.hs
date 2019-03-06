@@ -199,11 +199,10 @@ newSessionSqlite q c conn (Just sessionId) = do
         execute conn "INSERT OR IGNORE INTO Sessions (sessionId) VALUES (?)" (Only (toText (sessionIdToBuilder sessionId)))
     return sessionId
 
-createWorkspaceSqlite :: Queue -> Counter -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
-createWorkspaceSqlite q c conn doNormalize userId workspaceId qAsAsked qAsAnswered = do
-    qAsAnswered' <- if doNormalize then snd <$> insertMessagePointers q c conn qAsAnswered else return qAsAnswered
+createWorkspaceSqlite :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
+createWorkspaceSqlite q c conn userId workspaceId qAsAsked qAsAnswered = do
     let !qAsAskedText = toText (messageToBuilder qAsAsked)
-        !qAsAnsweredText = toText (messageToBuilder qAsAnswered')
+        !qAsAnsweredText = toText (messageToBuilder qAsAnswered)
     wsId <- newWorkspaceId
     let !workspaceIdText = toText (workspaceIdToBuilder workspaceId)
     let !wsIdText = toText (workspaceIdToBuilder wsId)
@@ -219,10 +218,9 @@ createWorkspaceSqlite q c conn doNormalize userId workspaceId qAsAsked qAsAnswer
     insertCommand q c conn userId workspaceId (Ask qAsAsked)
     return wsId
 
-sendAnswerSqlite :: Queue -> Counter -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> IO ()
-sendAnswerSqlite q c conn doNormalize userId workspaceId msg = do
-    msg' <- if doNormalize then snd <$> insertMessagePointers q c conn msg else return msg
-    let !msgText = toText (messageToBuilder msg')
+sendAnswerSqlite :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> IO ()
+sendAnswerSqlite q c conn userId workspaceId msg = do
+    let !msgText = toText (messageToBuilder msg)
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     t <- increment c
     enqueueAsync q $ do
@@ -235,10 +233,9 @@ sendAnswerSqlite q c conn doNormalize userId workspaceId msg = do
                             ":answer" := msgText]
     insertCommand q c conn userId workspaceId (Reply msg)
 
-sendMessageSqlite :: Queue -> Counter -> Connection -> Bool -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
-sendMessageSqlite q c conn doNormalize userId srcId tgtId msg = do
-    msg' <- if doNormalize then snd <$> insertMessagePointers q c conn msg else return msg
-    let !msgText = toText (messageToBuilder msg')
+sendMessageSqlite :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
+sendMessageSqlite q c conn userId srcId tgtId msg = do
+    let !msgText = toText (messageToBuilder msg)
     t <- increment c
     enqueueAsync q $ do
         executeNamed conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (:source, :target, :time, :content)" [

@@ -190,11 +190,10 @@ newSessionPostgres q c conn (Just sessionId) = do
         () <$ execute conn "INSERT INTO Sessions (sessionId) VALUES (?) ON CONFLICT DO NOTHING" (Only sessionId)
     return sessionId
 
-createWorkspacePostgres :: Queue -> Counter -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
-createWorkspacePostgres q c conn doNormalize userId workspaceId qAsAsked qAsAnswered = do
-    qAsAnswered' <- if doNormalize then snd <$> insertMessagePointers q c conn qAsAnswered else return qAsAnswered
+createWorkspacePostgres :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
+createWorkspacePostgres q c conn userId workspaceId qAsAsked qAsAnswered = do
     let !qAsAskedText = toText (messageToBuilder qAsAsked)
-        !qAsAnsweredText = toText (messageToBuilder qAsAnswered')
+        !qAsAnsweredText = toText (messageToBuilder qAsAnswered)
     wsId <- newWorkspaceId
     t <- increment c
     enqueueAsync q $ do
@@ -204,10 +203,9 @@ createWorkspacePostgres q c conn doNormalize userId workspaceId qAsAsked qAsAnsw
     insertCommand q c conn userId workspaceId (Ask qAsAsked)
     return wsId
 
-sendAnswerPostgres :: Queue -> Counter -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> IO ()
-sendAnswerPostgres q c conn doNormalize userId workspaceId msg = do
-    msg' <- if doNormalize then snd <$> insertMessagePointers q c conn msg else return msg
-    let !msgText = toText (messageToBuilder msg')
+sendAnswerPostgres :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> IO ()
+sendAnswerPostgres q c conn userId workspaceId msg = do
+    let !msgText = toText (messageToBuilder msg)
     t <- increment c
     enqueueAsync q $ do
         () <$ execute conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (?, ?, ?) \
@@ -215,10 +213,9 @@ sendAnswerPostgres q c conn doNormalize userId workspaceId msg = do
                             (workspaceId, t :: LogicalTime, msgText)
     insertCommand q c conn userId workspaceId (Reply msg)
 
-sendMessagePostgres :: Queue -> Counter -> Connection -> Bool -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
-sendMessagePostgres q c conn doNormalize userId srcId tgtId msg = do
-    msg' <- if doNormalize then snd <$> insertMessagePointers q c conn msg else return msg
-    let !msgText = toText (messageToBuilder msg')
+sendMessagePostgres :: Queue -> Counter -> Connection -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
+sendMessagePostgres q c conn userId srcId tgtId msg = do
+    let !msgText = toText (messageToBuilder msg)
     t <- increment c
     enqueueAsync q $ do
         () <$ execute conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (?, ?, ?, ?)"
