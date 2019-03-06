@@ -99,13 +99,15 @@ labelMessage :: SchedulerContext extra -> Message -> IO Message
 labelMessage ctxt msg@(Structured ms) = do
     doAtomically ctxt $ do
         p <- nextPointer ctxt
-        createPointers ctxt (M.singleton p msg)
-        return (LabeledStructured p ms)
+        let msg' = LabeledStructured p ms
+        createPointers ctxt (M.singleton p msg')
+        return msg'
 labelMessage ctxt msg = do
     doAtomically ctxt $ do
         p <- nextPointer ctxt
-        createPointers ctxt (M.singleton p msg)
-        return (LabeledStructured p [msg])
+        let msg' = LabeledStructured p [msg]
+        createPointers ctxt (M.singleton p msg')
+        return msg'
 
 relabelMessage :: SchedulerContext extra -> Message -> IO Message
 relabelMessage ctxt = labelMessage ctxt . stripLabel
