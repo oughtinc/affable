@@ -12,7 +12,7 @@ import Database.PostgreSQL.Simple ( Connection, Only(..),
 import Command ( Command(..), commandToBuilder )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB )
-import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, SyncFunc,
+import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, SyncFunc, AsyncFunc,
                    autoUserId, workspaceToMessage, eventMessage, renumberEvent, newSessionId )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Counter, newCounter, increment, Queue, enqueueAsync, enqueueSync )
@@ -27,30 +27,34 @@ makePostgresSchedulerContext q conn = do
             tId <- myThreadId
             if qThreadId == tId then action -- If we're already on the Queue's thread, no need to enqueue.
                                 else enqueueSync q (withTransaction conn action)
+        async action = do
+            tId <- myThreadId
+            if qThreadId == tId then action -- If we're already on the Queue's thread, no need to enqueue.
+                                else enqueueAsync q action
     return $
         SchedulerContext {
             doAtomically = sync,
-            createInitialWorkspace = createInitialWorkspacePostgres sync q c conn,
-            newSession = newSessionPostgres sync q c conn,
-            createWorkspace = createWorkspacePostgres sync q c conn,
-            sendAnswer = sendAnswerPostgres sync q c conn,
-            sendMessage = sendMessagePostgres sync q c conn,
-            expandPointer = expandPointerPostgres sync q c conn,
-            nextPointer = nextPointerPostgres sync q c conn,
-            createPointers = createPointersPostgres sync q c conn,
-            remapPointers = remapPointersPostgres sync q c conn,
-            pendingQuestions = pendingQuestionsPostgres sync q c conn,
-            getWorkspace = getWorkspacePostgres sync q c conn,
-            allWorkspaces = allWorkspacesPostgres sync q c conn,
-            getNextWorkspace = getNextWorkspacePostgres sync q c conn,
-            dereference = dereferencePostgres sync q c conn,
-            reifyWorkspace = reifyWorkspacePostgres sync q c conn,
+            createInitialWorkspace = createInitialWorkspacePostgres sync async c conn,
+            newSession = newSessionPostgres sync async c conn,
+            createWorkspace = createWorkspacePostgres sync async c conn,
+            sendAnswer = sendAnswerPostgres sync async c conn,
+            sendMessage = sendMessagePostgres sync async c conn,
+            expandPointer = expandPointerPostgres sync async c conn,
+            nextPointer = nextPointerPostgres sync async c conn,
+            createPointers = createPointersPostgres sync async c conn,
+            remapPointers = remapPointersPostgres sync async c conn,
+            pendingQuestions = pendingQuestionsPostgres sync async c conn,
+            getWorkspace = getWorkspacePostgres sync async c conn,
+            allWorkspaces = allWorkspacesPostgres sync async c conn,
+            getNextWorkspace = getNextWorkspacePostgres sync async c conn,
+            dereference = dereferencePostgres sync async c conn,
+            reifyWorkspace = reifyWorkspacePostgres sync async c conn,
             extraContent = (conn, q)
         }
 
 -- NOT CACHEABLE
-reifyWorkspacePostgres :: SyncFunc -> Queue -> Counter -> Connection -> WorkspaceId -> IO Message
-reifyWorkspacePostgres sync q c conn workspaceId = do
+reifyWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> WorkspaceId -> IO Message
+reifyWorkspacePostgres sync async c conn workspaceId = do
     workspaces <- sync $ do
         execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMARY KEY )"
         execute_ conn "DELETE FROM Descendants"
@@ -92,27 +96,27 @@ reifyWorkspacePostgres sync q c conn workspaceId = do
 
 -- TODO: Bulkify this.
 -- CACHEABLE
-dereferencePostgres :: SyncFunc -> Queue -> Counter -> Connection -> Pointer -> IO Message
-dereferencePostgres sync q c conn ptr = do
+dereferencePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> Pointer -> IO Message
+dereferencePostgres sync async c conn ptr = do
     sync $ do
         [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
         return $! parseMessageUnsafe' ptr t
 
-insertCommand :: SyncFunc -> Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Command -> IO ()
-insertCommand sync q c conn userId workspaceId cmd = do
+insertCommand :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> Command -> IO ()
+insertCommand sync async c conn userId workspaceId cmd = do
     let !cmdText = toText (commandToBuilder cmd)
-    enqueueAsync q $ do
+    async $ do
         mt <- query conn "SELECT commandTime FROM Commands WHERE workspaceId = ? ORDER BY commandTime DESC LIMIT 1" (Only workspaceId)
         let t = case mt of [] -> 0; [Only t'] -> t'+1
         () <$ execute conn "INSERT INTO Commands (workspaceId, commandTime, userId, command) VALUES (?, ?, ?, ?)"
                             (workspaceId, t :: Int64, userId, cmdText)
 
-createInitialWorkspacePostgres :: SyncFunc -> Queue -> Counter -> Connection -> IO WorkspaceId
-createInitialWorkspacePostgres sync q c conn = do
+createInitialWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO WorkspaceId
+createInitialWorkspacePostgres sync async c conn = do
     workspaceId <- newWorkspaceId
     t <- increment c
     let msg = Text "What is your question?"
-    enqueueAsync q $ do
+    async $ do
         withTransaction conn $ do
             [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
             let !p = maybe 0 succ lastPointerId
@@ -122,81 +126,81 @@ createInitialWorkspacePostgres sync q c conn = do
             () <$ execute conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
                                \VALUES (?, ?, ?, ?, ?)"
                                  (workspaceId, t :: LogicalTime, Nothing :: Maybe WorkspaceId, msgText, msgText')
-    insertCommand sync q c conn autoUserId workspaceId (Ask msg)
+    insertCommand sync async c conn autoUserId workspaceId (Ask msg)
     return workspaceId
 
-newSessionPostgres :: SyncFunc -> Queue -> Counter -> Connection -> Maybe SessionId -> IO SessionId
-newSessionPostgres sync q c conn Nothing = do
+newSessionPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> Maybe SessionId -> IO SessionId
+newSessionPostgres sync async c conn Nothing = do
     sessionId <- newSessionId
-    newSessionPostgres sync q c conn (Just sessionId)
-newSessionPostgres sync q c conn (Just sessionId) = do
-    enqueueAsync q $ do
+    newSessionPostgres sync async c conn (Just sessionId)
+newSessionPostgres sync async c conn (Just sessionId) = do
+    async $ do
         () <$ execute conn "INSERT INTO Sessions (sessionId) VALUES (?) ON CONFLICT DO NOTHING" (Only sessionId)
     return sessionId
 
-createWorkspacePostgres :: SyncFunc -> Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
-createWorkspacePostgres sync q c conn userId workspaceId qAsAsked qAsAnswered = do
+createWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
+createWorkspacePostgres sync async c conn userId workspaceId qAsAsked qAsAnswered = do
     let !qAsAskedText = toText (messageToBuilder qAsAsked)
         !qAsAnsweredText = toText (messageToBuilder qAsAnswered)
     wsId <- newWorkspaceId
     t <- increment c
-    enqueueAsync q $ do
+    async $ do
         () <$ execute conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
                            \VALUES (?, ?, ?, ?, ?)"
                             (wsId, t :: LogicalTime, Just workspaceId, qAsAskedText, qAsAnsweredText)
-    insertCommand sync q c conn userId workspaceId (Ask qAsAsked)
+    insertCommand sync async c conn userId workspaceId (Ask qAsAsked)
     return wsId
 
-sendAnswerPostgres :: SyncFunc -> Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> IO ()
-sendAnswerPostgres sync q c conn userId workspaceId msg = do
+sendAnswerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> IO ()
+sendAnswerPostgres sync async c conn userId workspaceId msg = do
     let !msgText = toText (messageToBuilder msg)
     t <- increment c
-    enqueueAsync q $ do
+    async $ do
         () <$ execute conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (?, ?, ?) \
                            \ON CONFLICT(workspaceId) DO UPDATE SET logicalTimeAnswered = excluded.logicalTimeAnswered, answer = excluded.answer"
                             (workspaceId, t :: LogicalTime, msgText)
-    insertCommand sync q c conn userId workspaceId (Reply msg)
+    insertCommand sync async c conn userId workspaceId (Reply msg)
 
-sendMessagePostgres :: SyncFunc -> Queue -> Counter -> Connection -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
-sendMessagePostgres sync q c conn userId srcId tgtId msg = do
+sendMessagePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
+sendMessagePostgres sync async c conn userId srcId tgtId msg = do
     let !msgText = toText (messageToBuilder msg)
     t <- increment c
-    enqueueAsync q $ do
+    async $ do
         () <$ execute conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (?, ?, ?, ?)"
                             (srcId, tgtId, t :: LogicalTime, msgText)
-    insertCommand sync q c conn userId srcId (Send tgtId msg)
+    insertCommand sync async c conn userId srcId (Send tgtId msg)
 
 -- TODO: Bulkify this.
-expandPointerPostgres :: SyncFunc -> Queue -> Counter -> Connection -> UserId -> WorkspaceId -> Pointer -> IO ()
-expandPointerPostgres sync q c conn userId workspaceId ptr = do
+expandPointerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> Pointer -> IO ()
+expandPointerPostgres sync async c conn userId workspaceId ptr = do
     t <- increment c
-    enqueueAsync q $ do
+    async $ do
         () <$ execute conn "INSERT INTO ExpandedPointers (workspaceId, pointerId, logicalTimeExpanded) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
                             (workspaceId, ptr, t :: LogicalTime)
-    insertCommand sync q c conn userId workspaceId (View ptr)
+    insertCommand sync async c conn userId workspaceId (View ptr)
 
-nextPointerPostgres :: SyncFunc -> Queue -> Counter -> Connection -> IO Pointer
-nextPointerPostgres sync q c conn = do
+nextPointerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO Pointer
+nextPointerPostgres sync async c conn = do
     sync $ do
         [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
         return $! maybe 0 succ lastPointerId
 
-createPointersPostgres :: SyncFunc -> Queue -> Counter -> Connection -> PointerEnvironment -> IO ()
-createPointersPostgres sync q c conn env = do
-    enqueueAsync q $
+createPointersPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> PointerEnvironment -> IO ()
+createPointersPostgres sync async c conn env = do
+    async $
         () <$ executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) env))
 
-remapPointersPostgres :: SyncFunc -> Queue -> Counter -> Connection -> PointerRemapping -> IO ()
-remapPointersPostgres sync q c conn mapping = do
-    enqueueAsync q $
+remapPointersPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> PointerRemapping -> IO ()
+remapPointersPostgres sync async c conn mapping = do
+    async $
         () <$ executeMany conn "INSERT INTO Pointers (id, content) \
                                \SELECT m.new, p.content \
                                \FROM Pointers p \
                                \INNER JOIN (VALUES (?, ?)) m(new, old) ON m.old = p.id" (M.assocs mapping)
 
 -- NOT CACHEABLE
-pendingQuestionsPostgres :: SyncFunc -> Queue -> Counter -> Connection -> WorkspaceId -> IO [WorkspaceId]
-pendingQuestionsPostgres sync q c conn workspaceId = do
+pendingQuestionsPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> WorkspaceId -> IO [WorkspaceId]
+pendingQuestionsPostgres sync async c conn workspaceId = do
     sync $ do
         subquestions <- query conn "SELECT w.id \
                                    \FROM Workspaces w \
@@ -207,8 +211,8 @@ pendingQuestionsPostgres sync q c conn workspaceId = do
 
 -- TODO: Maybe maintain a cache of workspaces.
 -- NOT CACHEABLE but the components should be. Cacheable if answered, for now at least.
-getWorkspacePostgres :: SyncFunc -> Queue -> Counter -> Connection -> WorkspaceId -> IO Workspace
-getWorkspacePostgres sync q c conn workspaceId = do
+getWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> WorkspaceId -> IO Workspace
+getWorkspacePostgres sync async c conn workspaceId = do
     sync $ do
         [(p, t, q)] <- query conn "SELECT parentWorkspaceId, logicalTime, questionAsAnswered \
                                   \FROM Workspaces \
@@ -234,8 +238,8 @@ getWorkspacePostgres sync q c conn workspaceId = do
             time = Time t }
 
 -- NOT CACHEABLE
-allWorkspacesPostgres :: SyncFunc -> Queue -> Counter -> Connection -> IO (M.Map WorkspaceId Workspace)
-allWorkspacesPostgres sync q c conn = do
+allWorkspacesPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (M.Map WorkspaceId Workspace)
+allWorkspacesPostgres sync async c conn = do
     sync $ do
         workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
                                   \FROM Workspaces"
@@ -261,8 +265,8 @@ allWorkspacesPostgres sync q c conn = do
                                                             time = Time t })) workspaces
 
 -- NOT CACHEABLE
-getNextWorkspacePostgres :: SyncFunc -> Queue -> Counter -> Connection -> IO (Maybe WorkspaceId)
-getNextWorkspacePostgres sync q c conn = do
+getNextWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (Maybe WorkspaceId)
+getNextWorkspacePostgres sync async c conn = do
     sync $ do
         -- This gets a workspace that doesn't currently have an answer.
         result <- query_ conn "SELECT w.id \

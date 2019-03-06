@@ -1,9 +1,10 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
-module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), SessionId, SyncFunc, sessionIdToBuilder, sessionIdFromText, newSessionId,
-                   autoUserId, makeSingleUserScheduler, labelMessage, relabelMessage, fullyExpand, newUserId, userIdToBuilder, userIdFromText,
-                   normalize, generalize, canonicalizeEvents, workspaceToMessage, renumberEvent, eventMessage ) where
+module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), SessionId, SyncFunc, AsyncFunc,
+                   sessionIdToBuilder, sessionIdFromText, newSessionId, autoUserId, makeSingleUserScheduler, labelMessage, relabelMessage,
+                   fullyExpand, newUserId, userIdToBuilder, userIdFromText, normalize, generalize, canonicalizeEvents,
+                   workspaceToMessage, renumberEvent, eventMessage ) where
 import qualified Data.Map as M -- containers
 import Data.Maybe ( mapMaybe ) -- base
 import qualified Data.Set as S -- containers
@@ -38,6 +39,7 @@ autoUserId = nil
 type SchedulerFn = UserId -> Workspace -> Event -> IO (Maybe Workspace)
 
 type SyncFunc = forall a. IO a -> IO a
+type AsyncFunc = IO () -> IO ()
 
 data SchedulerContext extra = SchedulerContext {
     doAtomically :: SyncFunc,
@@ -95,13 +97,15 @@ canonicalizeEvents ctxt evts = do
 
 labelMessage :: SchedulerContext extra -> Message -> IO Message
 labelMessage ctxt msg@(Structured ms) = do
-    p <- nextPointer ctxt
-    createPointers ctxt (M.singleton p msg)
-    return (LabeledStructured p ms)
+    doAtomically ctxt $ do
+        p <- nextPointer ctxt
+        createPointers ctxt (M.singleton p msg)
+        return (LabeledStructured p ms)
 labelMessage ctxt msg = do
-    p <- nextPointer ctxt
-    createPointers ctxt (M.singleton p msg)
-    return (LabeledStructured p [msg])
+    doAtomically ctxt $ do
+        p <- nextPointer ctxt
+        createPointers ctxt (M.singleton p msg)
+        return (LabeledStructured p [msg])
 
 relabelMessage :: SchedulerContext extra -> Message -> IO Message
 relabelMessage ctxt = labelMessage ctxt . stripLabel
