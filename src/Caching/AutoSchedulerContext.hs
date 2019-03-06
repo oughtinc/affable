@@ -7,19 +7,22 @@ import Caching.SchedulerContext ( CacheState(..) )
 import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsId', Konts(..) )
 import Message ( PointerRemapping )
 import Scheduler ( SchedulerContext(..), SessionId )
+import Util ( increment )
 import Workspace ( WorkspaceId )
 
 makeCachingAutoSchedulerContext :: CacheState -> AutoSchedulerContext e -> SessionId -> IO (AutoSchedulerContext e)
 makeCachingAutoSchedulerContext cache autoCtxt sessionId = do
     let !answerId = thisAnswerId autoCtxt
     alts <- alternativesFor autoCtxt ANSWER
+    atomically $ modifyTVar' (answerFunctionsC cache) (M.insert sessionId answerId)
     atomically $ modifyTVar' (alternativesC cache) (M.insert answerId alts)
     return $ AutoSchedulerContext {
                     thisAnswerId = answerId,
                     alternativesFor = alternativesForCaching cache autoCtxt answerId,
                     allAlternatives = allAlternativesCaching cache autoCtxt answerId sessionId,
                     addCaseFor = addCaseForCaching cache autoCtxt answerId,
-                    newFunction = newFunctionCaching cache autoCtxt,
+                    nextFunction = nextFunctionCaching cache autoCtxt,
+                    addFunction = addFunctionCaching cache autoCtxt,
                     linkVars = linkVarsCaching cache autoCtxt,
                     links = linksCaching cache autoCtxt,
                     saveContinuation = saveContinuationCaching cache autoCtxt answerId,
@@ -35,7 +38,7 @@ makeCachingAutoSchedulerContext cache autoCtxt sessionId = do
                 }
 
 -- Backend calls:
---      newFunction - Synchronous BAD TODO XXX
+--      addFunction - Asynchronous
 --      linkVars - Asynchronous
 --      addCaseFor - Asynchronous
 --      saveContinuation - Asynchronous
@@ -52,8 +55,14 @@ alternativesForCaching cache autoCtxt answerId f = do
 allAlternativesCaching :: CacheState -> AutoSchedulerContext e -> FunctionId -> SessionId -> IO (M.Map Name [([Pattern], Exp')])
 allAlternativesCaching cache autoCtxt answerId sessionId = M.mapKeys (idToName answerId) <$> readTVarIO (alternativesC cache)
 
-newFunctionCaching :: CacheState -> AutoSchedulerContext e -> IO Name
-newFunctionCaching cache autoCtxt = newFunction autoCtxt -- Caching doesn't really help here.
+nextFunctionCaching :: CacheState -> AutoSchedulerContext e -> IO Name
+nextFunctionCaching cache autoCtxt = do
+    name <- LOCAL . fromIntegral <$> increment (functionCounter cache)
+    addFunction autoCtxt name
+    return name
+
+addFunctionCaching :: CacheState -> AutoSchedulerContext e -> Name -> IO ()
+addFunctionCaching cache autoCtxt name = return () -- addFunction autoCtxt name
 
 linkVarsCaching :: CacheState -> AutoSchedulerContext e -> WorkspaceId -> PointerRemapping -> IO ()
 linkVarsCaching cache autoCtxt workspaceId mapping = do

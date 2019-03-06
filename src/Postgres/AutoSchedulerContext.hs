@@ -1,6 +1,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
-module Postgres.AutoSchedulerContext ( makePostgresAutoSchedulerContext, makePostgresAutoSchedulerContext' ) where
+module Postgres.AutoSchedulerContext ( makePostgresAutoSchedulerContext ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Database.PostgreSQL.Simple ( Connection, Only(..), withTransaction, query, query_, executeMany, execute_, execute ) -- postgresql-simple
@@ -15,13 +15,8 @@ import Postgres.SchedulerContext ( makePostgresSchedulerContext )
 import Util ( toText, Queue, enqueueAsync, parseUnsafe )
 import Workspace ( WorkspaceId )
 
-makePostgresAutoSchedulerContext :: Connection -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
-makePostgresAutoSchedulerContext conn sessionId = do
-    ctxt <- makePostgresSchedulerContext conn
-    makePostgresAutoSchedulerContext' ctxt sessionId
-
-makePostgresAutoSchedulerContext' :: SchedulerContext (Connection, Queue) -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
-makePostgresAutoSchedulerContext' ctxt sessionId = do
+makePostgresAutoSchedulerContext :: SchedulerContext (Connection, Queue) -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
+makePostgresAutoSchedulerContext ctxt sessionId = do
     let (conn, q) = extraContent ctxt
     let sync = doAtomically ctxt
 
@@ -45,7 +40,8 @@ makePostgresAutoSchedulerContext' ctxt sessionId = do
                     alternativesFor = alternativesForPostgres sync q conn answerId,
                     allAlternatives = allAlternativesPostgres sync q conn answerId sessionId,
                     addCaseFor = addCaseForPostgres sync q conn answerId,
-                    newFunction = newFunctionPostgres sync q conn,
+                    nextFunction = nextFunctionPostgres sync q conn,
+                    addFunction = addFunctionPostgres sync q conn answerId,
                     linkVars = linkVarsPostgres sync q conn,
                     links = linksPostgres sync q conn,
                     saveContinuation = saveContinuationPostgres sync q conn answerId,
@@ -82,11 +78,16 @@ allAlternativesPostgres sync q conn answerId sessionId = do
                            (Only sessionId) -- TODO: ORDER BY
         return $ M.fromListWith (++) $ map (\(f, ps, e) -> (idToName answerId f, [(parsePatternsUnsafe ps, expFromDB e)])) alts
 
-newFunctionPostgres :: SyncFunc -> Queue -> Connection -> IO Name
-newFunctionPostgres sync q conn = do
+nextFunctionPostgres :: SyncFunc -> Queue -> Connection -> IO Name
+nextFunctionPostgres sync q conn = do
     sync $ do
         [Only fId] <- query_ conn "INSERT INTO Functions DEFAULT VALUES RETURNING id"
         return (LOCAL fId)
+
+addFunctionPostgres :: SyncFunc -> Queue -> Connection -> FunctionId -> Name -> IO ()
+addFunctionPostgres sync q conn answerId name = do
+    enqueueAsync q $ do
+        () <$ execute conn "INSERT INTO Functions (id) VALUES (?) ON CONFLICT DO NOTHING" (Only (nameToId answerId name))
 
 linkVarsPostgres :: SyncFunc -> Queue -> Connection -> WorkspaceId -> PointerRemapping -> IO ()
 linkVarsPostgres sync q conn workspaceId mapping = do

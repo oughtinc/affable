@@ -11,9 +11,11 @@ import Exp ( Pattern, Exp', Konts', EvalState' )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping )
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
+import Util ( Counter, newCounter )
 import Workspace ( Workspace(..), WorkspaceId )
 
 data CacheState = CacheState {
+    functionCounter :: Counter,
     workspacesC :: TVar (M.Map WorkspaceId Workspace),
     -- messages :: ,
     answersC :: TVar (M.Map WorkspaceId Message),
@@ -29,6 +31,7 @@ data CacheState = CacheState {
 
 createCache :: SchedulerContext e -> IO CacheState
 createCache ctxt = do -- TODO: XXX Somehow pull state from database.
+    functionC <- newCounter 0 -- TODO: XXX Get the right initial value.
     workspacesTVar <- newTVarIO M.empty
     answersTVar <- newTVarIO M.empty
     answerFunctionsTVar <- newTVarIO M.empty
@@ -42,6 +45,7 @@ createCache ctxt = do -- TODO: XXX Somehow pull state from database.
     sessionsTVar <- newTVarIO M.empty
 
     return $ CacheState {
+                functionCounter = functionC,
                 workspacesC = workspacesTVar,
                 answersC = answersTVar,
                 answerFunctionsC = answerFunctionsTVar,
@@ -60,7 +64,7 @@ makeCachingSchedulerContext ctxt = do
     cache <- createCache ctxt
     return (cache,
         SchedulerContext {
-            doAtomically = doAtomically ctxt,
+            doAtomically = id, -- doAtomically ctxt, -- TODO: XXX Think about this.
             createInitialWorkspace = createInitialWorkspaceCaching cache ctxt,
             newSession = newSessionCaching cache ctxt,
             createWorkspace = createWorkspaceCaching cache ctxt,

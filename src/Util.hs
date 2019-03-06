@@ -1,12 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
-module Util ( Lock, Queue, Counter, uuidToBuilder, parseUUID, newCounter, increment,
-              toText, invertMap, newLock, withLock, newQueue, enqueueAsync, enqueueSync, parseMap, mapToBuilder, parseUnsafe ) where
+module Util ( Lock, Queue, Counter, uuidToBuilder, parseUUID, newCounter, increment, toText, invertMap,
+              newLock, withLock, newQueue, enqueueAsync, enqueueSync, closeQueue, parseMap, mapToBuilder, parseUnsafe ) where
 import Control.Concurrent ( forkIO ) -- base
 import Control.Concurrent.STM ( atomically ) -- stm
 import Control.Concurrent.STM.TChan ( TChan, readTChan, writeTChan, newTChanIO ) -- stm
 import Control.Concurrent.STM.TMVar ( TMVar, takeTMVar, putTMVar, newTMVarIO, newEmptyTMVarIO ) -- stm
 import Control.Exception ( bracket_ ) -- base
-import Control.Monad ( forever, replicateM ) -- base
+import Control.Monad ( replicateM ) -- base
 import Data.IORef ( IORef, newIORef, atomicModifyIORef' ) -- base
 import Data.Int ( Int64 ) -- base
 import Data.List ( intersperse ) -- base
@@ -50,26 +50,33 @@ parseMap parseKey parseValue = fmap M.fromList (char '[' *> (parseEntry `sepBy` 
 parseUnsafe :: Parsec Void S.Text a -> S.Text -> a
 parseUnsafe p t = case parse p "" t of Right x -> x; Left bundle -> error (parseErrorPretty bundle)
 
-type Queue = TChan (IO ())
+type Queue = TChan (Either (IO ()) (IO ()))
 
--- TODO: There should probably be a closeQueue operation. We could change Queue to
--- be a TChan (Maybe (IO ())) and closeQueue just sends Nothing which ends the forever loop.
 newQueue :: IO Queue
 newQueue = do
     actionChan <- newTChanIO
     forkIO $ do
-        forever $ do -- TODO: Do something to prevent application exceptions from killing this thread.
-            action <- atomically $ readTChan actionChan
-            action
+        let loop (Right action) = do -- TODO: Do something to prevent application exceptions from killing this thread.
+                action
+                atomically (readTChan actionChan) >>= loop
+            loop (Left action) = do
+                action
+        atomically (readTChan actionChan) >>= loop
     return actionChan
 
 enqueueAsync :: Queue -> IO () -> IO ()
-enqueueAsync q action = atomically $ writeTChan q action
+enqueueAsync q action = atomically $ writeTChan q (Right action)
 
 enqueueSync :: Queue -> IO a -> IO a
 enqueueSync q action = do
     resultTMVar <- newEmptyTMVarIO
     enqueueAsync q (action >>= atomically . putTMVar resultTMVar)
+    atomically $ takeTMVar resultTMVar
+
+closeQueue :: Queue -> IO ()
+closeQueue q = do
+    resultTMVar <- newEmptyTMVarIO
+    atomically $ writeTChan q (Left (atomically $ putTMVar resultTMVar ()))
     atomically $ takeTMVar resultTMVar
 
 type Counter = IORef Int64

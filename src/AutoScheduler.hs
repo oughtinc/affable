@@ -1,7 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module AutoScheduler ( AutoSchedulerContext(..), FunctionId, ProcessId, AddContinuationResult(..),
-                       newProcessId, processIdToBuilder, processIdFromText, nameToId, idToName ) where
+                       newProcessId, processIdToBuilder, processIdFromText, nameToId, idToName, newFunction ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Text as T -- text
@@ -28,7 +28,8 @@ data AutoSchedulerContext extra = AutoSchedulerContext {
     alternativesFor :: Name -> IO [([Pattern], Exp')],
     allAlternatives :: IO (M.Map Name [([Pattern], Exp')]),
     addCaseFor :: Name -> [Pattern] -> Exp' -> IO (),
-    newFunction :: IO Name,
+    nextFunction :: IO Name,
+    addFunction :: Name -> IO (),
     linkVars :: WorkspaceId -> PointerRemapping -> IO (),
     links :: WorkspaceId -> IO PointerRemapping,
     saveContinuation :: Konts' -> IO (),
@@ -50,6 +51,12 @@ nameToId        _ (LOCAL i) = fromIntegral i
 idToName :: FunctionId -> FunctionId -> Name
 idToName answerId fId | answerId == fId = ANSWER
                       | otherwise = LOCAL (fromIntegral fId)
+
+newFunction :: AutoSchedulerContext e -> IO Name
+newFunction autoCtxt = do
+    name <- nextFunction autoCtxt
+    addFunction autoCtxt name
+    return name
 
 newProcessId :: IO ProcessId
 newProcessId = UUID.nextRandom

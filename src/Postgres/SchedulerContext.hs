@@ -16,12 +16,11 @@ import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, SyncFunc,
                    autoUserId, workspaceToMessage, eventMessage, renumberEvent, newSessionId )
 import Time ( Time(..), LogicalTime )
-import Util ( toText, Counter, newCounter, increment, Queue, newQueue, enqueueAsync, enqueueSync )
+import Util ( toText, Counter, newCounter, increment, Queue, enqueueAsync, enqueueSync )
 import Workspace ( Workspace(..), WorkspaceId, newWorkspaceId )
 
-makePostgresSchedulerContext :: Connection -> IO (SchedulerContext (Connection, Queue))
-makePostgresSchedulerContext conn = do
-    q <- newQueue
+makePostgresSchedulerContext :: Queue -> Connection -> IO (SchedulerContext (Connection, Queue))
+makePostgresSchedulerContext q conn = do
     [Only t] <- enqueueSync q $ query_ conn "SELECT COUNT(*) FROM Commands"
     c <- newCounter t
     nestedRef <- newIORef False

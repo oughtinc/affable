@@ -6,11 +6,13 @@ import Caching.CompletionContext ( makeCachingCompletionContext )
 import Caching.SchedulerContext ( makeCachingSchedulerContext )
 import DatabaseContext ( DatabaseContext(..) )
 
+-- TODO: Make a dummy DatabaseContext that does nothing leaving the Caching layer as the only source of truth.
 makeCachingDatabaseContext :: DatabaseContext e -> IO (DatabaseContext e)
 makeCachingDatabaseContext dbCtxt = do
     cacheRef <- newIORef (error "Cache uninitialized")
     return $ DatabaseContext {
                 initDB = initDB dbCtxt,
+                closeDB = closeDB dbCtxt,
                 primitivesToHaskell = primitivesToHaskell dbCtxt,
                 makeSchedulerContext = do
                     ctxt <- makeSchedulerContext dbCtxt

@@ -5,24 +5,26 @@ import qualified Data.Text as T  -- text
 import qualified Data.Text.IO as T  -- text
 import Database.SQLite.Simple ( Connection, execute_, executeMany, query_ ) -- sqlite-simple
 
-import AutoScheduler (  AutoSchedulerContext )
+import AutoScheduler ( AutoSchedulerContext )
 import Completions ( CompletionContext )
 import DatabaseContext ( DatabaseContext(..) )
 import Message ( messageToBuilderDB, messageToPattern, parseMessageUnsafe )
 import Primitive ( primitives )
 import Scheduler ( SchedulerContext )
-import Sqlite.AutoSchedulerContext (  makeSqliteAutoSchedulerContext' )
+import Sqlite.AutoSchedulerContext ( makeSqliteAutoSchedulerContext )
 import Sqlite.CompletionContext ( makeSqliteCompletionContext )
 import Sqlite.SchedulerContext ( makeSqliteSchedulerContext )
-import Util ( Queue, toText )
+import Util ( Queue, newQueue, closeQueue, toText )
 
 makeSqliteDatabaseContext :: Connection -> IO (DatabaseContext (Connection, Queue))
 makeSqliteDatabaseContext conn = do
+    q <- newQueue
     return $ DatabaseContext {
                 initDB = do initDBSqlite conn; initPrimitivesSqlite conn,
+                closeDB = closeQueue q,
                 primitivesToHaskell = primitivesToHaskellSqlite conn,
-                makeSchedulerContext = makeSqliteSchedulerContext conn,
-                makeAutoSchedulerContext = makeSqliteAutoSchedulerContext',
+                makeSchedulerContext = makeSqliteSchedulerContext q conn,
+                makeAutoSchedulerContext = makeSqliteAutoSchedulerContext,
                 makeCompletionContext = makeSqliteCompletionContext
              }
 

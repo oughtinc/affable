@@ -9,20 +9,22 @@ import AutoScheduler (  AutoSchedulerContext )
 import Completions ( CompletionContext )
 import DatabaseContext ( DatabaseContext(..) )
 import Message ( messageToBuilderDB, messageToPattern, parseMessageUnsafe )
-import Postgres.AutoSchedulerContext (  makePostgresAutoSchedulerContext' )
+import Postgres.AutoSchedulerContext (  makePostgresAutoSchedulerContext )
 import Postgres.CompletionContext ( makePostgresCompletionContext )
 import Postgres.SchedulerContext ( makePostgresSchedulerContext )
 import Primitive ( primitives )
 import Scheduler ( SchedulerContext )
-import Util ( Queue, toText )
+import Util ( Queue, newQueue, closeQueue, toText )
 
 makePostgresDatabaseContext :: Connection -> IO (DatabaseContext (Connection, Queue))
 makePostgresDatabaseContext conn = do
+    q <- newQueue
     return $ DatabaseContext {
                 initDB = do initDBPostgres conn; initPrimitivesPostgres conn,
+                closeDB = closeQueue q,
                 primitivesToHaskell = primitivesToHaskellPostgres conn,
-                makeSchedulerContext = makePostgresSchedulerContext conn,
-                makeAutoSchedulerContext = makePostgresAutoSchedulerContext',
+                makeSchedulerContext = makePostgresSchedulerContext q conn,
+                makeAutoSchedulerContext = makePostgresAutoSchedulerContext,
                 makeCompletionContext = makePostgresCompletionContext
              }
 

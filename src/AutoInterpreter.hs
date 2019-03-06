@@ -27,7 +27,7 @@ import Data.Tuple ( swap ) -- base
 import qualified Data.UUID as UUID -- uuid
 import System.IO ( stderr) -- base
 
-import AutoScheduler ( AutoSchedulerContext(..), ProcessId, AddContinuationResult(..) )
+import AutoScheduler ( AutoSchedulerContext(..), ProcessId, AddContinuationResult(..), newFunction )
 import Exp ( Result(..), Exp(..), Exp', Name(..), VarEnv, Var, Value, Primitive, Pattern, Kont1(..), GoFn, MatchFn, Konts(..), FunEnv, Konts',
              EvalState', varEnvToBuilder, funEnvToBuilder, nameToBuilder, nameParser, evaluateExp', applyKonts, expToBuilder, expToHaskell )
 import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, matchMessage, messageParser',

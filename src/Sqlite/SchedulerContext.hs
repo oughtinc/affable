@@ -16,12 +16,11 @@ import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, SyncFunc,
                    autoUserId, userIdToBuilder, sessionIdToBuilder, newSessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
-import Util ( toText, Counter, newCounter, increment, Queue, newQueue, enqueueAsync, enqueueSync )
+import Util ( toText, Counter, newCounter, increment, Queue, enqueueAsync, enqueueSync )
 import Workspace ( Workspace(..), WorkspaceId, newWorkspaceId, workspaceIdFromText, workspaceIdToBuilder )
 
-makeSqliteSchedulerContext :: Connection -> IO (SchedulerContext (Connection, Queue))
-makeSqliteSchedulerContext conn = do
-    q <- newQueue
+makeSqliteSchedulerContext :: Queue -> Connection -> IO (SchedulerContext (Connection, Queue))
+makeSqliteSchedulerContext q conn = do
     [Only t] <- enqueueSync q $ query_ conn "SELECT COUNT(*) FROM Commands"
     c <- newCounter t
     nestedRef <- newIORef False

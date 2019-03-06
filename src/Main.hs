@@ -84,13 +84,16 @@ withDatabaseContext dbFile body = do
             Just connInfo -> do
                 conn <- Postgres.connect connInfo
                 dbCtxt <- makePostgresDatabaseContext conn
+                dbCtxt <- makeCachingDatabaseContext dbCtxt -- Don't bother in the Sqlite case.
                 initDB dbCtxt
                 body dbCtxt
+                closeDB dbCtxt
       else do
         Sqlite.withConnection dbFile $ \conn -> do
             dbCtxt <- makeSqliteDatabaseContext conn
             initDB dbCtxt
             body dbCtxt
+            closeDB dbCtxt
 
 main :: IO ()
 main = do
@@ -139,7 +142,6 @@ main = do
                 commandLineInteraction initWorkspace scheduler
         CommandLine False concurrent mSessionId dbFile -> do
             withDatabaseContext dbFile $ \dbCtxt -> do
-                -- dbCtxt <- makeCachingDatabaseContext dbCtxt
                 ctxt <- makeSchedulerContext dbCtxt
                 sessionId <- newSession ctxt mSessionId
                 putStrLn ("Session ID: " ++ show sessionId)

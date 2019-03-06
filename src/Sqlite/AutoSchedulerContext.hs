@@ -1,6 +1,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
-module Sqlite.AutoSchedulerContext ( makeSqliteAutoSchedulerContext, makeSqliteAutoSchedulerContext' ) where
+module Sqlite.AutoSchedulerContext ( makeSqliteAutoSchedulerContext ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), withTransaction,
@@ -17,13 +17,8 @@ import Sqlite.SchedulerContext ( makeSqliteSchedulerContext )
 import Util ( toText, Queue, enqueueAsync, parseUnsafe )
 import Workspace ( WorkspaceId, workspaceIdFromText, workspaceIdToBuilder )
 
-makeSqliteAutoSchedulerContext :: Connection -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
-makeSqliteAutoSchedulerContext conn sessionId = do
-    ctxt <- makeSqliteSchedulerContext conn
-    makeSqliteAutoSchedulerContext' ctxt sessionId
-
-makeSqliteAutoSchedulerContext' :: SchedulerContext (Connection, Queue) -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
-makeSqliteAutoSchedulerContext' ctxt sessionId = do
+makeSqliteAutoSchedulerContext :: SchedulerContext (Connection, Queue) -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
+makeSqliteAutoSchedulerContext ctxt sessionId = do
     let (conn, q) = extraContent ctxt
     let sync = doAtomically ctxt
 
@@ -47,7 +42,8 @@ makeSqliteAutoSchedulerContext' ctxt sessionId = do
                     alternativesFor = alternativesForSqlite sync q conn answerId,
                     allAlternatives = allAlternativesSqlite sync q conn answerId sessionId,
                     addCaseFor = addCaseForSqlite sync q conn answerId,
-                    newFunction = newFunctionSqlite sync q conn,
+                    nextFunction = nextFunctionSqlite sync q conn,
+                    addFunction = addFunctionSqlite sync q conn answerId,
                     linkVars = linkVarsSqlite sync q conn,
                     links = linksSqlite sync q conn,
                     saveContinuation = saveContinuationSqlite sync q conn answerId,
@@ -84,11 +80,16 @@ allAlternativesSqlite sync q conn answerId sessionId = do
                                 \ORDER BY rowid ASC" [":sessionId" := toText (sessionIdToBuilder sessionId)]
         return $ M.fromListWith (++) $ map (\(f, ps, e) -> (idToName answerId f, [(parsePatternsUnsafe ps, expFromDB e)])) alts
 
-newFunctionSqlite :: SyncFunc -> Queue -> Connection -> IO Name
-newFunctionSqlite sync q conn = do
+nextFunctionSqlite :: SyncFunc -> Queue -> Connection -> IO Name
+nextFunctionSqlite sync q conn = do
     sync $ do
         execute_ conn "INSERT INTO Functions DEFAULT VALUES"
-        (LOCAL . fromIntegral) <$> lastInsertRowId conn
+        LOCAL . fromIntegral <$> lastInsertRowId conn
+
+addFunctionSqlite :: SyncFunc -> Queue -> Connection -> FunctionId -> Name -> IO ()
+addFunctionSqlite sync q conn answerId name = do
+    enqueueAsync q $ do
+        execute conn "INSERT OR IGNORE INTO Functions (id) VALUES (?)" (Only (nameToId answerId name))
 
 linkVarsSqlite :: SyncFunc -> Queue -> Connection -> WorkspaceId -> PointerRemapping -> IO ()
 linkVarsSqlite sync q conn workspaceId mapping = do
