@@ -6,8 +6,8 @@ import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), query, que
 
 import Completions ( CompletionContext(..), preparePattern )
 import Exp ( Pattern )
-import Scheduler ( SchedulerContext(..), SessionId )
-import Util ( Queue, enqueueSync )
+import Scheduler ( SchedulerContext(..), SessionId, sessionIdToBuilder )
+import Util ( Queue, enqueueSync, toText )
 
 makeSqliteCompletionContext :: SchedulerContext (Connection, Queue) -> IO (CompletionContext (Connection, Queue))
 makeSqliteCompletionContext ctxt = do
@@ -31,7 +31,7 @@ completionsForSqlite q conn primPatterns sessionId = do
                                  \INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
                                  \INNER JOIN SessionProcesses s ON s.processId = t.processId \
                                  \WHERE s.sessionId = :sessionId AND f.isAnswer = 1 \
-                                 \LIMIT 1" [":sessionId" := sessionId]
+                                 \LIMIT 1" [":sessionId" := toText (sessionIdToBuilder sessionId)]
 
         alts <- query conn "SELECT pattern FROM Alternatives WHERE function = ?" (fId :: Only Int64)
         return $ primPatterns ++ map (\(Only ps) -> preparePattern ps) alts

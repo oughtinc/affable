@@ -24,6 +24,7 @@ import qualified Data.Text.Lazy.Builder.Int as T ( decimal ) -- text
 import Data.Text.Lazy.Builder ( Builder, singleton, fromText ) -- text
 import Data.Traversable ( traverse, forM ) -- base
 import Data.Tuple ( swap ) -- base
+import qualified Data.UUID as UUID -- uuid
 import System.IO ( stderr) -- base
 
 import AutoScheduler ( AutoSchedulerContext(..), ProcessId, AddContinuationResult(..) )
@@ -47,11 +48,14 @@ class MonadFork m where
 instance MonadFork IO where
     fork = forkIO
     bracket_ = IO.bracket_
-    myProcessId = return 0
+    myProcessId = return UUID.nil
     withProcessId _ = id
     mapTasks = mapConcurrently id
 
-newtype M a = M { runM :: ProcessId -> IO a }
+newtype M a = M { unM :: ProcessId -> IO a }
+
+runM :: M a -> IO a
+runM (M act) = act UUID.nil
 
 instance Functor M where
     fmap f (M g) = M (fmap f . g)
@@ -62,7 +66,7 @@ instance Applicative M where
 
 instance Monad M where
     return x = M (\_ -> return x)
-    M f >>= k = M (\r -> do x <- f r; runM (k x) r)
+    M f >>= k = M (\r -> do x <- f r; unM (k x) r)
 
 instance MonadIO M where
     liftIO act = M (const act)
@@ -72,7 +76,7 @@ instance MonadFork M where
     bracket_ (M before) (M after) (M body) = M (\r -> bracket_ (before r) (after r) (body r))
     myProcessId = M return
     withProcessId pId (M f) = M (const (f pId))
-    mapTasks ts = M (\pId -> mapConcurrently (\t -> runM t pId) ts)
+    mapTasks ts = M (\pId -> mapConcurrently (\t -> unM t pId) ts)
 
 -- NOTE: Instead of using forkIO and co, we could use a monad other than IO for
 -- expression evaluation that supports suspending a computation or implements cooperative

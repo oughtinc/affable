@@ -89,7 +89,7 @@ initDBPostgres conn = do
        \CREATE TABLE IF NOT EXISTS Commands (\n\
        \    workspaceId UUID NOT NULL,\n\
        \    commandTime INTEGER NOT NULL,\n\
-       \    userId INTEGER NOT NULL,\n\
+       \    userId UUID NOT NULL,\n\
        \    command TEXT NOT NULL,\n\
        \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE,\n\
        \    PRIMARY KEY ( workspaceId, commandTime )\n\
@@ -150,7 +150,7 @@ initDBPostgres conn = do
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Trace (\n\
        \    t SERIAL PRIMARY KEY,\n\
-       \    processId INTEGER NOT NULL,\n\
+       \    processId UUID NOT NULL,\n\
        \    varEnv TEXT NOT NULL,\n\
        \    funEnv TEXT NOT NULL,\n\
        \    workspaceId UUID NOT NULL,\n\
@@ -160,16 +160,16 @@ initDBPostgres conn = do
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS RunQueue (\n\
-       \    processId SERIAL PRIMARY KEY\n\
+       \    processId UUID PRIMARY KEY\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS Sessions (\n\
-       \    sessionId SERIAL PRIMARY KEY\n\
+       \    sessionId UUID PRIMARY KEY\n\
        \);"
     execute_ conn "\
        \CREATE TABLE IF NOT EXISTS SessionProcesses (\n\
-       \    sessionId INTEGER NOT NULL,\n\
-       \    processId INTEGER NOT NULL,\n\
+       \    sessionId UUID NOT NULL,\n\
+       \    processId UUID NOT NULL,\n\
        \    FOREIGN KEY ( sessionId ) REFERENCES Sessions ( sessionId ) ON DELETE CASCADE,\n\
        \    PRIMARY KEY ( sessionId, processId )\n\
        \);"

@@ -1,15 +1,22 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module AutoScheduler ( AutoSchedulerContext(..), FunctionId, ProcessId, AddContinuationResult(..), nameToId, idToName ) where
+module AutoScheduler ( AutoSchedulerContext(..), FunctionId, ProcessId, AddContinuationResult(..),
+                       newProcessId, processIdToBuilder, processIdFromText, nameToId, idToName ) where
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
+import qualified Data.Text as T -- text
+import Data.Text.Lazy.Builder ( Builder ) -- text
+import Data.UUID ( UUID ) -- uuid
+import qualified Data.UUID.V4 as UUID ( nextRandom ) -- uuid
+import Text.Megaparsec ( parseMaybe ) -- megaparsec
 
 import Exp ( Pattern, Name(..), Value, Exp', EvalState', Konts', KontsId' )
 import Message ( PointerRemapping )
 import Scheduler ( SchedulerContext )
 import Workspace ( WorkspaceId )
+import Util ( parseUUID, uuidToBuilder )
 
-type ProcessId = Int64
+type ProcessId = UUID
 
 type FunctionId = Int64
 
@@ -43,3 +50,12 @@ nameToId        _ (LOCAL i) = fromIntegral i
 idToName :: FunctionId -> FunctionId -> Name
 idToName answerId fId | answerId == fId = ANSWER
                       | otherwise = LOCAL (fromIntegral fId)
+
+newProcessId :: IO ProcessId
+newProcessId = UUID.nextRandom
+
+processIdToBuilder :: ProcessId -> Builder
+processIdToBuilder = uuidToBuilder
+
+processIdFromText :: T.Text -> ProcessId
+processIdFromText t = case parseMaybe parseUUID t of Just pId -> pId

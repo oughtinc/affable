@@ -27,7 +27,7 @@ import DatabaseContext ( DatabaseContext(..) )
 import Exp ( Pattern, Name(..), Exp(..) )
 import Message ( Message(..), Pointer, stripLabel )
 import Scheduler ( SessionId, UserId, Event(..), SchedulerFn, SchedulerContext(..),
-                   canonicalizeEvents, firstUserId, getWorkspace, createInitialWorkspace, createWorkspace )
+                   newUserId, canonicalizeEvents, getWorkspace, createInitialWorkspace, createWorkspace )
 import Workspace ( WorkspaceId, Workspace(..) )
 
 data Response = OK | Error T.Text deriving ( Generic )
@@ -67,9 +67,7 @@ pointerHandler deref ptr = liftIO $ do
 -- TODO: Track users that have joined and only accept requests from previously seen users.
 -- This will allow us to trivially ignore requests from users who've been falsely suspected
 -- of abandoning a workspace, and will allow a new instance to invalidate any outstanding
--- work of a previous instance. (This is admittedly not a very seamless transition, but it's
--- simple and should suffice for our purposes assuming it ever even becomes an issue. This
--- would require user IDs to be unique across instances, e.g. UUIDs.)
+-- work of a previous instance.
 joinHandler :: (Maybe UserId -> IO User) -> Server JoinAPI
 joinHandler makeUser oldUserId = liftIO $ do
     print ("Join", oldUserId) -- DELETEME
@@ -212,7 +210,7 @@ initServer dbCtxt = do
                         let !doneRef = sessionDoneRef ss
                             !requestTChan = sessionRequestTChan ss
                         autoCtxt <- makeAutoSchedulerContext dbCtxt ctxt sessionId
-                        runM (spawnInterpreter (blockOnUser sessionId) (liftIO begin) (liftIO $ writeIORef doneRef True) False autoCtxt) 0
+                        runM (spawnInterpreter (blockOnUser sessionId) (liftIO begin) (liftIO $ writeIORef doneRef True) False autoCtxt)
                         mWorkspaceId <- timeout 10000000 (atomically $ readTChan requestTChan) -- Timeout after 10 seconds.
                         updateUserSession userId sessionId mWorkspaceId
                         return $ fmap (\wsId -> (wsId, sessionId)) mWorkspaceId
@@ -228,9 +226,8 @@ initServer dbCtxt = do
                             return $ fmap (\wsId -> (wsId, sessionId)) mWorkspaceId
 
         makeUser Nothing = do
-            atomicModifyIORef' userIdRef $ \uIds ->
-                let !uId = maybe firstUserId (succ . fst) (M.lookupMax uIds)
-                in (M.insert uId M.empty uIds, User uId)
+            uId <- newUserId
+            atomicModifyIORef' userIdRef $ \uIds -> (M.insert uId M.empty uIds, User uId)
         makeUser (Just oldUserId) = do
             uIds <- readIORef userIdRef
             case M.lookup oldUserId uIds of

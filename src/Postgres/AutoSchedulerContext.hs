@@ -4,7 +4,7 @@ import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Database.PostgreSQL.Simple ( Connection, Only(..), withTransaction, query, query_, executeMany, execute_, execute ) -- postgresql-simple
 
-import AutoScheduler ( AutoSchedulerContext(..), ProcessId, FunctionId, AddContinuationResult(..), nameToId, idToName )
+import AutoScheduler ( AutoSchedulerContext(..), ProcessId, FunctionId, AddContinuationResult(..), nameToId, idToName, newProcessId )
 import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsId', Konts(..),
              parseVarEnv, parseFunEnv,
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
@@ -191,12 +191,12 @@ currentStatePostgres q conn pId = do
 
 newProcessPostgres :: Queue -> Connection -> SessionId -> IO ProcessId
 newProcessPostgres q conn sessionId = do
-    enqueueSync q $ do
+    processId <- newProcessId
+    enqueueAsync q $ do
         withTransaction conn $ do
-            [Only processId] <- query_ conn "INSERT INTO RunQueue DEFAULT VALUES RETURNING processId"
-            execute conn "INSERT INTO SessionProcesses ( sessionId, processId ) VALUES (?, ?)"
-                                (sessionId, processId)
-            return processId
+            execute conn "INSERT INTO RunQueue (processId) VALUES (?)" (Only processId)
+            () <$ execute conn "INSERT INTO SessionProcesses ( sessionId, processId ) VALUES (?, ?)" (sessionId, processId)
+    return processId
 
 runQueuePostgres :: Queue -> Connection -> SessionId -> IO [ProcessId]
 runQueuePostgres q conn sessionId = do

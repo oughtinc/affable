@@ -14,7 +14,7 @@ import Command ( Command(..), commandToBuilder )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
                  canonicalizeMessage, boundPointers )
-import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent )
+import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent, newSessionId )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Counter, newCounter, increment, Queue, newQueue, enqueueAsync, enqueueSync )
 import Workspace ( Workspace(..), WorkspaceId, newWorkspaceId )
@@ -180,13 +180,12 @@ createInitialWorkspacePostgres q c conn = do
 
 newSessionPostgres :: Queue -> Counter -> Connection -> Maybe SessionId -> IO SessionId
 newSessionPostgres q c conn Nothing = do
-    enqueueSync q $ do
-        [Only sessionId] <- query_ conn "INSERT INTO Sessions DEFAULT VALUES RETURNING sessionId"
-        return sessionId
+    sessionId <- newSessionId
+    newSessionPostgres q c conn (Just sessionId)
 newSessionPostgres q c conn (Just sessionId) = do
-    enqueueSync q $ do
-        execute conn "INSERT INTO Sessions VALUES (?) ON CONFLICT DO NOTHING" (Only sessionId)
-        return sessionId
+    enqueueAsync q $ do
+        () <$ execute conn "INSERT INTO Sessions (sessionId) VALUES (?) ON CONFLICT DO NOTHING" (Only sessionId)
+    return sessionId
 
 createWorkspacePostgres :: Queue -> Counter -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
 createWorkspacePostgres q c conn doNormalize userId workspaceId qAsAsked qAsAnswered = do

@@ -3,14 +3,15 @@ module Sqlite.AutoSchedulerContext ( makeSqliteAutoSchedulerContext, makeSqliteA
 import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import Database.SQLite.Simple ( Connection, Only(..), NamedParam(..), withTransaction,
-                                query, query_, queryNamed, executeMany, executeNamed, execute_, lastInsertRowId ) -- sqlite-simple
+                                query, query_, queryNamed, executeMany, executeNamed, execute_, execute, lastInsertRowId ) -- sqlite-simple
 
-import AutoScheduler ( AutoSchedulerContext(..), ProcessId, FunctionId, AddContinuationResult(..), nameToId, idToName )
+import AutoScheduler ( AutoSchedulerContext(..), ProcessId, FunctionId, AddContinuationResult(..),
+                       nameToId, idToName, newProcessId, processIdToBuilder, processIdFromText )
 import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsId', Konts(..),
              parseVarEnv, parseFunEnv,
              varEnvToBuilder, funEnvToBuilder, kont1ToBuilderDB, parseKont1UnsafeDB, expToBuilderDB, expFromDB )
 import Message ( PointerRemapping, messageToBuilder, parseMessageUnsafeDB, parsePatternsUnsafe, patternsToBuilder )
-import Scheduler ( SchedulerContext(..), SessionId )
+import Scheduler ( SchedulerContext(..), SessionId, sessionIdToBuilder )
 import Sqlite.SchedulerContext ( makeSqliteSchedulerContext )
 import Util ( toText, Queue, enqueueAsync, enqueueSync, parseUnsafe )
 import Workspace ( WorkspaceId, workspaceIdFromText, workspaceIdToBuilder )
@@ -31,7 +32,7 @@ makeSqliteAutoSchedulerContext' ctxt sessionId = do
                               \INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
                               \INNER JOIN SessionProcesses s ON s.processId = t.processId \
                               \WHERE s.sessionId = :sessionId AND f.isAnswer = 1 \
-                              \LIMIT 1" [":sessionId" := sessionId]
+                              \LIMIT 1" [":sessionId" := toText (sessionIdToBuilder sessionId)]
 
         case ss of
             [] -> do
@@ -78,7 +79,7 @@ allAlternativesSqlite q conn answerId sessionId = do
                                 \                   INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
                                 \                   INNER JOIN SessionProcesses s ON s.processId = t.processId \
                                 \                   WHERE s.sessionId = :sessionId) \
-                                \ORDER BY rowid ASC" [":sessionId" := sessionId]
+                                \ORDER BY rowid ASC" [":sessionId" := toText (sessionIdToBuilder sessionId)]
         return $ M.fromListWith (++) $ map (\(f, ps, e) -> (idToName answerId f, [(parsePatternsUnsafe ps, expFromDB e)])) alts
 
 newFunctionSqlite :: Queue -> Connection -> IO Name
@@ -179,7 +180,7 @@ recordStateSqlite q conn processId (varEnv, funEnv, s, e, k) = do {
         enqueueSync q $ do
             executeNamed conn "INSERT INTO Trace ( processId, varEnv, funEnv, workspaceId, expression, continuation ) \
                               \VALUES (:processId, :varEnv, :funEnv, :workspaceId, :expression, :continuation)" [
-                                ":processId" := processId,
+                                ":processId" := toText (processIdToBuilder processId),
                                 ":varEnv" := varEnvText, -- TODO: Seems like the varEnv will also be in funEnv
                                 ":funEnv" := funEnvText, -- and so doesn't need to be stored separately.
                                 ":workspaceId" := wsIdText,
@@ -194,32 +195,34 @@ currentStateSqlite q conn pId = do
                                                        \FROM Trace \
                                                        \WHERE processId = :processId \
                                                        \ORDER BY t DESC \
-                                                       \LIMIT 1" [":processId" := pId]
+                                                       \LIMIT 1" [":processId" := toText (processIdToBuilder pId)]
         return (parseUnsafe parseVarEnv varEnv, parseUnsafe parseFunEnv funEnv, workspaceIdFromText s, expFromDB e, parseKont1UnsafeDB k)
 
 newProcessSqlite :: Queue -> Connection -> SessionId -> IO ProcessId
 newProcessSqlite q conn sessionId = do
-    enqueueSync q $ do
+    processId <- newProcessId
+    enqueueAsync q $ do
         withTransaction conn $ do
-            execute_ conn "INSERT INTO RunQueue DEFAULT VALUES"
-            processId <- lastInsertRowId conn
+            let !pIdText = toText (processIdToBuilder processId)
+            execute conn "INSERT INTO RunQueue (processId) VALUES (?)" (Only pIdText)
             executeNamed conn "INSERT INTO SessionProcesses ( sessionId, processId ) VALUES (:sessionId, :processId)" [
-                                ":sessionId" := sessionId,
-                                ":processId" := processId]
-            return processId
+                                ":sessionId" := toText (sessionIdToBuilder sessionId),
+                                ":processId" := pIdText]
+    return processId
 
 runQueueSqlite :: Queue -> Connection -> SessionId -> IO [ProcessId]
 runQueueSqlite q conn sessionId = do
     enqueueSync q $ do
-        map (\(Only pId) -> pId) <$> queryNamed conn "SELECT processId \
-                                                     \FROM RunQueue q \
-                                                     \WHERE processId IN (SELECT processId FROM SessionProcesses WHERE sessionId = :sessionId)" [
-                                                        ":sessionId" := sessionId]
+        map (\(Only pId) -> processIdFromText pId) <$>
+            queryNamed conn "SELECT processId \
+                            \FROM RunQueue q \
+                            \WHERE processId IN (SELECT processId FROM SessionProcesses WHERE sessionId = :sessionId)" [
+                                ":sessionId" := toText (sessionIdToBuilder sessionId)]
 
 terminateSqlite :: Queue -> Connection -> ProcessId -> IO ()
 terminateSqlite q conn processId = do
     enqueueAsync q $ do
-        executeNamed conn "DELETE FROM RunQueue WHERE processId = :processId" [":processId" := processId]
+        executeNamed conn "DELETE FROM RunQueue WHERE processId = :processId" [":processId" := toText (processIdToBuilder processId)]
 
 addContinuationArgumentSqlite :: Queue -> Connection -> FunctionId -> KontsId' -> Int -> Value -> IO AddContinuationResult
 addContinuationArgumentSqlite q conn answerId (workspaceId, f) argNumber v = do

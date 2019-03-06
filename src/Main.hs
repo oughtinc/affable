@@ -146,5 +146,5 @@ main = do
                 autoCtxt <- makeAutoSchedulerContext dbCtxt ctxt sessionId
                 let !ctxt = schedulerContext autoCtxt
                 initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
-                scheduler <- runM (makeInterpreterScheduler (not concurrent) autoCtxt $! identity initWorkspace) 0
+                scheduler <- runM (makeInterpreterScheduler (not concurrent) autoCtxt $! identity initWorkspace)
                 commandLineInteraction initWorkspace scheduler

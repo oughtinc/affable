@@ -19,7 +19,7 @@ import Text.Megaparsec ( ParseError, parse, parseErrorPretty ) -- megaparsec 6.5
 
 import Command ( Command(..), commandParser )
 import Message ( Message(..), PointerRemapping, messageToBuilder, expandPointers, renumberMessage, renumberMessage', renumberAcc )
-import Scheduler ( UserId, Event, SchedulerFn, firstUserId )
+import Scheduler ( Event, SchedulerFn, newUserId )
 import qualified Scheduler as Event ( Event (..) )
 import Util ( toText, invertMap )
 import Workspace ( Workspace(..) )
@@ -67,14 +67,15 @@ completionFunc = completeWord Nothing "" $ \s -> return $ map simpleCompletion $
 
 commandLineInteraction :: Workspace -> SchedulerFn -> IO ()
 commandLineInteraction initWorkspace scheduler = do
+    userId <- newUserId
     runInputT (setComplete completionFunc defaultSettings) $ do
-        mWorkspace <- liftIO $ scheduler firstUserId initWorkspace Event.Init
+        mWorkspace <- liftIO $ scheduler userId initWorkspace Event.Init
         case mWorkspace of
             Nothing -> return ()
             Just ws -> do
                 mapping' <- renderWorkspace ws
-                go mapping' ws
-  where go mapping ws = do
+                go userId mapping' ws
+  where go userId mapping ws = do
           eCmd <- readCommand
           case eCmd of
               Left (line, bundle) -> do
@@ -83,20 +84,20 @@ commandLineInteraction initWorkspace scheduler = do
                     else do
                       -- outputStr (errorBundlePretty bundle) -- megaparsec 7.0
                       outputStr (parseErrorPretty bundle) -- megaparsec 6.5
-                      go mapping ws
+                      go userId mapping ws
               Right cmd -> do
                   case commandToEvent mapping cmd of
                     Nothing -> do
                         outputStrLn "Reference to undefined pointer." -- TODO: Better wording.
-                        go mapping ws
+                        go userId mapping ws
                     Just evt -> do
                       -- liftIO $ clearScreen >> setCursorPosition 0 0 >> hFlush stdout
-                      mWorkspace <- liftIO $ scheduler firstUserId ws evt
+                      mWorkspace <- liftIO $ scheduler userId ws evt
                       case mWorkspace of
                           Nothing -> return ()
                           Just ws -> do
                               mapping' <- renderWorkspace ws
-                              go mapping' ws
+                              go userId mapping' ws
 
 commandToEvent :: PointerRemapping -> Command -> Maybe Event
 commandToEvent mapping (Ask msg) = Just (Event.Create $ renumberMessage' mapping msg)

@@ -14,7 +14,8 @@ import Command ( Command(..), commandToBuilder )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, normalizeMessage, generalizeMessage,
                  messageToBuilder, messageToBuilderDB, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
                  canonicalizeMessage, boundPointers )
-import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent )
+import Scheduler ( SchedulerContext(..), Event, UserId, SessionId,
+                   userIdToBuilder, sessionIdToBuilder, newSessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Counter, newCounter, increment, Queue, newQueue, enqueueAsync, enqueueSync )
 import Workspace ( Workspace(..), WorkspaceId, newWorkspaceId, workspaceIdFromText, workspaceIdToBuilder )
@@ -165,7 +166,7 @@ insertCommand q c conn userId workspaceId cmd = do
         executeNamed conn "INSERT INTO Commands (workspaceId, commandTime, userId, command) VALUES (:workspace, :time, :userId, :cmd)" [
                             ":workspace" := wsIdText,
                             ":time" := (t :: Int64),
-                            ":userId" := userId,
+                            ":userId" := toText (userIdToBuilder userId),
                             ":cmd" := cmdText]
 
 createInitialWorkspaceSqlite :: Queue -> Counter -> Connection -> IO WorkspaceId
@@ -189,13 +190,12 @@ createInitialWorkspaceSqlite q c conn = do
 
 newSessionSqlite :: Queue -> Counter -> Connection -> Maybe SessionId -> IO SessionId
 newSessionSqlite q c conn Nothing = do
-    enqueueSync q $ do
-        execute_ conn "INSERT INTO Sessions DEFAULT VALUES"
-        lastInsertRowId conn
+    sessionId <- newSessionId
+    newSessionSqlite q c conn (Just sessionId)
 newSessionSqlite q c conn (Just sessionId) = do
-    enqueueSync q $ do
-        execute conn "INSERT OR IGNORE INTO Sessions VALUES (?)" (Only sessionId)
-        return sessionId
+    enqueueAsync q $
+        execute conn "INSERT OR IGNORE INTO Sessions (sessionId) VALUES (?)" (Only (toText (sessionIdToBuilder sessionId)))
+    return sessionId
 
 createWorkspaceSqlite :: Queue -> Counter -> Connection -> Bool -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
 createWorkspaceSqlite q c conn doNormalize userId workspaceId qAsAsked qAsAnswered = do

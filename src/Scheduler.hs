@@ -1,15 +1,20 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), SessionId,
-                   autoUserId, firstUserId, makeSingleUserScheduler, relabelMessage, fullyExpand,
+module Scheduler ( SchedulerContext(..), SchedulerFn, UserId, Event(..), SessionId, sessionIdToBuilder, sessionIdFromText, newSessionId,
+                   autoUserId, makeSingleUserScheduler, relabelMessage, fullyExpand, newUserId, userIdToBuilder, userIdFromText,
                    normalize, generalize, canonicalizeEvents, workspaceToMessage, renumberEvent, eventMessage ) where
-import Data.Int ( Int64 ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Set as S -- containers
 import Data.String ( fromString ) -- base
+import qualified Data.Text as T -- text
+import Data.Text.Lazy.Builder ( Builder ) -- text
+import Data.UUID ( UUID, nil ) -- uuid
+import qualified Data.UUID.V4 as UUID ( nextRandom ) -- uuid
+import Text.Megaparsec ( parseMaybe ) -- megaparsec
 
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, stripLabel, renumberMessage' )
+import Util ( parseUUID, uuidToBuilder )
 import Workspace ( Workspace(..), WorkspaceId )
 
 data Event
@@ -21,14 +26,11 @@ data Event
     | Init
   deriving ( Eq, Ord, Show )
 
-type UserId = Int64
-type SessionId = Int64
+type UserId = UUID
+type SessionId = UUID
 
 autoUserId :: UserId
-autoUserId = 0
-
-firstUserId :: UserId
-firstUserId = 1
+autoUserId = nil
 
 type SchedulerFn = UserId -> Workspace -> Event -> IO (Maybe Workspace)
 
@@ -142,3 +144,21 @@ eventMessage (Create m) = Just m
 eventMessage (Answer m) = Just m
 eventMessage (Send _ m) = Just m
 eventMessage _ = Nothing
+
+sessionIdFromText :: T.Text -> SessionId
+sessionIdFromText t = case parseMaybe parseUUID t of Just sessionId -> sessionId
+
+sessionIdToBuilder :: SessionId -> Builder
+sessionIdToBuilder = uuidToBuilder
+
+newSessionId :: IO SessionId
+newSessionId = UUID.nextRandom
+
+userIdFromText :: T.Text -> UserId
+userIdFromText t = case parseMaybe parseUUID t of Just userId -> userId
+
+userIdToBuilder :: UserId -> Builder
+userIdToBuilder = uuidToBuilder
+
+newUserId :: IO UserId
+newUserId = UUID.nextRandom
