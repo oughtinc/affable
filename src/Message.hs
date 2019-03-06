@@ -8,7 +8,7 @@ module Message (
     pointerToBuilder, addressToBuilder, messageToBuilder, messageToBuilderDB, messageToHaskell, messageToPattern,
     patternsParser, parsePatternsUnsafe, patternsToBuilder, expandPointers, substitute,
     normalizeMessage, canonicalizeMessage, generalizeMessage, renumberMessage', renumberMessage, renumberAcc,
-    stripLabel, matchMessage, matchPointers, collectPointers, boundPointers )
+    stripLabel, applyLabel, matchMessage, matchPointers, collectPointers, boundPointers )
   where
 import Control.Applicative ( (<*>), pure, (*>) ) -- base
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
@@ -279,6 +279,11 @@ renumberAcc mapping msg = mapping
 stripLabel :: Message -> Message
 stripLabel (LabeledStructured _ ms) = Structured ms
 stripLabel m = m
+
+applyLabel :: Pointer -> Message -> Message
+applyLabel p m@(LabeledStructured _ _) = error $ "applyLabel: applying label "++show p++" to an already labeled message ["++show m++"]"
+applyLabel p (Structured ms) = LabeledStructured p ms
+applyLabel p m = LabeledStructured p [m]
 
 -- This mostly assumes that the 'pattern' fits the Message.
 matchPointers :: Message -> Message -> PointerRemapping

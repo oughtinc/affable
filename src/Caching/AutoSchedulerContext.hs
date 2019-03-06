@@ -1,5 +1,6 @@
 module Caching.AutoSchedulerContext ( makeCachingAutoSchedulerContext ) where
 import Control.Concurrent.STM ( TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar, modifyTVar' ) -- stm
+import Control.Monad ( when ) -- base
 import qualified Data.Map as M -- containers
 
 import AutoScheduler ( AutoSchedulerContext(..), ProcessId, FunctionId, AddContinuationResult(..), nameToId, idToName )
@@ -13,9 +14,11 @@ import Workspace ( WorkspaceId )
 makeCachingAutoSchedulerContext :: CacheState -> AutoSchedulerContext e -> SessionId -> IO (AutoSchedulerContext e)
 makeCachingAutoSchedulerContext cache autoCtxt sessionId = do
     let !answerId = thisAnswerId autoCtxt
-    alts <- alternativesFor autoCtxt ANSWER
     atomically $ modifyTVar' (answerFunctionsC cache) (M.insert sessionId answerId)
-    atomically $ modifyTVar' (alternativesC cache) (M.insert answerId alts)
+    altsMap <- readTVarIO (alternativesC cache)
+    when (answerId `M.notMember` altsMap) $ do
+        alts <- alternativesFor autoCtxt ANSWER
+        atomically $ modifyTVar' (alternativesC cache) (M.insert answerId alts)
     return $ AutoSchedulerContext {
                     thisAnswerId = answerId,
                     alternativesFor = alternativesForCaching cache autoCtxt answerId,
@@ -27,11 +30,11 @@ makeCachingAutoSchedulerContext cache autoCtxt sessionId = do
                     links = linksCaching cache autoCtxt,
                     saveContinuation = saveContinuationCaching cache autoCtxt answerId,
                     loadContinuation = loadContinuationCaching cache autoCtxt answerId,
-                    recordState = recordStateCaching cache autoCtxt,
-                    currentState = currentStateCaching cache autoCtxt,
+                    recordState = recordStateCaching cache autoCtxt sessionId,
+                    currentState = currentStateCaching cache autoCtxt sessionId,
                     newProcess = newProcessCaching cache autoCtxt sessionId,
                     runQueue = runQueueCaching cache autoCtxt sessionId,
-                    terminate = terminateCaching cache autoCtxt,
+                    terminate = terminateCaching cache autoCtxt sessionId,
                     addContinuationArgument = addContinuationArgumentCaching cache autoCtxt answerId,
                     continuationArguments = continuationArgumentsCaching cache autoCtxt answerId,
                     schedulerContext = schedulerContext autoCtxt
@@ -53,7 +56,8 @@ alternativesForCaching cache autoCtxt answerId f = do
     maybe [] id . M.lookup fId <$> readTVarIO (alternativesC cache)
 
 allAlternativesCaching :: CacheState -> AutoSchedulerContext e -> FunctionId -> SessionId -> IO (M.Map Name [([Pattern], Exp')])
-allAlternativesCaching cache autoCtxt answerId sessionId = M.mapKeys (idToName answerId) <$> readTVarIO (alternativesC cache)
+allAlternativesCaching cache autoCtxt answerId sessionId = do -- TODO: Filter to the relevant session.
+    M.mapKeys (idToName answerId) <$> readTVarIO (alternativesC cache)
 
 nextFunctionCaching :: CacheState -> AutoSchedulerContext e -> IO Name
 nextFunctionCaching cache autoCtxt = do
@@ -89,15 +93,16 @@ loadContinuationCaching cache autoCtxt answerId (workspaceId, f) = do
     let !fId = nameToId answerId f
     (\m -> case M.lookup fId m of Just a -> a) . (\m -> case M.lookup workspaceId m of Just a -> a) <$> readTVarIO (continuationsC cache)
 
-recordStateCaching :: CacheState -> AutoSchedulerContext e -> ProcessId -> EvalState' -> IO ()
-recordStateCaching cache autoCtxt processId state = do
+recordStateCaching :: CacheState -> AutoSchedulerContext e -> SessionId -> ProcessId -> EvalState' -> IO ()
+recordStateCaching cache autoCtxt sessionId processId state = do
     atomically $ do
         modifyTVar' (traceC cache) ((processId, state):)
-        modifyTVar' (runQueueC cache) (M.insert processId state)
+        modifyTVar' (runQueueC cache) (M.insertWith M.union sessionId (M.singleton processId state))
     recordState autoCtxt processId state
 
-currentStateCaching :: CacheState -> AutoSchedulerContext e -> ProcessId -> IO EvalState'
-currentStateCaching cache autoCtxt pId = (\m -> case M.lookup pId m of Just a -> a) <$> readTVarIO (runQueueC cache)
+currentStateCaching :: CacheState -> AutoSchedulerContext e -> SessionId -> ProcessId -> IO EvalState'
+currentStateCaching cache autoCtxt sessionId pId
+    = (\m -> case M.lookup pId m of Just a -> a) . (\m -> case M.lookup sessionId m of Just a -> a) <$> readTVarIO (runQueueC cache)
 
 newProcessCaching :: CacheState -> AutoSchedulerContext e -> SessionId -> IO ProcessId
 newProcessCaching cache autoCtxt sessionId = do
@@ -114,11 +119,13 @@ newProcessCaching cache autoCtxt sessionId = do
     -}
 
 runQueueCaching :: CacheState -> AutoSchedulerContext e -> SessionId -> IO [ProcessId]
-runQueueCaching cache autoCtxt sessionId = M.keys <$> readTVarIO (runQueueC cache) -- TODO: Will this miss some processes?
+runQueueCaching cache autoCtxt sessionId = do
+    rq <- readTVarIO (runQueueC cache) -- TODO: Will this miss some processes?
+    return $ maybe [] M.keys (M.lookup sessionId rq)
 
-terminateCaching :: CacheState -> AutoSchedulerContext e -> ProcessId -> IO ()
-terminateCaching cache autoCtxt processId = do
-    atomically $ modifyTVar' (runQueueC cache) (M.delete processId)
+terminateCaching :: CacheState -> AutoSchedulerContext e -> SessionId -> ProcessId -> IO ()
+terminateCaching cache autoCtxt sessionId processId = do
+    atomically $ modifyTVar' (runQueueC cache) (M.adjust (M.delete processId) sessionId)
     terminate autoCtxt processId
 
 addContinuationArgumentCaching :: CacheState -> AutoSchedulerContext e -> FunctionId -> KontsId' -> Int -> Value -> IO AddContinuationResult

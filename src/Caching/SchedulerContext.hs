@@ -8,7 +8,7 @@ import Data.Maybe ( mapMaybe ) -- base
 
 import AutoScheduler ( FunctionId, ProcessId )
 import Exp ( Pattern, Exp', Konts', EvalState' )
-import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping )
+import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, applyLabel, stripLabel )
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Util ( Counter, newCounter )
 import Workspace ( Workspace(..), WorkspaceId )
@@ -25,7 +25,7 @@ data CacheState = CacheState {
     continuationsC :: TVar (M.Map WorkspaceId (M.Map FunctionId Konts')),
     continuationArgumentsC :: TVar (M.Map (WorkspaceId, FunctionId) (M.Map Int Message)),
     traceC :: TVar [(ProcessId, EvalState')], -- Stored newest first.
-    runQueueC :: TVar (M.Map ProcessId EvalState'),
+    runQueueC :: TVar (M.Map SessionId (M.Map ProcessId EvalState')),
     sessionsC :: TVar (M.Map SessionId [ProcessId]) }
 
 createCache :: SchedulerContext e -> IO CacheState
@@ -75,7 +75,6 @@ makeCachingSchedulerContext ctxt = do
             remapPointers = remapPointersCaching cache ctxt,
             pendingQuestions = pendingQuestionsCaching cache ctxt,
             getWorkspace = getWorkspaceCaching cache ctxt,
-            allWorkspaces = allWorkspacesCaching cache ctxt,
             getNextWorkspace = getNextWorkspaceCaching cache ctxt,
             dereference = dereferenceCaching cache ctxt,
             reifyWorkspace = reifyWorkspaceCaching cache ctxt,
@@ -101,12 +100,12 @@ dereferenceCaching :: CacheState -> SchedulerContext e -> Pointer -> IO Message
 dereferenceCaching cache ctxt ptr = do
     mVal <- M.lookup ptr <$> readTVarIO (pointersC cache)
     case mVal of
-        Just msg -> return msg
+        Just msg -> return $! applyLabel ptr msg
         -- Intentionally incomplete.
 
-createInitialWorkspaceCaching :: CacheState -> SchedulerContext e -> IO WorkspaceId
-createInitialWorkspaceCaching cache ctxt = do
-    wsId <- createInitialWorkspace ctxt
+createInitialWorkspaceCaching :: CacheState -> SchedulerContext e -> Message -> IO WorkspaceId
+createInitialWorkspaceCaching cache ctxt msg = do
+    wsId <- createInitialWorkspace ctxt msg
     ws <- getWorkspace ctxt wsId
     atomically $ modifyTVar' (workspacesC cache) (M.insert wsId ws)
     return wsId
@@ -152,7 +151,7 @@ sendMessageCaching cache ctxt userId srcId tgtId msg = error "sendMessageCaching
 expandPointerCaching :: CacheState -> SchedulerContext e -> UserId -> WorkspaceId -> Pointer -> IO ()
 expandPointerCaching cache ctxt userId workspaceId ptr = do
     atomically $ do
-        msg <- (\m -> case M.lookup ptr m of Just a -> a) <$> readTVar (pointersC cache)
+        msg <- applyLabel ptr . (\m -> case M.lookup ptr m of Just a -> a) <$> readTVar (pointersC cache)
         modifyTVar' (workspacesC cache) $ M.adjust (insertPointer msg) workspaceId
     expandPointer ctxt userId workspaceId ptr
   where insertPointer msg ws@(Workspace { expandedPointers = ep }) = ws { expandedPointers = M.insert ptr msg ep }
@@ -164,7 +163,8 @@ nextPointerCaching cache ctxt = do
 
 createPointersCaching :: CacheState -> SchedulerContext e -> PointerEnvironment -> IO ()
 createPointersCaching cache ctxt env = do
-    atomically $ modifyTVar' (pointersC cache) (M.union env)
+    let !env' = fmap stripLabel env
+    atomically $ modifyTVar' (pointersC cache) (M.union env')
     createPointers ctxt env
 
 remapPointersCaching :: CacheState -> SchedulerContext e -> PointerRemapping -> IO ()
@@ -180,9 +180,6 @@ pendingQuestionsCaching cache ctxt workspaceId = do
 getWorkspaceCaching :: CacheState -> SchedulerContext e -> WorkspaceId -> IO Workspace
 getWorkspaceCaching cache ctxt workspaceId = do
     (\m -> case M.lookup workspaceId m of Just a -> a) <$> readTVarIO (workspacesC cache)
-
-allWorkspacesCaching :: CacheState -> SchedulerContext e -> IO (M.Map WorkspaceId Workspace)
-allWorkspacesCaching cache ctxt = readTVarIO (workspacesC cache)
 
 getNextWorkspaceCaching :: CacheState -> SchedulerContext e -> IO (Maybe WorkspaceId)
 getNextWorkspaceCaching cache ctxt = error "getNextWorkspaceCaching: not implemented"

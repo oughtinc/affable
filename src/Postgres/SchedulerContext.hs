@@ -45,7 +45,6 @@ makePostgresSchedulerContext q conn = do
             remapPointers = remapPointersPostgres sync async c conn,
             pendingQuestions = pendingQuestionsPostgres sync async c conn,
             getWorkspace = getWorkspacePostgres sync async c conn,
-            allWorkspaces = allWorkspacesPostgres sync async c conn,
             getNextWorkspace = getNextWorkspacePostgres sync async c conn,
             dereference = dereferencePostgres sync async c conn,
             reifyWorkspace = reifyWorkspacePostgres sync async c conn,
@@ -111,21 +110,16 @@ insertCommand sync async c conn userId workspaceId cmd = do
         () <$ execute conn "INSERT INTO Commands (workspaceId, commandTime, userId, command) VALUES (?, ?, ?, ?)"
                             (workspaceId, t :: Int64, userId, cmdText)
 
-createInitialWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO WorkspaceId
-createInitialWorkspacePostgres sync async c conn = do
+createInitialWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> Message -> IO WorkspaceId
+createInitialWorkspacePostgres sync async c conn msg = do
     workspaceId <- newWorkspaceId
     t <- increment c
-    let msg = Text "What is your question?"
+    let !msgText = toText (messageToBuilder msg)
     async $ do
         withTransaction conn $ do
-            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-            let !p = maybe 0 succ lastPointerId
-            let msg' = LabeledStructured p [msg]
-            let !msgText = toText (messageToBuilder msg)
-                !msgText' = toText (messageToBuilder msg')
             () <$ execute conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
                                \VALUES (?, ?, ?, ?, ?)"
-                                 (workspaceId, t :: LogicalTime, Nothing :: Maybe WorkspaceId, msgText, msgText')
+                                 (workspaceId, t :: LogicalTime, Nothing :: Maybe WorkspaceId, msgText, msgText)
     insertCommand sync async c conn autoUserId workspaceId (Ask msg)
     return workspaceId
 
@@ -236,33 +230,6 @@ getWorkspacePostgres sync async c conn workspaceId = do
             messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
             expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
             time = Time t }
-
--- NOT CACHEABLE
-allWorkspacesPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (M.Map WorkspaceId Workspace)
-allWorkspacesPostgres sync async c conn = do
-    sync $ do
-        workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
-                                  \FROM Workspaces"
-        messages <- query_ conn "SELECT targetWorkspaceId, content FROM Messages" -- TODO: ORDER
-        subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
-                                    \FROM Workspaces p \
-                                    \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
-                                    \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
-                                    \ORDER BY p.id ASC, q.logicalTime DESC"
-        expanded <- query_ conn "SELECT workspaceId, pointerId, content \
-                                \FROM ExpandedPointers e \
-                                \INNER JOIN Pointers p ON e.pointerId = p.id"
-        let messageMap = M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
-            subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
-            expandedMap = M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
-        return $ M.fromList $ map (\(i, p, t, q) -> (i, Workspace {
-                                                            identity = i,
-                                                            parentId = p,
-                                                            question = parseMessageUnsafeDB q,
-                                                            subQuestions = maybe [] id $ M.lookup i subquestionsMap,
-                                                            messageHistory = maybe [] id $ M.lookup i messageMap,
-                                                            expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
-                                                            time = Time t })) workspaces
 
 -- NOT CACHEABLE
 getNextWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (Maybe WorkspaceId)

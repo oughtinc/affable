@@ -45,7 +45,6 @@ makeSqliteSchedulerContext q conn = do
             remapPointers = remapPointersSqlite sync async c conn,
             pendingQuestions = pendingQuestionsSqlite sync async c conn,
             getWorkspace = getWorkspaceSqlite sync async c conn,
-            allWorkspaces = allWorkspacesSqlite sync async c conn,
             getNextWorkspace = getNextWorkspaceSqlite sync async c conn,
             dereference = dereferenceSqlite sync async c conn,
             reifyWorkspace = reifyWorkspaceSqlite sync async c conn,
@@ -119,26 +118,21 @@ insertCommand sync async c conn userId workspaceId cmd = do
                             ":userId" := toText (userIdToBuilder userId),
                             ":cmd" := cmdText]
 
-createInitialWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO WorkspaceId
-createInitialWorkspaceSqlite sync async c conn = do
+createInitialWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> Message -> IO WorkspaceId
+createInitialWorkspaceSqlite sync async c conn msg = do
     workspaceId <- newWorkspaceId
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+    let !msgText = toText (messageToBuilder msg)
     t <- increment c
-    let msg = Text "What is your question?"
     async $ do
         withTransaction conn $ do
-            [Only lastPointerId] <- query_ conn "SELECT MAX(id) FROM Pointers"
-            let !p = maybe 0 succ lastPointerId
-            let msg' = LabeledStructured p [msg]
-            let !msgText = toText (messageToBuilder msg)
-                !msgText' = toText (messageToBuilder msg')
             executeNamed conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
                               \VALUES (:id, :time, :parent, :questionAsAsked, :questionAsAnswered)" [
                                 ":id" := wsIdText,
                                 ":time" := (t :: LogicalTime),
                                 ":parent" := (Nothing :: Maybe Text),
                                 ":questionAsAsked" := msgText,
-                                ":questionAsAnswered" := msgText']
+                                ":questionAsAnswered" := msgText]
     insertCommand sync async c conn autoUserId workspaceId (Ask msg)
     return workspaceId
 
@@ -268,38 +262,6 @@ getWorkspaceSqlite sync async c conn workspaceId = do
             messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
             expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
             time = Time t }
-
--- NOT CACHEABLE
-allWorkspacesSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (M.Map WorkspaceId Workspace)
-allWorkspacesSqlite sync async c conn = do
-    sync $ do
-        workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
-                                  \FROM Workspaces"
-        messages <- query_ conn "SELECT targetWorkspaceId, content FROM Messages" -- TODO: ORDER
-        subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
-                                    \FROM Workspaces p \
-                                    \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
-                                    \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
-                                    \ORDER BY p.id ASC, q.logicalTime DESC"
-        expanded <- query_ conn "SELECT workspaceId, pointerId, content \
-                                \FROM ExpandedPointers e \
-                                \INNER JOIN Pointers p ON e.pointerId = p.id"
-        let messageMap = M.fromListWith (++) $
-                            map (\(i, m) -> (workspaceIdFromText i, [parseMessageUnsafe m])) messages
-            subquestionsMap = M.fromListWith (++) $
-                                map (\(i, qId, q, ma) ->
-                                    (workspaceIdFromText i, [(workspaceIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
-            expandedMap = M.fromListWith M.union $
-                            map (\(i, p, m) -> (workspaceIdFromText i, M.singleton p (parseMessageUnsafe' p m))) expanded
-        return $ M.fromList $ map (\(i, p, t, q) -> let !wsId = workspaceIdFromText i
-                                                    in (wsId, Workspace {
-                                                                identity = wsId,
-                                                                parentId = workspaceIdFromText <$> p,
-                                                                question = parseMessageUnsafeDB q,
-                                                                subQuestions = maybe [] id $ M.lookup wsId subquestionsMap,
-                                                                messageHistory = maybe [] id $ M.lookup wsId messageMap,
-                                                                expandedPointers = maybe M.empty id $ M.lookup wsId expandedMap,
-                                                                time = Time t })) workspaces
 
 -- NOT CACHEABLE
 getNextWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (Maybe WorkspaceId)

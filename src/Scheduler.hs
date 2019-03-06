@@ -43,7 +43,7 @@ type AsyncFunc = IO () -> IO ()
 
 data SchedulerContext extra = SchedulerContext {
     doAtomically :: SyncFunc,
-    createInitialWorkspace :: IO WorkspaceId,
+    createInitialWorkspace :: Message -> IO WorkspaceId,
     newSession :: Maybe SessionId -> IO SessionId,
     createWorkspace :: UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId,
     sendAnswer :: UserId -> WorkspaceId -> Message -> IO (),
@@ -54,7 +54,6 @@ data SchedulerContext extra = SchedulerContext {
     remapPointers :: PointerRemapping -> IO (),
     pendingQuestions :: WorkspaceId -> IO [WorkspaceId],
     getWorkspace :: WorkspaceId -> IO Workspace,
-    allWorkspaces :: IO (M.Map WorkspaceId Workspace),
     getNextWorkspace :: IO (Maybe WorkspaceId),
     dereference :: Pointer -> IO Message,
     reifyWorkspace :: WorkspaceId -> IO Message,
@@ -96,18 +95,17 @@ canonicalizeEvents ctxt evts = do
         -- TODO: XXX Either decide to assume evts is well-formed, and enforce it, or propagate the error.
 
 labelMessage :: SchedulerContext extra -> Message -> IO Message
+labelMessage ctxt msg@(LabeledStructured _ _) = error $ "labelMessage: "++show msg
 labelMessage ctxt msg@(Structured ms) = do
     doAtomically ctxt $ do
         p <- nextPointer ctxt
-        let msg' = LabeledStructured p ms
-        createPointers ctxt (M.singleton p msg')
-        return msg'
+        createPointers ctxt (M.singleton p msg)
+        return $ LabeledStructured p ms
 labelMessage ctxt msg = do
     doAtomically ctxt $ do
         p <- nextPointer ctxt
-        let msg' = LabeledStructured p [msg]
-        createPointers ctxt (M.singleton p msg')
-        return msg'
+        createPointers ctxt (M.singleton p msg)
+        return $ LabeledStructured p [msg]
 
 relabelMessage :: SchedulerContext extra -> Message -> IO Message
 relabelMessage ctxt = labelMessage ctxt . stripLabel

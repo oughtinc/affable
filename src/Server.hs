@@ -27,7 +27,7 @@ import DatabaseContext ( DatabaseContext(..) )
 import Exp ( Pattern, Name(..), Exp(..) )
 import Message ( Message(..), Pointer, stripLabel )
 import Scheduler ( SessionId, UserId, Event(..), SchedulerFn, SchedulerContext(..),
-                   newUserId, canonicalizeEvents, getWorkspace, createInitialWorkspace, createWorkspace )
+                   newUserId, canonicalizeEvents, getWorkspace, createInitialWorkspace, labelMessage, createWorkspace )
 import Workspace ( WorkspaceId, Workspace(..) )
 
 data Response = OK | Error T.Text deriving ( Generic )
@@ -133,6 +133,7 @@ initServer dbCtxt = do
 
     let newSessionState = SessionState <$> newTChanIO <*> newIORef M.empty <*> newIORef M.empty <*> newIORef False
 
+        -- TODO: Allow a single user to *simultaneously* make actions in multiple sessions.
         userSessionState userId = do
             userSessionMap  <- readIORef userSessionMapRef
             let !sessionId = case M.lookup userId userSessionMap of Just sessionId -> sessionId
@@ -185,7 +186,8 @@ initServer dbCtxt = do
                     mapM_ (atomically . putTMVar responseTMVar . (,) userId) evts -- NOTE: This assumes that a sort of protocol between the interpreter and this and will block forever if it is not met.
 
         begin = do
-            initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt
+            msg <- labelMessage ctxt (Text "What is your question?")
+            initWorkspace <- getWorkspace ctxt =<< createInitialWorkspace ctxt msg
             let !q = stripLabel (question initWorkspace)
             return (identity initWorkspace, LetFun ANSWER (Call ANSWER [Value q]))
 
