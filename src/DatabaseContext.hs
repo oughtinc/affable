@@ -21,6 +21,7 @@ data Snapshot = Snapshot {
     traceS :: [(ProcessId, EvalState')], -- Stored newest first.
     runQueueS :: M.Map SessionId (M.Map ProcessId EvalState'),
     sessionsS :: M.Map SessionId [ProcessId] }
+  deriving ( Show )
 
 data DatabaseContext e = DatabaseContext {
     initDB :: IO (),

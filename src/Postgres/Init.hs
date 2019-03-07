@@ -76,9 +76,15 @@ snapshotPostgres conn = do
 
     contArgs <- M.fromListWith M.union . map (\(i, f, n, v) -> ((i, f), M.singleton n (parseMessageUnsafeDB v)))
                     <$> query_ conn "SELECT workspaceId, function, argNumber, value FROM ContinuationArguments"
+
     trace <- theTrace
 
     sessions <- M.fromListWith (++) . map (\(i, p) -> (i, [p])) <$> query_ conn "SELECT sessionId, processId FROM SessionProcesses"
+
+    running <- M.fromListWith (++) . map (\(i, p) -> (i, [p]))
+                    <$> query_ conn "SELECT sessionId, processId \
+                                    \FROM SessionProcesses \
+                                    \WHERE processId IN (SELECT processId FROM RunQueue)"
 
     return $ Snapshot {
                 workspacesS = workspaces,
@@ -90,7 +96,7 @@ snapshotPostgres conn = do
                 continuationsS = continuations,
                 continuationArgumentsS = contArgs,
                 traceS = trace,
-                runQueueS = fmap (M.fromList . map (\p -> (p, case lookup p trace of Just s -> s))) sessions,
+                runQueueS = fmap (M.fromList . map (\p -> (p, case lookup p trace of Just s -> s))) running,
                 sessionsS = sessions }
   where allWorkspaces = do
             workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
