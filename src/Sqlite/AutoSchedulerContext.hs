@@ -90,7 +90,7 @@ nextFunctionSqlite :: SyncFunc -> AsyncFunc -> Connection -> IO Name
 nextFunctionSqlite sync async conn = do
     sync $ do
         execute_ conn "INSERT INTO Functions DEFAULT VALUES"
-        LOCAL . fromIntegral <$> lastInsertRowId conn
+        LOCAL <$> lastInsertRowId conn
 
 addFunctionSqlite :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> Name -> IO ()
 addFunctionSqlite sync async conn answerId name = do

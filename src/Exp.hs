@@ -6,6 +6,7 @@ module Exp ( Result(..), Value, Pattern, Exp(..), Exp', Primitive, Var, Name(..)
              varEnvToBuilder, parseVarEnv, funEnvToBuilder, parseFunEnv,
              GoFn, MatchFn, EvalState, EvalState', Kont1(..), Kont1', Konts(..), Konts', KontsId', applyKonts ) where
 import Data.Functor ( (<$) ) -- base
+import Data.Int ( Int64 ) -- base
 import Data.List ( intersperse ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Text as T -- text
@@ -117,7 +118,7 @@ type Var = Pointer
 type Pattern = Message
 type Primitive = Int
 
-data Name = ANSWER | LOCAL !Int deriving ( Eq, Ord, Show )
+data Name = ANSWER | LOCAL !Int64 deriving ( Eq, Ord, Show )
 
 type Exp' = Exp Primitive Name Var
 type Kont1' = Kont1 WorkspaceId Primitive Name Var

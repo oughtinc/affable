@@ -46,11 +46,11 @@ data AutoSchedulerContext extra = AutoSchedulerContext {
 
 nameToId :: FunctionId -> Name -> FunctionId
 nameToId answerId ANSWER = answerId
-nameToId        _ (LOCAL i) = fromIntegral i
+nameToId        _ (LOCAL i) = i
 
 idToName :: FunctionId -> FunctionId -> Name
 idToName answerId fId | answerId == fId = ANSWER
-                      | otherwise = LOCAL (fromIntegral fId)
+                      | otherwise = LOCAL fId
 
 newFunction :: AutoSchedulerContext e -> IO Name
 newFunction autoCtxt = do

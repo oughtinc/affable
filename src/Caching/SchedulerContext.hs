@@ -1,12 +1,13 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
-module Caching.SchedulerContext ( CacheState(..), makeCachingSchedulerContext ) where
+module Caching.SchedulerContext ( CacheState(..), createCache, makeCachingSchedulerContext ) where
 import Control.Concurrent.STM ( TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar, modifyTVar' ) -- stm
 import qualified Data.Map as M -- containers
 import Data.Maybe ( mapMaybe ) -- base
 
 import AutoScheduler ( FunctionId, ProcessId )
+import DatabaseContext ( Snapshot(..) )
 import Exp ( Pattern, Exp', Konts', EvalState' )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, applyLabel, stripLabel )
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent )
@@ -16,7 +17,7 @@ import Workspace ( Workspace(..), WorkspaceId )
 data CacheState = CacheState {
     functionCounter :: Counter,
     workspacesC :: TVar (M.Map WorkspaceId Workspace),
-    -- messages :: ,
+    -- messagesC :: ,
     answersC :: TVar (M.Map WorkspaceId Message),
     answerFunctionsC :: TVar (M.Map SessionId FunctionId),
     pointersC :: TVar (M.Map Pointer Message),
@@ -28,20 +29,20 @@ data CacheState = CacheState {
     runQueueC :: TVar (M.Map SessionId (M.Map ProcessId EvalState')),
     sessionsC :: TVar (M.Map SessionId [ProcessId]) }
 
-createCache :: SchedulerContext e -> IO CacheState
-createCache ctxt = do -- TODO: XXX Somehow pull state from database.
-    functionC <- newCounter 0 -- TODO: XXX Get the right initial value.
-    workspacesTVar <- newTVarIO M.empty
-    answersTVar <- newTVarIO M.empty
-    answerFunctionsTVar <- newTVarIO M.empty
-    pointersTVar <- newTVarIO M.empty
-    alternativesTVar <- newTVarIO M.empty
-    linksTVar <- newTVarIO M.empty
-    continuationsTVar <- newTVarIO M.empty
-    continuationArgumentsTVar <- newTVarIO M.empty
-    traceTVar <- newTVarIO []
-    runQueueTVar <- newTVarIO M.empty
-    sessionsTVar <- newTVarIO M.empty
+createCache :: Snapshot -> IO CacheState
+createCache snapshot = do
+    functionC <- newCounter (maybe 0 (succ . fst) $ M.lookupMax (alternativesS snapshot))
+    workspacesTVar <- newTVarIO (workspacesS snapshot)
+    answersTVar <- newTVarIO (answersS snapshot)
+    answerFunctionsTVar <- newTVarIO (answerFunctionsS snapshot)
+    pointersTVar <- newTVarIO (pointersS snapshot)
+    alternativesTVar <- newTVarIO (alternativesS snapshot)
+    linksTVar <- newTVarIO (linksS snapshot)
+    continuationsTVar <- newTVarIO (continuationsS snapshot)
+    continuationArgumentsTVar <- newTVarIO (continuationArgumentsS snapshot)
+    traceTVar <- newTVarIO (traceS snapshot)
+    runQueueTVar <- newTVarIO (runQueueS snapshot)
+    sessionsTVar <- newTVarIO (sessionsS snapshot)
 
     return $ CacheState {
                 functionCounter = functionC,
@@ -58,28 +59,26 @@ createCache ctxt = do -- TODO: XXX Somehow pull state from database.
                 sessionsC = sessionsTVar
              }
 
-makeCachingSchedulerContext :: SchedulerContext e -> IO (CacheState, SchedulerContext e)
-makeCachingSchedulerContext ctxt = do
-    cache <- createCache ctxt
-    return (cache,
-        SchedulerContext {
-            doAtomically = id, -- doAtomically ctxt, -- TODO: XXX Think about this.
-            createInitialWorkspace = createInitialWorkspaceCaching cache ctxt,
-            newSession = newSessionCaching cache ctxt,
-            createWorkspace = createWorkspaceCaching cache ctxt,
-            sendAnswer = sendAnswerCaching cache ctxt,
-            sendMessage = sendMessageCaching cache ctxt,
-            expandPointer = expandPointerCaching cache ctxt,
-            nextPointer = nextPointerCaching cache ctxt,
-            createPointers = createPointersCaching cache ctxt,
-            remapPointers = remapPointersCaching cache ctxt,
-            pendingQuestions = pendingQuestionsCaching cache ctxt,
-            getWorkspace = getWorkspaceCaching cache ctxt,
-            getNextWorkspace = getNextWorkspaceCaching cache ctxt,
-            dereference = dereferenceCaching cache ctxt,
-            reifyWorkspace = reifyWorkspaceCaching cache ctxt,
-            extraContent = extraContent ctxt
-        })
+makeCachingSchedulerContext :: CacheState -> SchedulerContext e -> IO (SchedulerContext e)
+makeCachingSchedulerContext cache ctxt = do
+    return $ SchedulerContext {
+                doAtomically = id, -- doAtomically ctxt, -- TODO: XXX Think about this.
+                createInitialWorkspace = createInitialWorkspaceCaching cache ctxt,
+                newSession = newSessionCaching cache ctxt,
+                createWorkspace = createWorkspaceCaching cache ctxt,
+                sendAnswer = sendAnswerCaching cache ctxt,
+                sendMessage = sendMessageCaching cache ctxt,
+                expandPointer = expandPointerCaching cache ctxt,
+                nextPointer = nextPointerCaching cache ctxt,
+                createPointers = createPointersCaching cache ctxt,
+                remapPointers = remapPointersCaching cache ctxt,
+                pendingQuestions = pendingQuestionsCaching cache ctxt,
+                getWorkspace = getWorkspaceCaching cache ctxt,
+                getNextWorkspace = getNextWorkspaceCaching cache ctxt,
+                dereference = dereferenceCaching cache ctxt,
+                reifyWorkspace = reifyWorkspaceCaching cache ctxt,
+                extraContent = extraContent ctxt
+            }
 
 -- Backend calls:
 --      getWorkspace - Synchronous but only used in createInitialWorkspace

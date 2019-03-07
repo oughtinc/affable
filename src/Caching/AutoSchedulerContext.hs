@@ -61,7 +61,7 @@ allAlternativesCaching cache autoCtxt answerId sessionId = do -- TODO: Filter to
 
 nextFunctionCaching :: CacheState -> AutoSchedulerContext e -> IO Name
 nextFunctionCaching cache autoCtxt = do
-    name <- LOCAL . fromIntegral <$> increment (functionCounter cache)
+    name <- LOCAL <$> increment (functionCounter cache)
     addFunction autoCtxt name
     return name
 

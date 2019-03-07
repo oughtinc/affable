@@ -1,20 +1,26 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Postgres.Init ( makePostgresDatabaseContext ) where
 import Data.Foldable ( forM_ ) -- base
+import qualified Data.Map as M -- containers
+import qualified Data.Set as S -- containers
 import qualified Data.Text as T  -- text
 import qualified Data.Text.IO as T  -- text
 import Database.PostgreSQL.Simple ( Connection, execute_, executeMany, query_ ) -- sqlite-simple
 
 import AutoScheduler (  AutoSchedulerContext )
 import Completions ( CompletionContext )
-import DatabaseContext ( DatabaseContext(..) )
-import Message ( messageToBuilderDB, messageToPattern, parseMessageUnsafe )
+import DatabaseContext ( DatabaseContext(..), Snapshot(..) )
+import Exp ( Konts(..), Name(..), parseKont1UnsafeDB, parseFunEnv, parseVarEnv, expFromDB )
+import Message ( messageToBuilderDB, messageToPattern, parseMessageUnsafe, parseMessageUnsafe', parseMessageUnsafeDB,
+                 parsePatternsUnsafe )
 import Postgres.AutoSchedulerContext (  makePostgresAutoSchedulerContext )
 import Postgres.CompletionContext ( makePostgresCompletionContext )
 import Postgres.SchedulerContext ( makePostgresSchedulerContext )
 import Primitive ( primitives )
 import Scheduler ( SchedulerContext )
-import Util ( Queue, newQueue, closeQueue, toText )
+import Time ( Time(..) )
+import Util ( Queue, newQueue, closeQueue, toText, parseUnsafe )
+import Workspace ( Workspace(..) )
 
 makePostgresDatabaseContext :: Connection -> IO (DatabaseContext (Connection, Queue))
 makePostgresDatabaseContext conn = do
@@ -23,6 +29,7 @@ makePostgresDatabaseContext conn = do
                 initDB = do initDBPostgres conn; initPrimitivesPostgres conn,
                 closeDB = closeQueue q,
                 primitivesToHaskell = primitivesToHaskellPostgres conn,
+                snapshot = snapshotPostgres conn,
                 makeSchedulerContext = makePostgresSchedulerContext q conn,
                 makeAutoSchedulerContext = makePostgresAutoSchedulerContext,
                 makeCompletionContext = makePostgresCompletionContext
@@ -42,6 +49,89 @@ primitivesToHaskellPostgres conn = do
         T.putStr (toText (messageToPattern (parseMessageUnsafe pattern)))
         putStr " = "
         T.putStrLn body
+
+snapshotPostgres :: Connection -> IO Snapshot
+snapshotPostgres conn = do
+    workspaces <- allWorkspaces
+
+    answers <- M.fromList . map (\(i, ma) -> (i, parseMessageUnsafeDB ma) )
+                <$> query_ conn "SELECT workspaceId, answer FROM Answers"
+
+    answerFunctions <- query_ conn "SELECT s.sessionId, f.id \
+                                   \FROM Functions f \
+                                   \INNER JOIN Continuations c ON c.function = f.id \
+                                   \INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
+                                   \INNER JOIN SessionProcesses s ON s.processId = t.processId \
+                                   \WHERE f.isAnswer = 1"
+
+    pointers <- M.fromList . map (\(p,c) -> (p, parseMessageUnsafe c)) <$> query_ conn "SELECT id, content FROM Pointers"
+
+    alternatives <- M.fromListWith (++) . map (\(f, ps, e) -> (f, [(parsePatternsUnsafe ps, expFromDB e)]))
+                        <$> query_ conn "SELECT function, pattern, body FROM Alternatives" -- TODO: ORDER BY
+
+    links <- M.fromListWith M.union . map (\(i, s, t) -> (i, M.singleton s t))
+                <$> query_ conn "SELECT workspaceId, sourceId, targetId FROM Links"
+
+    continuations <- allContinuations (S.fromList $ map snd answerFunctions)
+
+    contArgs <- M.fromListWith M.union . map (\(i, f, n, v) -> ((i, f), M.singleton n (parseMessageUnsafeDB v)))
+                    <$> query_ conn "SELECT workspaceId, function, argNumber, value FROM ContinuationArguments"
+    trace <- theTrace
+
+    sessions <- M.fromListWith (++) . map (\(i, p) -> (i, [p])) <$> query_ conn "SELECT sessionId, processId FROM SessionProcesses"
+
+    return $ Snapshot {
+                workspacesS = workspaces,
+                answersS = answers,
+                answerFunctionsS = M.fromList $ map (\(sId, f) -> (sId, f)) answerFunctions,
+                pointersS = pointers,
+                alternativesS = alternatives,
+                linksS = links,
+                continuationsS = continuations,
+                continuationArgumentsS = contArgs,
+                traceS = trace,
+                runQueueS = fmap (M.fromList . map (\p -> (p, case lookup p trace of Just s -> s))) sessions,
+                sessionsS = sessions }
+  where allWorkspaces = do
+            workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
+                                      \FROM Workspaces"
+            messages <- query_ conn "SELECT targetWorkspaceId, content FROM Messages" -- TODO: ORDER
+            subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
+                                        \FROM Workspaces p \
+                                        \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
+                                        \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
+                                        \ORDER BY p.id ASC, q.logicalTime DESC"
+            expanded <- query_ conn "SELECT workspaceId, pointerId, content \
+                                    \FROM ExpandedPointers e \
+                                    \INNER JOIN Pointers p ON e.pointerId = p.id"
+            let messageMap = M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
+                subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
+                expandedMap = M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
+            return $ M.fromList $ map (\(i, p, t, q) -> (i, Workspace {
+                                                                identity = i,
+                                                                parentId = p,
+                                                                question = parseMessageUnsafeDB q,
+                                                                subQuestions = maybe [] id $ M.lookup i subquestionsMap,
+                                                                messageHistory = maybe [] id $ M.lookup i messageMap,
+                                                                expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
+                                                                time = Time t })) workspaces
+
+        theTrace = do
+            ts <- query_ conn "SELECT processId, varEnv, funEnv, workspaceId, expression, continuation FROM Trace ORDER BY t DESC"
+            return $ map (\(pId, varEnv, funEnv, s, e, k) ->
+                            (pId, (parseUnsafe parseVarEnv varEnv, parseUnsafe parseFunEnv funEnv, s, expFromDB e, parseKont1UnsafeDB k)))
+                         ts
+
+        allContinuations answerFunctions = do
+            let toName fId | fId `S.member` answerFunctions = ANSWER
+                           | otherwise = LOCAL fId
+            ks <- query_ conn "SELECT workspaceId, function, next FROM Continuations"
+            vars <- query_ conn "SELECT workspaceId, function, variable, value FROM ContinuationEnvironments"
+            let !funEnvs = M.fromListWith (M.unionWith M.union) $
+                            map (\(i, f, x, v) -> (i, M.singleton (toName f) (M.singleton x (parseMessageUnsafeDB v)))) vars
+            return $ M.fromListWith M.union $
+                        map (\(i, f, k) -> let !funEnv = maybe M.empty id $ M.lookup i funEnvs
+                                           in (i, M.singleton f (CallKont funEnv (toName f) i (parseKont1UnsafeDB k)))) ks
 
 initDBPostgres :: Connection -> IO ()
 initDBPostgres conn = do
