@@ -37,7 +37,7 @@ makePostgresAutoSchedulerContext ctxt sessionId = do
 
         case ss of
             [] -> do
-                [Only fId] <- query_ conn "INSERT INTO Functions ( isAnswer ) VALUES (1) RETURNING id"
+                [Only fId] <- query_ conn "INSERT INTO Functions ( isAnswer ) VALUES (1) ON CONFLICT (id) DO UPDATE SET isAnswer = 1 RETURNING id"
                 return fId
             [Only fId] -> return fId
 
@@ -93,7 +93,7 @@ nextFunctionPostgres sync async conn = do
 addFunctionPostgres :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> Name -> IO ()
 addFunctionPostgres sync async conn answerId name = do
     async $ do
-        () <$ execute conn "INSERT INTO Functions (id) VALUES (?) ON CONFLICT DO NOTHING" (Only (nameToId answerId name))
+        () <$ execute conn "INSERT INTO Functions (id) VALUES (?) ON CONFLICT (id) DO NOTHING" (Only (nameToId answerId name))
 
 linkVarsPostgres :: SyncFunc -> AsyncFunc -> Connection -> WorkspaceId -> PointerRemapping -> IO ()
 linkVarsPostgres sync async conn workspaceId mapping = do

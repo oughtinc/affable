@@ -5,7 +5,7 @@ import qualified Data.Map as M -- containers
 import qualified Data.Set as S -- containers
 import qualified Data.Text as T  -- text
 import qualified Data.Text.IO as T  -- text
-import Database.SQLite.Simple ( Connection, execute_, executeMany, query_ ) -- sqlite-simple
+import Database.SQLite.Simple ( Connection, Only(..), execute_, executeMany, query_ ) -- sqlite-simple
 
 import AutoScheduler ( AutoSchedulerContext, processIdFromText )
 import Completions ( CompletionContext )
@@ -51,6 +51,8 @@ primitivesToHaskellSqlite conn = do
 
 snapshotSqlite :: Connection -> IO Snapshot
 snapshotSqlite conn = do
+    [Only fCounter] <- query_ conn "SELECT MAX(id) FROM Functions"
+
     workspaces <- allWorkspaces
 
     answers <- M.fromList . map (\(i, ma) -> (workspaceIdFromText i, parseMessageUnsafeDB ma) )
@@ -87,6 +89,7 @@ snapshotSqlite conn = do
                                     \WHERE processId IN (SELECT processId FROM RunQueue)"
 
     return $ Snapshot {
+                functionCounterS = maybe 0 succ fCounter,
                 workspacesS = workspaces,
                 answersS = answers,
                 answerFunctionsS = M.fromList $ map (\(sId, f) -> (sessionIdFromText sId, f)) answerFunctions,

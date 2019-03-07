@@ -5,7 +5,7 @@ import qualified Data.Map as M -- containers
 import qualified Data.Set as S -- containers
 import qualified Data.Text as T  -- text
 import qualified Data.Text.IO as T  -- text
-import Database.PostgreSQL.Simple ( Connection, execute_, executeMany, query_ ) -- sqlite-simple
+import Database.PostgreSQL.Simple ( Connection, Only(..), execute_, executeMany, query_ ) -- sqlite-simple
 
 import AutoScheduler (  AutoSchedulerContext )
 import Completions ( CompletionContext )
@@ -52,6 +52,8 @@ primitivesToHaskellPostgres conn = do
 
 snapshotPostgres :: Connection -> IO Snapshot
 snapshotPostgres conn = do
+    [Only fCounter] <- query_ conn "SELECT MAX(id) FROM Functions"
+
     workspaces <- allWorkspaces
 
     answers <- M.fromList . map (\(i, ma) -> (i, parseMessageUnsafeDB ma) )
@@ -87,6 +89,7 @@ snapshotPostgres conn = do
                                     \WHERE processId IN (SELECT processId FROM RunQueue)"
 
     return $ Snapshot {
+                functionCounterS = maybe 0 succ fCounter,
                 workspacesS = workspaces,
                 answersS = answers,
                 answerFunctionsS = M.fromList $ map (\(sId, f) -> (sId, f)) answerFunctions,

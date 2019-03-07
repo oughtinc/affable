@@ -9,6 +9,7 @@ import Scheduler ( SchedulerContext, SessionId )
 import Workspace ( Workspace, WorkspaceId )
 
 data Snapshot = Snapshot {
+    functionCounterS :: FunctionId,
     workspacesS :: M.Map WorkspaceId Workspace,
     -- messagesS :: ,
     answersS :: M.Map WorkspaceId Message,

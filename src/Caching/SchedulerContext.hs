@@ -31,7 +31,7 @@ data CacheState = CacheState {
 
 createCache :: Snapshot -> IO CacheState
 createCache snapshot = do
-    functionC <- newCounter (maybe 0 (succ . fst) $ M.lookupMax (alternativesS snapshot))
+    functionC <- newCounter (functionCounterS snapshot)
     workspacesTVar <- newTVarIO (workspacesS snapshot)
     answersTVar <- newTVarIO (answersS snapshot)
     answerFunctionsTVar <- newTVarIO (answerFunctionsS snapshot)
