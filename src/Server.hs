@@ -17,8 +17,10 @@ import Data.String ( fromString ) -- base
 import qualified Data.Text as T -- text
 import Data.Tuple ( swap ) -- base
 import GHC.Generics ( Generic ) -- ghc
+import Network.HTTP.Types.Status ( found302 ) -- http-types
+import Network.Wai ( requestHeaderHost, responseBuilder ) -- wai
 import Servant ( (:<|>)(..), (:>), QueryParam, Capture, Server, Get, Post, Proxy(..), ReqBody, JSON, Raw, serveDirectoryWebApp ) -- servant-server
-import Servant.Server ( serve, Application ) -- servant-server
+import Servant.Server ( Application, serve ) -- servant-server
 import System.Timeout ( timeout ) -- base
 
 import AutoInterpreter ( runM, spawnInterpreter )
@@ -51,7 +53,7 @@ type JoinAPI = "join" :> QueryParam "userId" UserId :> Get '[JSON] User
 
 type API = CommandAPI :<|> NextAPI :<|> JoinAPI :<|> PointerAPI :<|> AutoCompleteAPI
 
-type OverallAPI = StaticAPI :<|> API
+type OverallAPI = StaticAPI :<|> API :<|> Raw
 
 staticHandler :: Server StaticAPI
 staticHandler = serveDirectoryWebApp "static"
@@ -105,11 +107,14 @@ overallHandler :: CompletionContext extra
                -> Server OverallAPI
 overallHandler compCtxt makeUser nextWorkspace deref lookupWorkspace reply
     = staticHandler
- :<|> commandHandler reply
+ :<|> (commandHandler reply
  :<|> nextHandler lookupWorkspace nextWorkspace
  :<|> joinHandler makeUser
  :<|> pointerHandler deref
- :<|> autoCompleteHandler compCtxt
+ :<|> autoCompleteHandler compCtxt)
+ :<|> return (\req respond -> do
+                let !(Just host) = requestHeaderHost req
+                respond (responseBuilder found302 [("Location", host <> "/static/index.html")] mempty))
 
 data SessionState = SessionState {
     sessionRequestTChan :: TChan WorkspaceId,
