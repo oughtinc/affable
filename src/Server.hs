@@ -114,7 +114,7 @@ overallHandler compCtxt makeUser nextWorkspace deref lookupWorkspace reply
  :<|> autoCompleteHandler compCtxt)
  :<|> return (\req respond -> do
                 let !(Just host) = requestHeaderHost req
-                respond (responseBuilder found302 [("Location", host <> "/static/index.html")] mempty))
+                respond (responseBuilder found302 [("Location", "https://" <> host <> "/static/index.html")] mempty))
 
 data SessionState = SessionState {
     sessionRequestTChan :: TChan WorkspaceId,
