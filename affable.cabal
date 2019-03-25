@@ -45,8 +45,14 @@ flag test-properties
   default: True
   manual: True
 
+flag postgres
+  default: True
+
 common deps
   -- Other library packages from which modules are imported.
+  if flag(postgres)
+      cpp-options: -DPOSTGRES
+
   build-depends:
     base                    >= 4.11 && < 4.13,
     stm                     >= 2.4.5 && < 2.6,
@@ -62,13 +68,14 @@ common deps
     warp                    >= 3.2.25 && < 3.3,
     warp-tls                >= 3.2.4 && < 3.3,
     sqlite-simple           >= 0.4.16 && < 0.5,
-    postgresql-simple       >= 0.5.4 && < 0.6,
-    postgresql-simple-url   >= 0.2.1 && < 0.3,
     async                   >= 2.2.1 && < 2.3,
     async-pool              >= 0.9.0 && < 0.10,
     optparse-applicative    >= 0.14.3 && < 0.14.4,
     haskeline               >= 0.7.4 && < 0.8,
     ansi-terminal           >= 0.8.2 && < 0.9
+
+  if flag(postgres)
+      build-depends: postgresql-simple >= 0.5.4 && < 0.6, postgresql-simple-url >= 0.2.1 && < 0.3
 
   -- Modules included in this executable, other than Main.
   other-modules:
@@ -93,11 +100,14 @@ common deps
     Sqlite.Init,
     Sqlite.AutoSchedulerContext,
     Sqlite.CompletionContext,
-    Sqlite.SchedulerContext,
-    Postgres.Init,
-    Postgres.AutoSchedulerContext,
-    Postgres.CompletionContext,
-    Postgres.SchedulerContext
+    Sqlite.SchedulerContext
+
+  if flag(postgres)
+    other-modules:
+        Postgres.Init,
+        Postgres.AutoSchedulerContext,
+        Postgres.CompletionContext,
+        Postgres.SchedulerContext
 
   -- LANGUAGE extensions used by modules in this package.
   other-extensions:
@@ -131,6 +141,7 @@ test-suite properties
         src
     default-language: Haskell2010
     other-extensions: TemplateHaskell
+
     if !flag(test-properties)
       buildable: False
     else

@@ -6,10 +6,11 @@ import Data.List ( group, sort ) -- base
 import qualified Data.Map as M -- containers
 import Data.String ( fromString ) -- base
 import Data.Text ( Text, empty, cons ) -- text
+import Data.UUID ( UUID, fromWords ) -- uuid
 import Test.QuickCheck -- QuickCheck
 import Test.Framework.TH -- test-framework-th
 import Test.Framework.Providers.QuickCheck2 -- test-framework
-import Test.Feat ( deriveEnumerable, uniform, Enumerable(..), c2, datatype ) -- testing-feat
+import Test.Feat ( deriveEnumerable, uniform, Enumerable(..), c2, c4, datatype ) -- testing-feat
 
 import Message
 
@@ -18,6 +19,9 @@ deriveEnumerable ''Message
 -- This is probably terribly slow...
 instance Enumerable Text where
     enumerate = datatype [pure empty, c2 cons]
+
+instance Enumerable UUID where
+    enumerate = datatype [c4 fromWords]
 
 instance Arbitrary Message where
     arbitrary = sized uniform

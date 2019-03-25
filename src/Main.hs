@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE CPP #-}
 module Main where
 import Control.Applicative ( optional, (<|>) ) -- base
 import Data.Foldable ( forM_ ) -- base
@@ -7,8 +8,10 @@ import Data.List ( isPrefixOf ) -- base
 import qualified Data.Map as M -- containers
 import qualified Data.Text as T -- text
 import qualified Data.Text.IO as T -- text
+#ifdef POSTGRES
 import qualified Database.PostgreSQL.Simple as Postgres ( connect ) -- postgresql-simple
 import Database.PostgreSQL.Simple.URL ( parseDatabaseUrl ) -- postgresql-simple-url
+#endif
 import qualified Database.SQLite.Simple as Sqlite ( withConnection ) -- sqlite-simple
 import Network.Wai.Handler.Warp ( Port, run, defaultSettings, setPort ) -- warp
 import Network.Wai.Handler.WarpTLS ( runTLS, tlsSettings ) -- warp-tls
@@ -26,7 +29,9 @@ import Exp ( Exp(..), Name(..), expToHaskell )
 import Message ( Message(..), messageToHaskell, messageToBuilderDB, messageToPattern, parseMessageUnsafe )
 import Scheduler ( SessionId, newSession, getWorkspace, createInitialWorkspace, labelMessage, makeSingleUserScheduler, fullyExpand )
 import Caching.Init ( makeCachingDatabaseContext )
+#ifdef POSTGRES
 import Postgres.Init ( makePostgresDatabaseContext )
+#endif
 import Sqlite.Init ( makeSqliteDatabaseContext )
 import Server ( API, initServer )
 import Util ( toText )
@@ -82,6 +87,7 @@ withDatabaseContext noCache dbFile body = do
     -- Example: "postgres://foo:bar@example.com:2345/database" becomes:
     -- ConnectInfo {connectHost = "example.com", connectPort = 2345, connectUser = "foo", connectPassword = "bar", connectDatabase = "database"}
     if ("postgres://" `isPrefixOf` dbFile) || ("postgresql://" `isPrefixOf` dbFile) then do
+#ifdef POSTGRES
         case parseDatabaseUrl dbFile of
             Nothing -> putStrLn $ "'" ++ dbFile ++ "' isn't a valid PostgreSQL URL."
             Just connInfo -> do
@@ -91,6 +97,9 @@ withDatabaseContext noCache dbFile body = do
                 initDB dbCtxt
                 body dbCtxt
                 closeDB dbCtxt
+#else
+        putStrLn "Postgres support not enabled."
+#endif
       else do
         Sqlite.withConnection dbFile $ \conn -> do
             dbCtxt <- makeSqliteDatabaseContext conn
@@ -121,10 +130,10 @@ main = do
                         primitivesToHaskell dbCtxt
                         putStrLn "\ndata Message = T String | S [Message]"
                         putStrLn "instance IsString Message where fromString = T"
-                        putStrLn "instance Show Message where\n\
-                                 \    showsPrec _ (T s) = (s++)\n\
-                                 \    showsPrec 0 (S ms) = foldr (.) id (map (showsPrec 1) ms)\n\
-                                 \    showsPrec _ (S ms) = ('[':) . foldr (.) id (map (showsPrec 1) ms) . (']':)"
+                        putStrLn "instance Show Message where\n"
+                        putStrLn "    showsPrec _ (T s) = (s++)\n"
+                        putStrLn "    showsPrec 0 (S ms) = foldr (.) id (map (showsPrec 1) ms)\n"
+                        putStrLn "    showsPrec _ (S ms) = ('[':) . foldr (.) id (map (showsPrec 1) ms) . (']':)"
                         -- or, putStrLn "data Message = T String | S [Message] deriving (Show)"
                         putStr "\nmain = print $ "
                         topArg <- fullyExpand (schedulerContext autoCtxt) topArg
