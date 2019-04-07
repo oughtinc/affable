@@ -16,7 +16,7 @@ import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, SyncFunc, Asy
                    autoUserId, userIdToBuilder, sessionIdToBuilder, newSessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Counter, newCounter, increment, Queue, enqueueAsync, enqueueSync )
-import Workspace ( Workspace(..), WorkspaceId, newWorkspaceId, workspaceIdFromText, workspaceIdToBuilder )
+import Workspace ( Workspace(..), VersionId, newWorkspaceId, workspaceIdFromText, workspaceIdToBuilder )
 
 makeSqliteSchedulerContext :: Queue -> Connection -> IO (SchedulerContext (Connection, Queue))
 makeSqliteSchedulerContext q conn = do
@@ -52,7 +52,7 @@ makeSqliteSchedulerContext q conn = do
         }
 
 -- NOT CACHEABLE
-reifyWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> WorkspaceId -> IO Message
+reifyWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO Message
 reifyWorkspaceSqlite sync async c conn workspaceId = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     workspaces <- sync $ do
@@ -105,7 +105,7 @@ dereferenceSqlite sync async c conn ptr = do
         [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
         return $! parseMessageUnsafe' ptr t
 
-insertCommand :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> Command -> IO ()
+insertCommand :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Command -> IO ()
 insertCommand sync async c conn userId workspaceId cmd = do
     let !cmdText = toText (commandToBuilder cmd)
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
@@ -118,7 +118,7 @@ insertCommand sync async c conn userId workspaceId cmd = do
                             ":userId" := toText (userIdToBuilder userId),
                             ":cmd" := cmdText]
 
-createInitialWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> Message -> IO WorkspaceId
+createInitialWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> Message -> IO VersionId
 createInitialWorkspaceSqlite sync async c conn msg = do
     workspaceId <- newWorkspaceId
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
@@ -145,7 +145,7 @@ newSessionSqlite sync async c conn (Just sessionId) = do
         execute conn "INSERT OR IGNORE INTO Sessions (sessionId) VALUES (?)" (Only (toText (sessionIdToBuilder sessionId)))
     return sessionId
 
-createWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
+createWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> Message -> IO (VersionId, VersionId)
 createWorkspaceSqlite sync async c conn userId workspaceId qAsAsked qAsAnswered = do
     let !qAsAskedText = toText (messageToBuilder qAsAsked)
         !qAsAnsweredText = toText (messageToBuilder qAsAnswered)
@@ -162,9 +162,9 @@ createWorkspaceSqlite sync async c conn userId workspaceId qAsAsked qAsAnswered 
                             ":asAsked" := qAsAskedText,
                             ":asAnswered" := qAsAnsweredText]
     insertCommand sync async c conn userId workspaceId (Ask qAsAsked)
-    return wsId
+    return (error "TODO: XXX createWorkspaceSqlite", wsId)
 
-sendAnswerSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> IO ()
+sendAnswerSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> IO VersionId
 sendAnswerSqlite sync async c conn userId workspaceId msg = do
     let !msgText = toText (messageToBuilder msg)
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
@@ -178,8 +178,9 @@ sendAnswerSqlite sync async c conn userId workspaceId msg = do
                             ":time" := (t :: LogicalTime),
                             ":answer" := msgText]
     insertCommand sync async c conn userId workspaceId (Reply msg)
+    return (error "TODO: XXX sendAnswerSqlite")
 
-sendMessageSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
+sendMessageSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> VersionId -> Message -> IO VersionId
 sendMessageSqlite sync async c conn userId srcId tgtId msg = do
     let !msgText = toText (messageToBuilder msg)
     t <- increment c
@@ -190,9 +191,10 @@ sendMessageSqlite sync async c conn userId srcId tgtId msg = do
                             ":time" := (t :: LogicalTime),
                             ":content" := msgText]
     insertCommand sync async c conn userId srcId (Send tgtId msg)
+    return (error "TODO: XXX sendMessageSqlite")
 
 -- TODO: Bulkify this.
-expandPointerSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> Pointer -> IO ()
+expandPointerSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Pointer -> IO VersionId
 expandPointerSqlite sync async c conn userId workspaceId ptr = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     t <- increment c
@@ -202,6 +204,7 @@ expandPointerSqlite sync async c conn userId workspaceId ptr = do
                             ":pointer" := ptr,
                             ":time" := (t :: LogicalTime)]
     insertCommand sync async c conn userId workspaceId (View ptr)
+    return (error "TODO: XXX expandPointerSqlite")
 
 nextPointerSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO Pointer
 nextPointerSqlite sync async c conn = do
@@ -223,7 +226,7 @@ remapPointersSqlite sync async c conn mapping = do
                          \WHERE id = ?" (M.assocs mapping)
 
 -- NOT CACHEABLE
-pendingQuestionsSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> WorkspaceId -> IO [WorkspaceId]
+pendingQuestionsSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO [VersionId]
 pendingQuestionsSqlite sync async c conn workspaceId = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     sync $ do
@@ -236,7 +239,7 @@ pendingQuestionsSqlite sync async c conn workspaceId = do
 
 -- TODO: Maybe maintain a cache of workspaces.
 -- NOT CACHEABLE but the components should be. Cacheable if answered, for now at least.
-getWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> WorkspaceId -> IO Workspace
+getWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO Workspace
 getWorkspaceSqlite sync async c conn workspaceId = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     sync $ do
@@ -264,7 +267,7 @@ getWorkspaceSqlite sync async c conn workspaceId = do
             time = Time t }
 
 -- NOT CACHEABLE
-getNextWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (Maybe WorkspaceId)
+getNextWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (Maybe VersionId)
 getNextWorkspaceSqlite sync async c conn = do
     sync $ do
         -- This gets a workspace that doesn't currently have an answer.

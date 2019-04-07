@@ -9,7 +9,7 @@ import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsI
 import Message ( PointerRemapping )
 import Scheduler ( SchedulerContext(..), SessionId )
 import Util ( increment )
-import Workspace ( WorkspaceId )
+import Workspace ( VersionId )
 
 makeCachingAutoSchedulerContext :: CacheState -> AutoSchedulerContext e -> SessionId -> IO (AutoSchedulerContext e)
 makeCachingAutoSchedulerContext cache autoCtxt sessionId = do
@@ -68,12 +68,12 @@ nextFunctionCaching cache autoCtxt = do
 addFunctionCaching :: CacheState -> AutoSchedulerContext e -> Name -> IO ()
 addFunctionCaching cache autoCtxt name = return () -- addFunction autoCtxt name
 
-linkVarsCaching :: CacheState -> AutoSchedulerContext e -> WorkspaceId -> PointerRemapping -> IO ()
+linkVarsCaching :: CacheState -> AutoSchedulerContext e -> VersionId -> PointerRemapping -> IO ()
 linkVarsCaching cache autoCtxt workspaceId mapping = do
     atomically $ modifyTVar' (linksC cache) (M.insertWith M.union workspaceId mapping)
     linkVars autoCtxt workspaceId mapping
 
-linksCaching :: CacheState -> AutoSchedulerContext e -> WorkspaceId -> IO PointerRemapping
+linksCaching :: CacheState -> AutoSchedulerContext e -> VersionId -> IO PointerRemapping
 linksCaching cache autoCtxt workspaceId = (\m -> case M.lookup workspaceId m of Just a -> a) <$> readTVarIO (linksC cache)
 
 addCaseForCaching :: CacheState -> AutoSchedulerContext e -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()

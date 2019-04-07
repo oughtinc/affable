@@ -13,7 +13,7 @@ import Text.Megaparsec ( parseMaybe ) -- megaparsec
 import Exp ( Pattern, Name(..), Value, Exp', EvalState', Konts', KontsId' )
 import Message ( PointerRemapping )
 import Scheduler ( SchedulerContext )
-import Workspace ( WorkspaceId )
+import Workspace ( VersionId )
 import Util ( parseUUID, uuidToBuilder )
 
 type ProcessId = UUID
@@ -30,8 +30,8 @@ data AutoSchedulerContext extra = AutoSchedulerContext {
     addCaseFor :: Name -> [Pattern] -> Exp' -> IO (),
     nextFunction :: IO Name,
     addFunction :: Name -> IO (),
-    linkVars :: WorkspaceId -> PointerRemapping -> IO (),
-    links :: WorkspaceId -> IO PointerRemapping,
+    linkVars :: VersionId -> PointerRemapping -> IO (),
+    links :: VersionId -> IO PointerRemapping,
     saveContinuation :: Konts' -> IO (),
     loadContinuation :: KontsId' -> IO Konts',
     recordState :: ProcessId -> EvalState' -> IO (),

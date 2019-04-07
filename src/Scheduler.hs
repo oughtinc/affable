@@ -19,13 +19,13 @@ import Text.Megaparsec ( parseMaybe ) -- megaparsec
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
                  canonicalizeMessage, normalizeMessage, generalizeMessage, boundPointers, stripLabel, renumberMessage' )
 import Util ( parseUUID, uuidToBuilder )
-import Workspace ( Workspace(..), WorkspaceId )
+import Workspace ( Workspace(..), VersionId )
 
 data Event
     = Create Message -- ask
     | Answer Message -- reply
     | Expand Pointer -- view
-    | Send WorkspaceId Message -- send
+    | Send VersionId Message -- send
     | Submit -- wait
     | Init
   deriving ( Eq, Ord, Show )
@@ -43,20 +43,20 @@ type AsyncFunc = IO () -> IO ()
 
 data SchedulerContext extra = SchedulerContext {
     doAtomically :: SyncFunc,
-    createInitialWorkspace :: Message -> IO WorkspaceId,
+    createInitialWorkspace :: Message -> IO VersionId,
     newSession :: Maybe SessionId -> IO SessionId,
-    createWorkspace :: UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId,
-    sendAnswer :: UserId -> WorkspaceId -> Message -> IO (),
-    sendMessage :: UserId -> WorkspaceId -> WorkspaceId -> Message -> IO (),
-    expandPointer :: UserId -> WorkspaceId -> Pointer -> IO (),
+    createWorkspace :: UserId -> VersionId -> Message -> Message -> IO (VersionId, VersionId),
+    sendAnswer :: UserId -> VersionId -> Message -> IO VersionId,
+    sendMessage :: UserId -> VersionId -> VersionId -> Message -> IO VersionId,
+    expandPointer :: UserId -> VersionId -> Pointer -> IO VersionId,
     nextPointer :: IO Pointer,
     createPointers :: PointerEnvironment -> IO (),
     remapPointers :: PointerRemapping -> IO (),
-    pendingQuestions :: WorkspaceId -> IO [WorkspaceId],
-    getWorkspace :: WorkspaceId -> IO Workspace,
-    getNextWorkspace :: IO (Maybe WorkspaceId),
+    pendingQuestions :: VersionId -> IO [VersionId],
+    getWorkspace :: VersionId -> IO Workspace,
+    getNextWorkspace :: IO (Maybe VersionId),
     dereference :: Pointer -> IO Message,
-    reifyWorkspace :: WorkspaceId -> IO Message,
+    reifyWorkspace :: VersionId -> IO Message,
     extraContent :: extra -- This is to support making schedulers that can (e.g.) access SQLite directly.
   }
 
@@ -122,7 +122,7 @@ makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeSingleUserScheduler ctxt = do
     let scheduler userId workspace (Create msg) = do
             msg' <- normalize ctxt msg
-            newWorkspaceId <- createWorkspace ctxt userId (identity workspace) msg msg'
+            (_, newWorkspaceId) <- createWorkspace ctxt userId (identity workspace) msg msg'
             Just <$> getWorkspace ctxt newWorkspaceId
 
         scheduler userId workspace (Answer msg) = do
@@ -150,8 +150,9 @@ makeSingleUserScheduler ctxt = do
 
 -- TODO: This could also be done in a way to better reuse existing pointers rather than make new pointers.
 -- TODO: Should the expanded pointers be indicated some way?
-workspaceToMessage :: M.Map WorkspaceId Workspace -> WorkspaceId -> Message
-workspaceToMessage workspaces workspaceId = go (M.lookup workspaceId workspaces)
+-- TODO: XXX Modify to show versions.
+workspaceToMessage :: M.Map VersionId Workspace -> VersionId -> Message
+workspaceToMessage workspaces versionId = go (M.lookup versionId workspaces)
     where go (Just workspace) | null subQs && null msgs = Structured [Text "Question: ", question workspace]
                               | null subQs = Structured (Text "Question: "
                                                         : question workspace

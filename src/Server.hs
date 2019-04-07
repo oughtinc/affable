@@ -30,7 +30,7 @@ import Exp ( Pattern, Name(..), Exp(..) )
 import Message ( Message(..), Pointer, stripLabel )
 import Scheduler ( SessionId, UserId, Event(..), SchedulerFn, SchedulerContext(..),
                    newUserId, canonicalizeEvents, getWorkspace, createInitialWorkspace, labelMessage, createWorkspace )
-import Workspace ( WorkspaceId, Workspace(..) )
+import Workspace ( VersionId, Workspace(..) )
 
 data Response = OK | Error T.Text deriving ( Generic )
 
@@ -43,9 +43,9 @@ instance FromJSON User
 instance ToJSON User
 
 type StaticAPI = "static" :> Raw
-type CommandAPI = "view" :> ReqBody '[JSON] (User, WorkspaceId, [Message], Pointer) :> Post '[JSON] Response
-             :<|> "reply" :> ReqBody '[JSON] (User, WorkspaceId, [Either Message Pointer], Message) :> Post '[JSON] Response
-             :<|> "wait" :> ReqBody '[JSON] (User, WorkspaceId, [Either Message Pointer]) :> Post '[JSON] Response
+type CommandAPI = "view" :> ReqBody '[JSON] (User, VersionId, [Message], Pointer) :> Post '[JSON] Response
+             :<|> "reply" :> ReqBody '[JSON] (User, VersionId, [Either Message Pointer], Message) :> Post '[JSON] Response
+             :<|> "wait" :> ReqBody '[JSON] (User, VersionId, [Either Message Pointer]) :> Post '[JSON] Response
 type PointerAPI = "pointer" :> Capture "p" Pointer :> Get '[JSON] (Maybe Message)
 type AutoCompleteAPI = "completions" :> Capture "sessionId" SessionId :> Get '[JSON] [Pattern]
 type NextAPI = "next" :> ReqBody '[JSON] (User, Maybe SessionId) :> Post '[JSON] (Maybe (Workspace, SessionId))
@@ -78,7 +78,7 @@ joinHandler makeUser oldUserId = liftIO $ do
 -- TODO: Cache the user's workspace for a time so refreshing and clicking next doesn't lose the workspace.
 -- Then determine a policy for giving up on a user response and writing the workspace back into the channel
 -- for someone else.
-nextHandler :: (WorkspaceId -> IO Workspace) -> (User -> Maybe SessionId -> IO (Maybe (WorkspaceId, SessionId))) -> Server NextAPI
+nextHandler :: (VersionId -> IO Workspace) -> (User -> Maybe SessionId -> IO (Maybe (VersionId, SessionId))) -> Server NextAPI
 nextHandler lookupWorkspace nextWorkspace (user@(User userId), mSessionId) = liftIO $ do
     print ("Next", userId, mSessionId) -- DELETEME
     mWorkspaceId <- nextWorkspace user mSessionId
@@ -86,7 +86,7 @@ nextHandler lookupWorkspace nextWorkspace (user@(User userId), mSessionId) = lif
         Just (workspaceId, sessionId) -> fmap (\ws -> Just (ws, sessionId)) (lookupWorkspace workspaceId)
         Nothing -> return Nothing
 
-commandHandler :: (UserId -> WorkspaceId -> [Event] -> IO ()) -> Server CommandAPI
+commandHandler :: (UserId -> VersionId -> [Event] -> IO ()) -> Server CommandAPI
 commandHandler reply = viewHandler :<|> replyHandler :<|> waitHandler
     where viewHandler (User userId, workspaceId, msgs, ptr) = liftIO $ do
             print ("View", userId, workspaceId, msgs, ptr) -- DELETEME
@@ -100,10 +100,10 @@ commandHandler reply = viewHandler :<|> replyHandler :<|> waitHandler
 
 overallHandler :: CompletionContext extra
                -> (Maybe UserId -> IO User)
-               -> (User -> Maybe SessionId -> IO (Maybe (WorkspaceId, SessionId)))
+               -> (User -> Maybe SessionId -> IO (Maybe (VersionId, SessionId)))
                -> (Pointer -> IO Message)
-               -> (WorkspaceId -> IO Workspace)
-               -> (UserId -> WorkspaceId -> [Event] -> IO ())
+               -> (VersionId -> IO Workspace)
+               -> (UserId -> VersionId -> [Event] -> IO ())
                -> Server OverallAPI
 overallHandler compCtxt makeUser nextWorkspace deref lookupWorkspace reply
     = staticHandler
@@ -117,9 +117,9 @@ overallHandler compCtxt makeUser nextWorkspace deref lookupWorkspace reply
                 respond (responseBuilder found302 [("Location", "https://" <> host <> "/static/index.html")] mempty))
 
 data SessionState = SessionState {
-    sessionRequestTChan :: TChan WorkspaceId,
-    sessionResponseTMVarsRef :: IORef (M.Map WorkspaceId (TMVar (UserId, Event))),
-    sessionDrainingTMVarsRef :: IORef (M.Map WorkspaceId (TMVar (UserId, Event))),
+    sessionRequestTChan :: TChan VersionId,
+    sessionResponseTMVarsRef :: IORef (M.Map VersionId (TMVar (UserId, Event))),
+    sessionDrainingTMVarsRef :: IORef (M.Map VersionId (TMVar (UserId, Event))),
     sessionDoneRef :: IORef Bool }
 
 -- For a web service, we're going to want to separate reading from the channel from giving a response.
@@ -132,7 +132,7 @@ initServer :: DatabaseContext e -> IO Application
 initServer dbCtxt = do
     ctxt <- makeSchedulerContext dbCtxt
 
-    userIdRef <- liftIO $ newIORef (M.empty :: M.Map UserId (M.Map SessionId (Maybe WorkspaceId)))
+    userIdRef <- liftIO $ newIORef (M.empty :: M.Map UserId (M.Map SessionId (Maybe VersionId)))
     sessionMapRef <- newIORef (M.empty :: M.Map SessionId SessionState)
     userSessionMapRef <- newIORef (M.empty :: M.Map UserId SessionId)
 

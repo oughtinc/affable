@@ -16,7 +16,7 @@ import Message ( PointerRemapping, messageToBuilder, parseMessageUnsafeDB, parse
 import Scheduler ( SchedulerContext(..), SessionId, SyncFunc, AsyncFunc, sessionIdToBuilder )
 import Sqlite.SchedulerContext ( makeSqliteSchedulerContext )
 import Util ( toText, Queue, enqueueSync, enqueueAsync, parseUnsafe )
-import Workspace ( WorkspaceId, workspaceIdFromText, workspaceIdToBuilder )
+import Workspace ( VersionId, workspaceIdFromText, workspaceIdToBuilder )
 
 makeSqliteAutoSchedulerContext :: SchedulerContext (Connection, Queue) -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
 makeSqliteAutoSchedulerContext ctxt sessionId = do
@@ -97,14 +97,14 @@ addFunctionSqlite sync async conn answerId name = do
     async $ do
         execute conn "INSERT OR IGNORE INTO Functions (id) VALUES (?)" (Only (nameToId answerId name))
 
-linkVarsSqlite :: SyncFunc -> AsyncFunc -> Connection -> WorkspaceId -> PointerRemapping -> IO ()
+linkVarsSqlite :: SyncFunc -> AsyncFunc -> Connection -> VersionId -> PointerRemapping -> IO ()
 linkVarsSqlite sync async conn workspaceId mapping = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     async $ do -- TODO: Need 'INSERT OR REPLACE' ?
         executeMany conn "INSERT OR REPLACE INTO Links ( workspaceId, sourceId, targetId ) VALUES (?, ?, ?)" $
             map (\(srcId, tgtId) -> (wsIdText, srcId, tgtId)) (M.toList mapping)
 
-linksSqlite :: SyncFunc -> AsyncFunc -> Connection -> WorkspaceId -> IO PointerRemapping
+linksSqlite :: SyncFunc -> AsyncFunc -> Connection -> VersionId -> IO PointerRemapping
 linksSqlite sync async conn workspaceId = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     sync $ do

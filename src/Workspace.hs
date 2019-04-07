@@ -1,7 +1,8 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-module Workspace ( Workspace(..), Question, Answer, WorkspaceId,
-                   workspaceIdFromText, workspaceIdToBuilder, parseWorkspaceId, newWorkspaceId ) where
+module Workspace ( Workspace(..), Question, Answer, WorkspaceId, VersionId,
+                   workspaceIdFromText, workspaceIdToBuilder, parseWorkspaceId, newWorkspaceId,
+                   versionIdFromText, versionIdToBuilder, parseVersionId, newVersionId ) where
 import Data.Aeson ( ToJSON, FromJSON ) -- aeson
 import Data.Text.Lazy.Builder ( Builder ) -- text
 import qualified Data.Text as T -- text
@@ -19,16 +20,17 @@ import Util ( uuidToBuilder, parseUUID )
 type Question = Message
 type Answer = Message
 
-type WorkspaceId = UUID
+type WorkspaceId = UUID -- TODO: Eliminate WorkspaceId entirely?
+type VersionId = UUID
 
 -- This will represent the combination of a scratch pad, message history, question/answer.
 
 -- This is what needs to be rendered (possibly with stuff hidden) to the user.
 data Workspace = Workspace {
-    identity :: !WorkspaceId,
-    parentId :: Maybe WorkspaceId,
+    identity :: !VersionId,
+    parentId :: Maybe VersionId,
     question :: Question,
-    subQuestions :: [(WorkspaceId, Question, Maybe Answer)],
+    subQuestions :: [(VersionId, Question, Maybe Answer)],
     messageHistory :: [Message], -- TODO: Do we want the history to include who the message was from?
     expandedPointers :: PointerEnvironment,
     time :: Time
@@ -48,3 +50,15 @@ parseWorkspaceId = parseUUID
 
 newWorkspaceId :: IO WorkspaceId
 newWorkspaceId = UUID.nextRandom
+
+versionIdFromText :: T.Text -> VersionId
+versionIdFromText t = case parseMaybe parseVersionId t of Just vId -> vId
+
+versionIdToBuilder :: VersionId -> Builder
+versionIdToBuilder = uuidToBuilder
+
+parseVersionId :: Parsec Void T.Text VersionId
+parseVersionId = parseUUID
+
+newVersionId :: IO WorkspaceId
+newVersionId = UUID.nextRandom
