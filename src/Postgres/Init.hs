@@ -146,160 +146,160 @@ snapshotPostgres conn = do
 initDBPostgres :: Connection -> IO ()
 initDBPostgres conn = do
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS Workspaces (\n\
-       \    id UUID PRIMARY KEY,\n\
-       \    parentWorkspaceVersionId UUID NULL,\n\
-       \    questionAsAsked TEXT NOT NULL,\n\
-       \    questionAsAnswered TEXT NOT NULL\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS Workspaces (\n\
+        \   id UUID PRIMARY KEY,\n\
+        \   parentWorkspaceVersionId UUID NULL,\n\
+        \   questionAsAsked TEXT NOT NULL,\n\
+        \   questionAsAnswered TEXT NOT NULL\n\
+        \);"
     execute_ conn "CREATE INDEX IF NOT EXISTS Workspaces_IDX_ParentWorkspaces_Id ON Workspaces(parentWorkspaceVersionId, id);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS WorkspaceVersions (\n\
-       \    versionId UUID PRIMARY KEY,\n\
-       \    workspaceId UUID NOT NULL,\n\
-       \    logicalTime INTEGER NOT NULL,\n\
-       \    previousVersion UUID NULL,\n\
-       \    FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE,\n\
-       \    FOREIGN KEY ( previousVersion ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS WorkspaceVersions (\n\
+        \   versionId UUID PRIMARY KEY,\n\
+        \   workspaceId UUID NOT NULL,\n\
+        \   logicalTime INTEGER NOT NULL,\n\
+        \   previousVersion UUID NULL,\n\
+        \   FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE,\n\
+        \   FOREIGN KEY ( previousVersion ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE\n\
+        \);"
     execute_ conn "ALTER TABLE Workspaces ADD FOREIGN KEY ( parentWorkspaceVersionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE;"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS Messages (\n\
-       \    id SERIAL PRIMARY KEY,\n\
-       \    sourceWorkspaceVersionId UUID NOT NULL,\n\
-       \    targetWorkspaceVersionId UUID NOT NULL,\n\
-       \    content TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( sourceWorkspaceVersionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
-       \    FOREIGN KEY ( targetWorkspaceVersionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS Messages (\n\
+        \   id SERIAL PRIMARY KEY,\n\
+        \   sourceWorkspaceVersionId UUID NOT NULL,\n\
+        \   targetWorkspaceVersionId UUID NOT NULL,\n\
+        \   content TEXT NOT NULL,\n\
+        \   FOREIGN KEY ( sourceWorkspaceVersionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
+        \   FOREIGN KEY ( targetWorkspaceVersionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE\n\
+        \);"
     execute_ conn "CREATE INDEX IF NOT EXISTS Messages_IDX_TargetWorkspaceId ON Messages(targetWorkspaceVersionId);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS Pointers (\n\
-       \    id INTEGER PRIMARY KEY,\n\
-       \    content TEXT NOT NULL\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS Pointers (\n\
+        \   id INTEGER PRIMARY KEY,\n\
+        \   content TEXT NOT NULL\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS Answers (\n\
-       \    versionId UUID PRIMARY KEY,\n\
-       \    answer TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS Answers (\n\
+        \   versionId UUID PRIMARY KEY,\n\
+        \   answer TEXT NOT NULL,\n\
+        \   FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS ExpandedPointers (\n\
-       \    versionId UUID NOT NULL,\n\
-       \    pointerId INTEGER NOT NULL,\n\
-       \    FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
-       \    FOREIGN KEY ( pointerId ) REFERENCES Pointers ( id ) ON DELETE CASCADE,\n\
-       \    PRIMARY KEY ( versionId, pointerId )\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS ExpandedPointers (\n\
+        \   versionId UUID NOT NULL,\n\
+        \   pointerId INTEGER NOT NULL,\n\
+        \   FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
+        \   FOREIGN KEY ( pointerId ) REFERENCES Pointers ( id ) ON DELETE CASCADE,\n\
+        \   PRIMARY KEY ( versionId, pointerId )\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS Commands (\n\
-       \    versionId UUID NOT NULL,\n\
-       \    commandTime INTEGER NOT NULL,\n\
-       \    userId UUID NOT NULL,\n\
-       \    command TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
-       \    PRIMARY KEY ( versionId, commandTime )\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS Commands (\n\
+        \   versionId UUID NOT NULL,\n\
+        \   commandTime INTEGER NOT NULL,\n\
+        \   userId UUID NOT NULL,\n\
+        \   command TEXT NOT NULL,\n\
+        \   FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
+        \   PRIMARY KEY ( versionId, commandTime )\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS Functions (\n\
-       \    id SERIAL PRIMARY KEY,\n\
-       \    isAnswer INTEGER NOT NULL DEFAULT 0\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS Functions (\n\
+        \   id SERIAL PRIMARY KEY,\n\
+        \   isAnswer INTEGER NOT NULL DEFAULT 0\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS Alternatives (\n\
-       \    function INTEGER NOT NULL,\n\
-       \    pattern TEXT NOT NULL,\n\
-       \    body TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE,\n\
-       \    PRIMARY KEY ( function, pattern )\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS Alternatives (\n\
+        \   function INTEGER NOT NULL,\n\
+        \   pattern TEXT NOT NULL,\n\
+        \   body TEXT NOT NULL,\n\
+        \   FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE,\n\
+        \   PRIMARY KEY ( function, pattern )\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS Links (\n\
-       \    versionId UUID NOT NULL,\n\
-       \    sourceId INTEGER NOT NULL,\n\
-       \    targetId INTEGER NOT NULL,\n\
-       \    FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
-       \    FOREIGN KEY ( sourceId ) REFERENCES Pointers ( id ) ON DELETE CASCADE,\n\
-       \    FOREIGN KEY ( targetId ) REFERENCES Pointers ( id ) ON DELETE CASCADE,\n\
-       \    PRIMARY KEY ( versionId, sourceId )\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS Links (\n\
+        \   versionId UUID NOT NULL,\n\
+        \   sourceId INTEGER NOT NULL,\n\
+        \   targetId INTEGER NOT NULL,\n\
+        \   FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
+        \   FOREIGN KEY ( sourceId ) REFERENCES Pointers ( id ) ON DELETE CASCADE,\n\
+        \   FOREIGN KEY ( targetId ) REFERENCES Pointers ( id ) ON DELETE CASCADE,\n\
+        \   PRIMARY KEY ( versionId, sourceId )\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS Continuations (\n\
-       \    versionId UUID NOT NULL,\n\
-       \    function INTEGER NOT NULL,\n\
-       \    next TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
-       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE,\n\
-       \    PRIMARY KEY ( versionId, function )\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS Continuations (\n\
+        \   versionId UUID NOT NULL,\n\
+        \   function INTEGER NOT NULL,\n\
+        \   next TEXT NOT NULL,\n\
+        \   FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
+        \   FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE,\n\
+        \   PRIMARY KEY ( versionId, function )\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS ContinuationEnvironments (\n\
-       \    versionId UUID NOT NULL,\n\
-       \    function INTEGER NOT NULL,\n\
-       \    variable INTEGER NOT NULL,\n\
-       \    value TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE,\n\
-       \    FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
-       \    FOREIGN KEY ( versionId, function ) REFERENCES Continuations ( versionId, function ) ON DELETE CASCADE,\n\
-       \    PRIMARY KEY ( versionId, function, variable )\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS ContinuationEnvironments (\n\
+        \   versionId UUID NOT NULL,\n\
+        \   function INTEGER NOT NULL,\n\
+        \   variable INTEGER NOT NULL,\n\
+        \   value TEXT NOT NULL,\n\
+        \   FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE,\n\
+        \   FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
+        \   FOREIGN KEY ( versionId, function ) REFERENCES Continuations ( versionId, function ) ON DELETE CASCADE,\n\
+        \   PRIMARY KEY ( versionId, function, variable )\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS ContinuationArguments (\n\
-       \    versionId UUID NOT NULL,\n\
-       \    function INTEGER NOT NULL,\n\
-       \    argNumber INTEGER NOT NULL,\n\
-       \    value TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE,\n\
-       \    FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
-       \    FOREIGN KEY ( versionId, function ) REFERENCES Continuations ( versionId, function ) ON DELETE CASCADE,\n\
-       \    PRIMARY KEY ( versionId, function, argNumber )\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS ContinuationArguments (\n\
+        \   versionId UUID NOT NULL,\n\
+        \   function INTEGER NOT NULL,\n\
+        \   argNumber INTEGER NOT NULL,\n\
+        \   value TEXT NOT NULL,\n\
+        \   FOREIGN KEY ( function ) REFERENCES Functions ( id ) ON DELETE CASCADE,\n\
+        \   FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
+        \   FOREIGN KEY ( versionId, function ) REFERENCES Continuations ( versionId, function ) ON DELETE CASCADE,\n\
+        \   PRIMARY KEY ( versionId, function, argNumber )\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS Trace (\n\
-       \    t SERIAL PRIMARY KEY,\n\
-       \    processId UUID NOT NULL,\n\
-       \    varEnv TEXT NOT NULL,\n\
-       \    funEnv TEXT NOT NULL,\n\
-       \    versionId UUID NOT NULL,\n\
-       \    expression TEXT NOT NULL,\n\
-       \    continuation TEXT NOT NULL,\n\
-       \    FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS Trace (\n\
+        \   t SERIAL PRIMARY KEY,\n\
+        \   processId UUID NOT NULL,\n\
+        \   varEnv TEXT NOT NULL,\n\
+        \   funEnv TEXT NOT NULL,\n\
+        \   versionId UUID NOT NULL,\n\
+        \   expression TEXT NOT NULL,\n\
+        \   continuation TEXT NOT NULL,\n\
+        \   FOREIGN KEY ( versionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS RunQueue (\n\
-       \    processId UUID PRIMARY KEY\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS RunQueue (\n\
+        \   processId UUID PRIMARY KEY\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS Sessions (\n\
-       \    sessionId UUID PRIMARY KEY\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS Sessions (\n\
+        \   sessionId UUID PRIMARY KEY\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS SessionProcesses (\n\
-       \    sessionId UUID NOT NULL,\n\
-       \    processId UUID NOT NULL,\n\
-       \    FOREIGN KEY ( sessionId ) REFERENCES Sessions ( sessionId ) ON DELETE CASCADE,\n\
-       \    PRIMARY KEY ( sessionId, processId )\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS SessionProcesses (\n\
+        \   sessionId UUID NOT NULL,\n\
+        \   processId UUID NOT NULL,\n\
+        \   FOREIGN KEY ( sessionId ) REFERENCES Sessions ( sessionId ) ON DELETE CASCADE,\n\
+        \   PRIMARY KEY ( sessionId, processId )\n\
+        \);"
     execute_ conn "\
-       \CREATE TABLE IF NOT EXISTS Primitives (\n\
-       \    id INTEGER PRIMARY KEY,\n\
-       \    pattern TEXT NOT NULL,\n\
-       \    body TEXT NOT NULL\n\
-       \);"
+        \CREATE TABLE IF NOT EXISTS Primitives (\n\
+        \   id INTEGER PRIMARY KEY,\n\
+        \   pattern TEXT NOT NULL,\n\
+        \   body TEXT NOT NULL\n\
+        \);"
     execute_ conn "\
-       \CREATE OR REPLACE FUNCTION priorVersions(workspaceVersionId UUID)\n\
-       \RETURNS TABLE (versionId UUID) LANGUAGE SQL STABLE ROWS 20 AS $$\n\
-       \    WITH RECURSIVE versions(id) AS (\n\
-       \        SELECT workspaceVersionId\n\
-       \        UNION ALL\n\
-       \        SELECT w.previousVersion\n\
-       \        FROM WorkspaceVersions w\n\
-       \        INNER JOIN versions v ON w.versionId = v.id\n\
-       \        WHERE w.previousVersion IS NOT NULL\n\
-       \    )\n\
-       \    SELECT id AS versionId FROM versions\n\
-       \$$"
+        \CREATE OR REPLACE FUNCTION priorVersions(workspaceVersionId UUID)\n\
+        \RETURNS TABLE (versionId UUID) LANGUAGE SQL STABLE ROWS 20 AS $$\n\
+        \   WITH RECURSIVE versions(id) AS (\n\
+        \       SELECT workspaceVersionId\n\
+        \       UNION ALL\n\
+        \       SELECT w.previousVersion\n\
+        \       FROM WorkspaceVersions w\n\
+        \       INNER JOIN versions v ON w.versionId = v.id\n\
+        \       WHERE w.previousVersion IS NOT NULL\n\
+        \   )\n\
+        \   SELECT id AS versionId FROM versions\n\
+        \$$"
     -- TODO: Use a materialized view? Maybe a materialized view of the latest workspace and all its previous versions.
     -- The workspace versions that aren't the previous version of any other workspace version are the leaves of the
     -- branching timeline. Then, the leaf with the latest logicalTime will be the version on the "active" timeline
@@ -319,26 +319,26 @@ initDBPostgres conn = do
         \   CROSS JOIN priorVersions(l.versionId) w\n\
         \   INNER JOIN Links j ON j.versionId = w.versionId"
     execute_ conn "\
-       \CREATE OR REPLACE VIEW Current_Messages AS\n\
-       \    SELECT m.id, l.workspaceId AS sourceWorkspaceId, l.versionId AS sourceWorkspaceVersionId,\n\
-       \                 t.workspaceId AS targetWorkspaceId, m.targetWorkspaceVersionId, m.content\n\
-       \    FROM Latest_WorkspaceVersions l\n\
-       \    CROSS JOIN priorVersions(l.versionId) w\n\
-       \    INNER JOIN Messages m ON m.sourceWorkspaceVersionId = w.versionId\n\
-       \    INNER JOIN WorkspaceVersions t ON t.versionId = m.targetWorkspaceVersionId"
+        \CREATE OR REPLACE VIEW Current_Messages AS\n\
+        \   SELECT m.id, l.workspaceId AS sourceWorkspaceId, l.versionId AS sourceWorkspaceVersionId,\n\
+        \                t.workspaceId AS targetWorkspaceId, m.targetWorkspaceVersionId, m.content\n\
+        \   FROM Latest_WorkspaceVersions l\n\
+        \   CROSS JOIN priorVersions(l.versionId) w\n\
+        \   INNER JOIN Messages m ON m.sourceWorkspaceVersionId = w.versionId\n\
+        \   INNER JOIN WorkspaceVersions t ON t.versionId = m.targetWorkspaceVersionId"
     execute_ conn "\
-       \CREATE OR REPLACE VIEW Current_ExpandedPointers AS\n\
-       \    SELECT l.workspaceId, l.versionId, p.pointerId\n\
-       \    FROM Latest_WorkspaceVersions l\n\
-       \    CROSS JOIN priorVersions(l.versionId) w\n\
-       \    INNER JOIN ExpandedPointers p ON p.versionId = w.versionId"
+        \CREATE OR REPLACE VIEW Current_ExpandedPointers AS\n\
+        \   SELECT l.workspaceId, l.versionId, p.pointerId\n\
+        \   FROM Latest_WorkspaceVersions l\n\
+        \   CROSS JOIN priorVersions(l.versionId) w\n\
+        \   INNER JOIN ExpandedPointers p ON p.versionId = w.versionId"
     execute_ conn "\
-       \CREATE OR REPLACE VIEW Current_Subquestions AS\n\
-       \    SELECT l.workspaceId AS parentWorkspaceId, l.versionId AS parentWorkspaceVersionId, c.workspaceId, c.versionId,\n\
-       \    c.logicalTime, cw.questionAsAsked, a.answer\n\
-       \    FROM Latest_WorkspaceVersions l\n\
-       \    CROSS JOIN priorVersions(l.versionId) w\n\
-       \    INNER JOIN Workspaces cw ON cw.parentWorkspaceVersionId = w.versionId\n\
-       \    INNER JOIN Latest_WorkspaceVersions c ON c.workspaceId = cw.id\n\
-       \    LEFT OUTER JOIN Answers a ON a.versionId = c.versionId"
+        \CREATE OR REPLACE VIEW Current_Subquestions AS\n\
+        \   SELECT l.workspaceId AS parentWorkspaceId, l.versionId AS parentWorkspaceVersionId, c.workspaceId, c.versionId,\n\
+        \          c.logicalTime, cw.questionAsAsked, a.answer\n\
+        \   FROM Latest_WorkspaceVersions l\n\
+        \   CROSS JOIN priorVersions(l.versionId) w\n\
+        \   INNER JOIN Workspaces cw ON cw.parentWorkspaceVersionId = w.versionId\n\
+        \   INNER JOIN Latest_WorkspaceVersions c ON c.workspaceId = cw.id\n\
+        \   LEFT OUTER JOIN Answers a ON a.versionId = c.versionId"
     return ()
