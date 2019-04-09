@@ -187,8 +187,8 @@ sendMessagePostgres sync async c conn userId srcVersionId tgtVersionId msg = do
             execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) VALUES (?, ?, ?, ?)"
                                 (vId, tgtId :: WorkspaceId, t, Just tgtVersionId)
             () <$ execute conn "INSERT INTO Messages ( sourceWorkspaceVersionId, targetWorkspaceVersionId, content ) VALUES (?, ?, ?)"
-                                (srcVersionId, tgtVersionId, msgText)
-    insertCommand sync async c conn userId vId (Send tgtVersionId msg)
+                                (srcVersionId, vId, msgText)
+    insertCommand sync async c conn userId srcVersionId (Send vId msg) -- TODO: Think about this.
     return vId
 
 -- TODO: Bulkify this.
@@ -226,7 +226,6 @@ remapPointersPostgres sync async c conn mapping = do
                                \FROM Pointers p \
                                \INNER JOIN (VALUES (?, ?)) m(new, old) ON m.old = p.id" (M.assocs mapping)
 
-
 -- NOT CACHEABLE
 pendingQuestionsPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO [VersionId]
 pendingQuestionsPostgres sync async c conn versionId = do
@@ -243,10 +242,10 @@ pendingQuestionsPostgres sync async c conn versionId = do
 getWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO Workspace
 getWorkspacePostgres sync async c conn versionId = do
     sync $ do
-        [(workspaceId, p, t, q)] <- query conn "SELECT v.versionId, w.parentWorkspaceVersionId, v.logicalTime, w.questionAsAnswered \
-                                               \FROM WorkspaceVersions v \
-                                               \INNER JOIN Workspaces w ON w.id = v.workspaceId \
-                                               \WHERE v.versionId = ?" (Only versionId)
+        [(p, t, q)] <- query conn "SELECT w.parentWorkspaceVersionId, v.logicalTime, w.questionAsAnswered \
+                                  \FROM WorkspaceVersions v \
+                                  \INNER JOIN Workspaces w ON w.id = v.workspaceId \
+                                  \WHERE v.versionId = ?" (Only versionId)
         messages <- query conn "SELECT content FROM Current_Messages WHERE targetWorkspaceVersionId = ?" (Only versionId) -- TODO: ORDER
         subquestions <- query conn "SELECT w.versionId, w.questionAsAsked, w.answer \
                                    \FROM Current_Subquestions w \
@@ -257,7 +256,7 @@ getWorkspacePostgres sync async c conn versionId = do
                                \INNER JOIN Pointers p ON e.pointerId = p.id \
                                \WHERE e.versionId = ?" (Only versionId)
         return $ Workspace {
-            identity = workspaceId,
+            identity = versionId,
             parentId = p,
             question = parseMessageUnsafeDB q,
             subQuestions = map (\(qId, q, ma) -> (qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)) subquestions,
