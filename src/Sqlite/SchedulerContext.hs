@@ -16,11 +16,11 @@ import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, SyncFunc, Asy
                    autoUserId, userIdToBuilder, sessionIdToBuilder, newSessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Counter, newCounter, increment, Queue, enqueueAsync, enqueueSync )
-import Workspace ( Workspace(..), VersionId, newWorkspaceId, workspaceIdFromText, workspaceIdToBuilder )
+import Workspace ( Workspace(..), VersionId, newWorkspaceId, workspaceIdToBuilder, newVersionId, versionIdFromText, versionIdToBuilder )
 
 makeSqliteSchedulerContext :: Queue -> Connection -> IO (SchedulerContext (Connection, Queue))
 makeSqliteSchedulerContext q conn = do
-    [Only t] <- enqueueSync q $ query_ conn "SELECT COUNT(*) FROM Commands"
+    [Only t] <- enqueueSync q $ query_ conn "SELECT COUNT(*) FROM WorkspaceVersions"
     c <- newCounter t
     qThreadId <- enqueueSync q myThreadId
     let sync action = do
@@ -51,51 +51,52 @@ makeSqliteSchedulerContext q conn = do
             extraContent = (conn, q)
         }
 
+-- TODO: XXX This needs to be reworked significantly to incorporate versioning.
 -- NOT CACHEABLE
 reifyWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO Message
-reifyWorkspaceSqlite sync async c conn workspaceId = do
-    let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+reifyWorkspaceSqlite sync async c conn versionId = do
+    let !versionIdText = toText (versionIdToBuilder versionId)
     workspaces <- sync $ do
         execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMARY KEY ASC )"
         execute_ conn "DELETE FROM Descendants"
         executeNamed conn "WITH RECURSIVE ds(id) AS ( \
                           \     VALUES (:root) \
                           \ UNION ALL \
-                          \     SELECT w.id FROM Workspaces w INNER JOIN ds ON w.parentWorkspaceId = ds.id \
-                          \) INSERT INTO Descendants ( id ) SELECT id FROM ds" [":root" := wsIdText]
-        workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
+                          \     SELECT w.id FROM Workspaces w INNER JOIN ds ON w.parentWorkspaceVersionId = ds.id \
+                          \) INSERT INTO Descendants ( id ) SELECT id FROM ds" [":root" := versionIdText]
+        workspaces <- query_ conn "SELECT id, parentWorkspaceVersionId, logicalTime, questionAsAnswered \
                                   \FROM Workspaces WHERE id IN (SELECT id FROM Descendants)"
-        messages <- query_ conn "SELECT targetWorkspaceId, content \
+        messages <- query_ conn "SELECT targetWorkspaceVersionId, content \
                                 \FROM Messages \
-                                \WHERE targetWorkspaceId IN (SELECT id FROM Descendants) \
+                                \WHERE targetWorkspaceVersionId IN (SELECT id FROM Descendants) \
                                 \ORDER BY id ASC"
         subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
                                     \FROM Workspaces p \
-                                    \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
-                                    \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
+                                    \INNER JOIN Workspaces q ON q.parentWorkspaceVersionId = p.id \
+                                    \LEFT OUTER JOIN Answers a ON q.id = a.versionId \
                                     \WHERE p.id IN (SELECT id FROM Descendants) \
                                     \ORDER BY p.id ASC, q.logicalTime DESC"
         {-
-        expanded <- query_ conn "SELECT workspaceId, pointerId, content \
+        expanded <- query_ conn "SELECT versionId, pointerId, content \
                                 \FROM ExpandedPointers e \
                                 \INNER JOIN Pointers p ON e.pointerId = p.id \
-                                \WHERE workspaceId IN (SELECT id FROM Descendants)"
+                                \WHERE versionId IN (SELECT id FROM Descendants)"
         -}
-        let messageMap = M.fromListWith (++) $ map (\(i, m) -> (workspaceIdFromText i, [parseMessageUnsafe m])) messages
+        let messageMap = M.fromListWith (++) $ map (\(i, m) -> (versionIdFromText i, [parseMessageUnsafe m])) messages
             subquestionsMap = M.fromListWith (++) $
                                 map (\(i, qId, q, ma) ->
-                                        (workspaceIdFromText i, [(workspaceIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
+                                        (versionIdFromText i, [(versionIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
             expandedMap = M.empty -- M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
-        return $ M.fromList $ map (\(i, p, t, q) -> let !wsId = workspaceIdFromText i
+        return $ M.fromList $ map (\(i, p, t, q) -> let !wsId = versionIdFromText i
                                                     in (wsId, Workspace {
                                                                 identity = wsId,
-                                                                parentId = workspaceIdFromText <$> p,
+                                                                parentId = versionIdFromText <$> p,
                                                                 question = parseMessageUnsafeDB q,
                                                                 subQuestions = maybe [] id $ M.lookup wsId subquestionsMap,
                                                                 messageHistory = maybe [] id $ M.lookup wsId messageMap,
                                                                 expandedPointers = maybe M.empty id $ M.lookup wsId expandedMap,
                                                                 time = Time t })) workspaces
-    return (workspaceToMessage workspaces workspaceId)
+    return (workspaceToMessage workspaces versionId)
 
 -- TODO: Bulkify this.
 -- CACHEABLE
@@ -106,14 +107,14 @@ dereferenceSqlite sync async c conn ptr = do
         return $! parseMessageUnsafe' ptr t
 
 insertCommand :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Command -> IO ()
-insertCommand sync async c conn userId workspaceId cmd = do
+insertCommand sync async c conn userId versionId cmd = do
     let !cmdText = toText (commandToBuilder cmd)
-    let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+    let !versionIdText = toText (versionIdToBuilder versionId)
     async $ do
-        mt <- query conn "SELECT commandTime FROM Commands WHERE workspaceId = ? ORDER BY commandTime DESC LIMIT 1" (Only wsIdText)
+        mt <- query conn "SELECT commandTime FROM Commands WHERE versionId = ? ORDER BY commandTime DESC LIMIT 1" (Only versionIdText)
         let t = case mt of [] -> 0; [Only t'] -> t'+1
-        executeNamed conn "INSERT INTO Commands (workspaceId, commandTime, userId, command) VALUES (:workspace, :time, :userId, :cmd)" [
-                            ":workspace" := wsIdText,
+        executeNamed conn "INSERT INTO Commands (versionId, commandTime, userId, command) VALUES (:versionId, :time, :userId, :cmd)" [
+                            ":versionId" := versionIdText,
                             ":time" := (t :: Int64),
                             ":userId" := toText (userIdToBuilder userId),
                             ":cmd" := cmdText]
@@ -124,17 +125,24 @@ createInitialWorkspaceSqlite sync async c conn msg = do
     let !wsIdText = toText (workspaceIdToBuilder workspaceId)
     let !msgText = toText (messageToBuilder msg)
     t <- increment c
+    versionId <- newVersionId
+    let !vIdText = toText (versionIdToBuilder versionId)
     async $ do
         withTransaction conn $ do
-            executeNamed conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
-                              \VALUES (:id, :time, :parent, :questionAsAsked, :questionAsAnswered)" [
+            executeNamed conn "INSERT INTO Workspaces (id, parentWorkspaceVersionId, questionAsAsked, questionAsAnswered) \
+                              \VALUES (:id, :parent, :questionAsAsked, :questionAsAnswered)" [
                                 ":id" := wsIdText,
-                                ":time" := (t :: LogicalTime),
                                 ":parent" := (Nothing :: Maybe Text),
                                 ":questionAsAsked" := msgText,
                                 ":questionAsAnswered" := msgText]
-    insertCommand sync async c conn autoUserId workspaceId (Ask msg)
-    return workspaceId
+            executeNamed conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) \
+                              \VALUES (:versionId, :workspaceId, :time, :prevVersion)" [
+                                ":versionId" := vIdText,
+                                ":workspaceId" := wsIdText,
+                                ":time" := t,
+                                ":prevVersion" := (Nothing :: Maybe Text)]
+    insertCommand sync async c conn autoUserId versionId (Ask msg)
+    return versionId
 
 newSessionSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> Maybe SessionId -> IO SessionId
 newSessionSqlite sync async c conn Nothing = do
@@ -142,69 +150,116 @@ newSessionSqlite sync async c conn Nothing = do
     newSessionSqlite sync async c conn (Just sessionId)
 newSessionSqlite sync async c conn (Just sessionId) = do
     async $
-        execute conn "INSERT OR IGNORE INTO Sessions (sessionId) VALUES (?)" (Only (toText (sessionIdToBuilder sessionId)))
+        execute conn "INSERT OR IGNORE INTO Sessions ( sessionId ) VALUES (?)" (Only (toText (sessionIdToBuilder sessionId)))
     return sessionId
 
 createWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> Message -> IO (VersionId, VersionId)
-createWorkspaceSqlite sync async c conn userId workspaceId qAsAsked qAsAnswered = do
+createWorkspaceSqlite sync async c conn userId versionId qAsAsked qAsAnswered = do
     let !qAsAskedText = toText (messageToBuilder qAsAsked)
         !qAsAnsweredText = toText (messageToBuilder qAsAnswered)
-    wsId <- newWorkspaceId
-    let !workspaceIdText = toText (workspaceIdToBuilder workspaceId)
-    let !wsIdText = toText (workspaceIdToBuilder wsId)
+    childId <- newWorkspaceId
+    let !versionIdText = toText (versionIdToBuilder versionId)
+    let !childIdText = toText (workspaceIdToBuilder childId)
     t <- increment c
+    vId <- newVersionId
+    let !vIdText = toText (versionIdToBuilder vId)
+    childVersionId <- newVersionId
+    let !childVersionIdText = toText (versionIdToBuilder childVersionId)
     async $ do
-        executeNamed conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
-                          \VALUES (:id, :time, :parent, :asAsked, :asAnswered)" [
-                            ":id" := wsIdText,
-                            ":time" := (t :: LogicalTime),
-                            ":parent" := Just workspaceIdText,
-                            ":asAsked" := qAsAskedText,
-                            ":asAnswered" := qAsAnsweredText]
-    insertCommand sync async c conn userId workspaceId (Ask qAsAsked)
-    return (error "TODO: XXX createWorkspaceSqlite", wsId)
+        withTransaction conn $ do
+            [Only workspaceId] <- query conn "SELECT w.workspaceId FROM WorkspaceVersions w WHERE w.versionId = ?" (Only versionIdText)
+            executeNamed conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) \
+                               \VALUES (:versionId, :workspaceId, :time, :prevVersion)" [
+                                ":versionId" := vIdText,
+                                ":workspaceId" := (workspaceId :: Text),
+                                ":time" := t,
+                                ":prevVersion" := Just versionIdText]
+            executeNamed conn "INSERT INTO Workspaces ( id, parentWorkspaceVersionId, questionAsAsked, questionAsAnswered ) \
+                              \VALUES (:id, :parent, :asAsked, :asAnswered)" [
+                                ":id" := childIdText,
+                                ":parent" := Just vIdText,
+                                ":asAsked" := qAsAskedText,
+                                ":asAnswered" := qAsAnsweredText]
+            executeNamed conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) \
+                              \VALUES (:versionId, :workspaceId, :time, :prevVersion)" [
+                                ":versionId" := childVersionIdText,
+                                ":workspaceId" := childIdText,
+                                ":time" := t,
+                                ":prevVersion" := (Nothing :: Maybe Text)]
+    insertCommand sync async c conn userId vId (Ask qAsAsked)
+    return (vId, childVersionId)
 
 sendAnswerSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> IO VersionId
-sendAnswerSqlite sync async c conn userId workspaceId msg = do
+sendAnswerSqlite sync async c conn userId versionId msg = do
     let !msgText = toText (messageToBuilder msg)
-    let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+    let !versionIdText = toText (versionIdToBuilder versionId)
+    vId <- newVersionId
+    let !vIdText = toText (versionIdToBuilder vId)
     t <- increment c
     async $ do
-        -- TODO: XXX If we revisit, and thus change an answer, this will need to be an INSERT OR REPLACE or we'll need to start
-        -- actually using this time parameter. If this is all that is changed, then we'll get a model of edits where we see
-        -- the following questions upon return, possibly referring to pointers in an answer that no longer exist.
-        executeNamed conn "INSERT OR REPLACE INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (:workspace, :time, :answer)" [
-                            ":workspace" := wsIdText,
-                            ":time" := (t :: LogicalTime),
-                            ":answer" := msgText]
-    insertCommand sync async c conn userId workspaceId (Reply msg)
-    return (error "TODO: XXX sendAnswerSqlite")
+        withTransaction conn $ do
+            [Only workspaceId] <- query conn "SELECT w.workspaceId FROM WorkspaceVersions w WHERE w.versionId = ?" (Only versionIdText)
+            executeNamed conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) \
+                               \VALUES (:versionId, :workspaceId, :time, :prevVersion)" [
+                                ":versionId" := vIdText,
+                                ":workspaceId" := (workspaceId :: Text),
+                                ":time" := t,
+                                ":prevVersion" := Just versionIdText]
+            -- TODO: XXX If we revisit, and thus change an answer, this will need to be an INSERT OR REPLACE or we'll need to start
+            -- actually using this time parameter. If this is all that is changed, then we'll get a model of edits where we see
+            -- the following questions upon return, possibly referring to pointers in an answer that no longer exist.
+            executeNamed conn "INSERT OR REPLACE INTO Answers (versionId, answer) VALUES (:versionId, :answer)" [
+                                ":versionId" := vIdText,
+                                ":answer" := msgText]
+    insertCommand sync async c conn userId vId (Reply msg)
+    return vId
 
 sendMessageSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> VersionId -> Message -> IO VersionId
-sendMessageSqlite sync async c conn userId srcId tgtId msg = do
+sendMessageSqlite sync async c conn userId srcVersionId tgtVersionId msg = do
     let !msgText = toText (messageToBuilder msg)
+    let !srcVersionIdText = toText (versionIdToBuilder srcVersionId)
+    let !tgtVersionIdText = toText (versionIdToBuilder tgtVersionId)
+    vId <- newVersionId
+    let !vIdText = toText (versionIdToBuilder vId)
     t <- increment c
     async $ do
-        executeNamed conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (:source, :target, :time, :content)" [
-                            ":source" := toText (workspaceIdToBuilder srcId),
-                            ":target" := toText (workspaceIdToBuilder tgtId),
-                            ":time" := (t :: LogicalTime),
-                            ":content" := msgText]
-    insertCommand sync async c conn userId srcId (Send tgtId msg)
-    return (error "TODO: XXX sendMessageSqlite")
+        withTransaction conn $ do
+            [Only tgtId] <- query conn "SELECT w.workspaceId FROM WorkspaceVersions w WHERE w.versionId = ?" (Only tgtVersionIdText)
+            executeNamed conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) \
+                               \VALUES (:versionId, :workspaceId, :time, :prevVersion)" [
+                                ":versionId" := vIdText,
+                                ":workspaceId" := (tgtId :: Text),
+                                ":time" := t,
+                                ":prevVersion" := Just tgtVersionIdText]
+            executeNamed conn "INSERT INTO Messages (sourceWorkspaceVersionId, targetWorkspaceVersionId, content) \
+                              \VALUES (:source, :target, :content)" [
+                                ":source" := srcVersionIdText,
+                                ":target" := vIdText,
+                                ":content" := msgText]
+    insertCommand sync async c conn userId srcVersionId (Send vId msg)
+    return vId
 
 -- TODO: Bulkify this.
 expandPointerSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Pointer -> IO VersionId
-expandPointerSqlite sync async c conn userId workspaceId ptr = do
-    let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+expandPointerSqlite sync async c conn userId versionId ptr = do
+    let !versionIdText = toText (versionIdToBuilder versionId)
     t <- increment c
+    vId <- newVersionId
+    let !vIdText = toText (versionIdToBuilder vId)
     async $ do
-        executeNamed conn "INSERT OR IGNORE INTO ExpandedPointers (workspaceId, pointerId, logicalTimeExpanded) VALUES (:workspace, :pointer, :time)" [
-                            ":workspace" := wsIdText,
-                            ":pointer" := ptr,
-                            ":time" := (t :: LogicalTime)]
-    insertCommand sync async c conn userId workspaceId (View ptr)
-    return (error "TODO: XXX expandPointerSqlite")
+        withTransaction conn $ do
+            [Only workspaceId] <- query conn "SELECT w.workspaceId FROM WorkspaceVersions w WHERE w.versionId = ?" (Only versionIdText)
+            executeNamed conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) \
+                               \VALUES (:versionId, :workspaceId, :time, :prevVersion)" [
+                                ":versionId" := vIdText,
+                                ":workspaceId" := (workspaceId :: Text),
+                                ":time" := t,
+                                ":prevVersion" := Just versionIdText]
+            executeNamed conn "INSERT OR IGNORE INTO ExpandedPointers (versionId, pointerId) VALUES (:versionId, :pointer)" [
+                                ":versionId" := vIdText,
+                                ":pointer" := ptr]
+    insertCommand sync async c conn userId vId (View ptr)
+    return vId
 
 nextPointerSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO Pointer
 nextPointerSqlite sync async c conn = do
@@ -227,41 +282,40 @@ remapPointersSqlite sync async c conn mapping = do
 
 -- NOT CACHEABLE
 pendingQuestionsSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO [VersionId]
-pendingQuestionsSqlite sync async c conn workspaceId = do
-    let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+pendingQuestionsSqlite sync async c conn versionId = do
+    let !versionIdText = toText (versionIdToBuilder versionId)
     sync $ do
-        subquestions <- query conn "SELECT w.id \
-                                   \FROM Workspaces w \
-                                   \LEFT OUTER JOIN Answers a ON a.workspaceId = w.id \
-                                   \WHERE w.parentWorkspaceId = ? \
-                                   \  AND a.answer IS NULL ORDER BY logicalTime ASC" (Only wsIdText)
-        return $ map (\(Only qId) -> workspaceIdFromText qId) subquestions
+        subquestions <- query conn "SELECT w.versionId \
+                                   \FROM Current_Subquestions w \
+                                   \LEFT OUTER JOIN Answers a ON a.versionId = w.versionId \
+                                   \WHERE w.parentWorkspaceVersionId = ? \
+                                   \  AND a.answer IS NULL ORDER BY w.logicalTime ASC" (Only versionIdText)
+        return $ map (\(Only qId) -> versionIdFromText qId) subquestions
 
 -- TODO: Maybe maintain a cache of workspaces.
 -- NOT CACHEABLE but the components should be. Cacheable if answered, for now at least.
 getWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO Workspace
-getWorkspaceSqlite sync async c conn workspaceId = do
-    let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+getWorkspaceSqlite sync async c conn versionId = do
+    let !versionIdText = toText (versionIdToBuilder versionId)
     sync $ do
-        [(p, t, q)] <- query conn "SELECT parentWorkspaceId, logicalTime, questionAsAnswered \
-                                  \FROM Workspaces \
-                                  \WHERE id = ? \
-                                  \ORDER BY logicalTime DESC LIMIT 1" (Only wsIdText)
-        messages <- query conn "SELECT content FROM Messages WHERE targetWorkspaceId = ?" (Only wsIdText) -- TODO: ORDER
-        subquestions <- query conn "SELECT w.id, w.questionAsAsked, a.answer \
-                                   \FROM Workspaces w \
-                                   \LEFT OUTER JOIN Answers a ON w.id = a.workspaceId \
-                                   \WHERE w.parentWorkspaceId = ? \
-                                   \ORDER BY w.logicalTime ASC" (Only wsIdText)
-        expanded <- query conn "SELECT pointerId, content \
-                               \FROM ExpandedPointers e \
+        [(p, t, q)] <- query conn "SELECT w.parentWorkspaceVersionId, v.logicalTime, w.questionAsAnswered \
+                                  \FROM WorkspaceVersions v \
+                                  \INNER JOIN Workspaces w ON w.id = v.workspaceId \
+                                  \WHERE v.versionId = ?" (Only versionIdText)
+        messages <- query conn "SELECT content FROM Current_Messages WHERE targetWorkspaceVersionId = ?" (Only versionIdText) -- TODO: ORDER
+        subquestions <- query conn "SELECT w.versionId, w.questionAsAsked, w.answer \
+                                   \FROM Current_Subquestions w \
+                                   \WHERE w.parentWorkspaceVersionId = ? \
+                                   \ORDER BY w.logicalTime ASC" (Only versionIdText)
+        expanded <- query conn "SELECT p.id, p.content \
+                               \FROM Current_ExpandedPointers e \
                                \INNER JOIN Pointers p ON e.pointerId = p.id \
-                               \WHERE e.workspaceId = ?" (Only wsIdText)
+                               \WHERE e.versionId = ?" (Only versionIdText)
         return $ Workspace {
-            identity = workspaceId,
-            parentId = workspaceIdFromText <$> p,
+            identity = versionId,
+            parentId = versionIdFromText <$> p,
             question = parseMessageUnsafeDB q,
-            subQuestions = map (\(qId, q, ma) -> (workspaceIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)) subquestions,
+            subQuestions = map (\(qId, q, ma) -> (versionIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)) subquestions,
             messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
             expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
             time = Time t }
@@ -271,9 +325,10 @@ getNextWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (
 getNextWorkspaceSqlite sync async c conn = do
     sync $ do
         -- This gets a workspace that doesn't currently have an answer.
-        result <- query_ conn "SELECT w.id \
-                              \FROM Workspaces w \
-                              \WHERE NOT EXISTS(SELECT * FROM Answers a WHERE a.workspaceId = w.id) ORDER BY w.logicalTime DESC LIMIT 1"
+        result <- query_ conn "SELECT w.versionId \
+                              \FROM Current_Subquestions w \
+                              \WHERE w.answer IS NULL \
+                              \ORDER BY w.logicalTime DESC LIMIT 1"
         case result of
             [] -> return Nothing
-            [Only workspaceId] -> return (Just $ workspaceIdFromText workspaceId)
+            [Only versionId] -> return (Just $ versionIdFromText versionId)

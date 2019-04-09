@@ -16,7 +16,7 @@ import Message ( PointerRemapping, messageToBuilder, parseMessageUnsafeDB, parse
 import Scheduler ( SchedulerContext(..), SessionId, SyncFunc, AsyncFunc, sessionIdToBuilder )
 import Sqlite.SchedulerContext ( makeSqliteSchedulerContext )
 import Util ( toText, Queue, enqueueSync, enqueueAsync, parseUnsafe )
-import Workspace ( VersionId, workspaceIdFromText, workspaceIdToBuilder )
+import Workspace ( VersionId, versionIdFromText, versionIdToBuilder )
 
 makeSqliteAutoSchedulerContext :: SchedulerContext (Connection, Queue) -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
 makeSqliteAutoSchedulerContext ctxt sessionId = do
@@ -32,7 +32,7 @@ makeSqliteAutoSchedulerContext ctxt sessionId = do
         ss <- queryNamed conn "SELECT f.id \
                               \FROM Functions f \
                               \INNER JOIN Continuations c ON c.function = f.id \
-                              \INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
+                              \INNER JOIN Trace t ON t.versionId = c.versionId \
                               \INNER JOIN SessionProcesses s ON s.processId = t.processId \
                               \WHERE s.sessionId = :sessionId AND f.isAnswer = 1 \
                               \LIMIT 1" [":sessionId" := toText (sessionIdToBuilder sessionId)]
@@ -80,7 +80,7 @@ allAlternativesSqlite sync async conn answerId sessionId = do
                                 \FROM Alternatives \
                                 \WHERE function IN (SELECT c.function \
                                 \                   FROM Continuations c \
-                                \                   INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
+                                \                   INNER JOIN Trace t ON t.versionId = c.versionId \
                                 \                   INNER JOIN SessionProcesses s ON s.processId = t.processId \
                                 \                   WHERE s.sessionId = :sessionId) \
                                 \ORDER BY rowid ASC" [":sessionId" := toText (sessionIdToBuilder sessionId)]
@@ -95,20 +95,20 @@ nextFunctionSqlite sync async conn = do
 addFunctionSqlite :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> Name -> IO ()
 addFunctionSqlite sync async conn answerId name = do
     async $ do
-        execute conn "INSERT OR IGNORE INTO Functions (id) VALUES (?)" (Only (nameToId answerId name))
+        execute conn "INSERT OR IGNORE INTO Functions ( id ) VALUES (?)" (Only (nameToId answerId name))
 
 linkVarsSqlite :: SyncFunc -> AsyncFunc -> Connection -> VersionId -> PointerRemapping -> IO ()
-linkVarsSqlite sync async conn workspaceId mapping = do
-    let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+linkVarsSqlite sync async conn versionId mapping = do
+    let !vIdText = toText (versionIdToBuilder versionId)
     async $ do -- TODO: Need 'INSERT OR REPLACE' ?
-        executeMany conn "INSERT OR REPLACE INTO Links ( workspaceId, sourceId, targetId ) VALUES (?, ?, ?)" $
-            map (\(srcId, tgtId) -> (wsIdText, srcId, tgtId)) (M.toList mapping)
+        executeMany conn "INSERT OR REPLACE INTO Links ( versionId, sourceId, targetId ) VALUES (?, ?, ?)" $
+            map (\(srcId, tgtId) -> (vIdText, srcId, tgtId)) (M.toList mapping)
 
 linksSqlite :: SyncFunc -> AsyncFunc -> Connection -> VersionId -> IO PointerRemapping
-linksSqlite sync async conn workspaceId = do
-    let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+linksSqlite sync async conn versionId = do
+    let !vIdText = toText (versionIdToBuilder versionId)
     sync $ do
-        srcTgts <- query conn "SELECT sourceId, targetId FROM Links WHERE workspaceId = ?" (Only wsIdText)
+        srcTgts <- query conn "SELECT sourceId, targetId FROM Links WHERE versionId = ?" (Only vIdText)
         return $ M.fromList srcTgts
 
 addCaseForSqlite :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()
@@ -123,40 +123,40 @@ addCaseForSqlite sync async conn answerId f patterns e = do
                             ":body" := toText (expToBuilderDB e)]
 
 saveContinuationSqlite :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> Konts' -> IO ()
-saveContinuationSqlite sync async conn answerId (CallKont funEnv f workspaceId k) = do
+saveContinuationSqlite sync async conn answerId (CallKont funEnv f versionId k) = do
     let !fId = nameToId answerId f
-    let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+    let !vIdText = toText (versionIdToBuilder versionId)
     async $ do
         withTransaction conn $ do
             -- TODO: XXX This will probably need to change to an INSERT OR REPLACE (or maybe an INSERT OR IGNORE) if we just
             -- naively have revisits update the answer and automation.
-            executeNamed conn "INSERT OR REPLACE INTO Continuations ( workspaceId, function, next ) VALUES (:workspaceId, :function, :k)" [
-                                ":workspaceId" := wsIdText,
+            executeNamed conn "INSERT OR REPLACE INTO Continuations ( versionId, function, next ) VALUES (:versionId, :function, :k)" [
+                                ":versionId" := vIdText,
                                 ":function" := fId,
                                 ":k" := toText (kont1ToBuilderDB k)]
             -- TODO: This isn't storing the full funEnv. Can we rebuild a suitable version anyway, by simply taking
             -- all the ContinuationEnvironments associated with this Workspace?
             -- TODO: This also doesn't store any entries with empty VarEnvs. For now, when I consume funEnv, I'll just assume a
             -- lookup that fails means an empty VarEnv.
-            executeMany conn "INSERT OR REPLACE INTO ContinuationEnvironments ( workspaceId, function, variable, value ) VALUES (?, ?, ?, ?)"
-                (map (\(x, v) -> (wsIdText, fId, x, toText (messageToBuilder v))) -- TODO: Do this outside of the critical section.
+            executeMany conn "INSERT OR REPLACE INTO ContinuationEnvironments ( versionId, function, variable, value ) VALUES (?, ?, ?, ?)"
+                (map (\(x, v) -> (vIdText, fId, x, toText (messageToBuilder v))) -- TODO: Do this outside of the critical section.
                      (M.toList (maybe M.empty id $ M.lookup f funEnv)))
 
 -- CACHEABLE
 loadContinuationSqlite :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> KontsId' -> IO Konts'
-loadContinuationSqlite sync async conn answerId (workspaceId, f) = do
+loadContinuationSqlite sync async conn answerId (versionId, f) = do
     let !fId = nameToId answerId f
-    let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+    let !vIdText = toText (versionIdToBuilder versionId)
     sync $ do
-        [Only k] <- query conn "SELECT next FROM Continuations WHERE workspaceId = ? AND function = ? LIMIT 1" (wsIdText, fId)
+        [Only k] <- query conn "SELECT next FROM Continuations WHERE versionId = ? AND function = ? LIMIT 1" (vIdText, fId)
         -- TODO: Here we just get every VarEnv for every function in the Workspace. I don't know if this is right.
         -- It definitely gets more than we need or than was there when the continuation was saved, but that's harmless.
         -- The issue is if we can have branching continuations within a single Workspace. I'm pretty sure the answer
         -- is "no", at least for now.
-        vars <- query conn "SELECT function, variable, value FROM ContinuationEnvironments WHERE workspaceId = ?" (Only wsIdText)
+        vars <- query conn "SELECT function, variable, value FROM ContinuationEnvironments WHERE versionId = ?" (Only vIdText)
         -- TODO: Verify that parseMessageUnsafeDB is the right function to use?
         let !funEnv = M.fromListWith M.union $ map (\(g, x, v) -> (idToName answerId g, M.singleton x (parseMessageUnsafeDB v))) vars
-        return (CallKont funEnv f workspaceId (parseKont1UnsafeDB k))
+        return (CallKont funEnv f versionId (parseKont1UnsafeDB k))
 
 recordStateSqlite :: SyncFunc -> AsyncFunc -> Connection -> ProcessId -> EvalState' -> IO ()
 recordStateSqlite sync async conn processId (varEnv, funEnv, s, e, k) = do {
@@ -166,18 +166,18 @@ recordStateSqlite sync async conn processId (varEnv, funEnv, s, e, k) = do {
           !funEnvText = toText (funEnvToBuilder funEnv);
           !expText = toText (expToBuilderDB e);
           !continuationText = toText (kont1ToBuilderDB k);
-          !wsIdText = toText (workspaceIdToBuilder s) };
+          !vIdText = toText (versionIdToBuilder s) };
 
     {--
     seen <- sync $ do {
         rs <- queryNamed conn "SELECT 1 \
                               \FROM Trace \
-                              \WHERE varEnv = :varEnv AND funEnv = :funEnv AND workspaceId = :workspaceId \
+                              \WHERE varEnv = :varEnv AND funEnv = :funEnv AND versionId = :versionId \
                               \  AND expression = :expression AND continuation = :continuation \
                               \LIMIT 1" [
                                 ":varEnv" := varEnvText,
                                 ":funEnv" := funEnvText,
-                                ":workspaceId" := s,
+                                ":versionId" := s,
                                 ":expression" := expText,
                                 ":continuation" := continuationText];
         return (not (null (rs :: [Only Int64]))) };
@@ -187,12 +187,12 @@ recordStateSqlite sync async conn processId (varEnv, funEnv, s, e, k) = do {
       else do
     -- -}
         async $ do
-            executeNamed conn "INSERT INTO Trace ( processId, varEnv, funEnv, workspaceId, expression, continuation ) \
-                              \VALUES (:processId, :varEnv, :funEnv, :workspaceId, :expression, :continuation)" [
+            executeNamed conn "INSERT INTO Trace ( processId, varEnv, funEnv, versionId, expression, continuation ) \
+                              \VALUES (:processId, :varEnv, :funEnv, :versionId, :expression, :continuation)" [
                                 ":processId" := toText (processIdToBuilder processId),
                                 ":varEnv" := varEnvText, -- TODO: Seems like the varEnv will also be in funEnv
                                 ":funEnv" := funEnvText, -- and so doesn't need to be stored separately.
-                                ":workspaceId" := wsIdText,
+                                ":versionId" := vIdText,
                                 ":expression" := expText,
                                 ":continuation" := continuationText]
     }
@@ -200,12 +200,12 @@ recordStateSqlite sync async conn processId (varEnv, funEnv, s, e, k) = do {
 currentStateSqlite :: SyncFunc -> AsyncFunc -> Connection -> ProcessId -> IO EvalState'
 currentStateSqlite sync async conn pId = do
     sync $ do
-        [(varEnv, funEnv, s, e, k)] <- queryNamed conn "SELECT varEnv, funEnv, workspaceId, expression, continuation \
+        [(varEnv, funEnv, s, e, k)] <- queryNamed conn "SELECT varEnv, funEnv, versionId, expression, continuation \
                                                        \FROM Trace \
                                                        \WHERE processId = :processId \
                                                        \ORDER BY t DESC \
                                                        \LIMIT 1" [":processId" := toText (processIdToBuilder pId)]
-        return (parseUnsafe parseVarEnv varEnv, parseUnsafe parseFunEnv funEnv, workspaceIdFromText s, expFromDB e, parseKont1UnsafeDB k)
+        return (parseUnsafe parseVarEnv varEnv, parseUnsafe parseFunEnv funEnv, versionIdFromText s, expFromDB e, parseKont1UnsafeDB k)
 
 newProcessSqlite :: SyncFunc -> AsyncFunc -> Connection -> SessionId -> IO ProcessId
 newProcessSqlite sync async conn sessionId = do
@@ -213,7 +213,7 @@ newProcessSqlite sync async conn sessionId = do
     async $ do
         withTransaction conn $ do
             let !pIdText = toText (processIdToBuilder processId)
-            execute conn "INSERT INTO RunQueue (processId) VALUES (?)" (Only pIdText)
+            execute conn "INSERT INTO RunQueue ( processId ) VALUES (?)" (Only pIdText)
             executeNamed conn "INSERT INTO SessionProcesses ( sessionId, processId ) VALUES (:sessionId, :processId)" [
                                 ":sessionId" := toText (sessionIdToBuilder sessionId),
                                 ":processId" := pIdText]
@@ -234,26 +234,26 @@ terminateSqlite sync async conn processId = do
         executeNamed conn "DELETE FROM RunQueue WHERE processId = :processId" [":processId" := toText (processIdToBuilder processId)]
 
 addContinuationArgumentSqlite :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> KontsId' -> Int -> Value -> IO AddContinuationResult
-addContinuationArgumentSqlite sync async conn answerId (workspaceId, f) argNumber v = do
+addContinuationArgumentSqlite sync async conn answerId (versionId, f) argNumber v = do
     let !fId = nameToId answerId f
     let !vText = toText (messageToBuilder v)
-    let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+    let !vIdText = toText (versionIdToBuilder versionId)
     async $ do
         {-
         vs <- queryNamed conn "SELECT value \
                               \FROM ContinuationArguments \
-                              \WHERE workspaceId = :workspaceId AND function = :function AND argNumber = :argNumber \
+                              \WHERE versionId = :versionId AND function = :function AND argNumber = :argNumber \
                               \LIMIT 1" [
-                            ":workspaceId" := workspaceId,
+                            ":versionId" := versionId,
                             ":function" := fId,
                             ":argNumber" := argNumber]
         case vs of
             [] -> do
         -}
                 -- TODO: Can remove the 'OR REPLACE' if the other code is uncommented.
-                executeNamed conn "INSERT OR REPLACE INTO ContinuationArguments ( workspaceId, function, argNumber, value ) \
-                                  \VALUES (:workspaceId, :function, :argNumber, :value)" [
-                                    ":workspaceId" := wsIdText,
+                executeNamed conn "INSERT OR REPLACE INTO ContinuationArguments ( versionId, function, argNumber, value ) \
+                                  \VALUES (:versionId, :function, :argNumber, :value)" [
+                                    ":versionId" := vIdText,
                                     ":function" := fId,
                                     ":argNumber" := argNumber,
                                     ":value" := vText]
@@ -262,8 +262,8 @@ addContinuationArgumentSqlite sync async conn answerId (workspaceId, f) argNumbe
             [Only v'] | vText == v' -> return SAME
                       | otherwise -> do -- TODO: Formulate an approach that doesn't involve in-place updates.
                             executeNamed conn "UPDATE ContinuationArguments SET value = :value \
-                                              \WHERE workspaceId =  :workspaceId AND function = :function AND argNumber = :argNumber" [
-                                                ":workspaceId" := workspaceId,
+                                              \WHERE versionId =  :versionId AND function = :function AND argNumber = :argNumber" [
+                                                ":versionId" := versionId,
                                                 ":function" := fId,
                                                 ":argNumber" := argNumber,
                                                 ":value" := vText]
@@ -273,13 +273,13 @@ addContinuationArgumentSqlite sync async conn answerId (workspaceId, f) argNumbe
 
 -- NOT CACHEABLE
 continuationArgumentsSqlite :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> KontsId' -> IO (Konts', [Value])
-continuationArgumentsSqlite sync async conn answerId kId@(workspaceId, f) = do
+continuationArgumentsSqlite sync async conn answerId kId@(versionId, f) = do
     let !fId = nameToId answerId f
-    let !wsIdText = toText (workspaceIdToBuilder workspaceId)
+    let !vIdText = toText (versionIdToBuilder versionId)
     vs <- sync $ do
         vals <- queryNamed conn "SELECT value \
                                 \FROM ContinuationArguments \
-                                \WHERE workspaceId = :workspaceId AND function = :function \
-                                \ORDER BY argNumber ASC" [":workspaceId" := wsIdText, ":function" := fId]
+                                \WHERE versionId = :versionId AND function = :function \
+                                \ORDER BY argNumber ASC" [":versionId" := vIdText, ":function" := fId]
         return $ map (\(Only v) -> parseMessageUnsafeDB v) vals
     fmap (\k -> (k, vs)) $ loadContinuationSqlite sync async conn answerId kId
