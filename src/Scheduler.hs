@@ -19,7 +19,7 @@ import Text.Megaparsec ( parseMaybe ) -- megaparsec
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
                  canonicalizeMessage, normalizeMessage, generalizeMessage, boundPointers, stripLabel, renumberMessage' )
 import Util ( parseUUID, uuidToBuilder )
-import Workspace ( Workspace(..), VersionId )
+import Workspace ( Workspace(..), VersionId, WorkspaceId )
 
 data Event
     = Create Message -- ask
@@ -45,6 +45,8 @@ data SchedulerContext extra = SchedulerContext {
     doAtomically :: SyncFunc,
     createInitialWorkspace :: Message -> IO VersionId,
     newSession :: Maybe SessionId -> IO SessionId,
+    -- TODO: XXX Have this take a Bool to specify whether it should make a new version or attach to the current one.
+    -- Possibly we should just separate out making a new version of a workspace from the other operations.
     createWorkspace :: UserId -> VersionId -> Message -> Message -> IO (VersionId, VersionId),
     sendAnswer :: UserId -> VersionId -> Message -> IO VersionId,
     sendMessage :: UserId -> VersionId -> VersionId -> Message -> IO VersionId,
@@ -54,6 +56,7 @@ data SchedulerContext extra = SchedulerContext {
     remapPointers :: PointerRemapping -> IO (),
     pendingQuestions :: VersionId -> IO [VersionId],
     getWorkspace :: VersionId -> IO Workspace,
+    workspaceIdOf :: VersionId -> IO WorkspaceId, -- TODO: This can probably be handled in a better way.
     getNextWorkspace :: IO (Maybe VersionId),
     dereference :: Pointer -> IO Message,
     reifyWorkspace :: VersionId -> IO Message,

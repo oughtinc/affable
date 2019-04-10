@@ -45,6 +45,7 @@ makePostgresSchedulerContext q conn = do
             remapPointers = remapPointersPostgres sync async c conn,
             pendingQuestions = pendingQuestionsPostgres sync async c conn,
             getWorkspace = getWorkspacePostgres sync async c conn,
+            workspaceIdOf = workspaceIdOfPostgres sync async c conn,
             getNextWorkspace = getNextWorkspacePostgres sync async c conn,
             dereference = dereferencePostgres sync async c conn,
             reifyWorkspace = reifyWorkspacePostgres sync async c conn,
@@ -263,6 +264,12 @@ getWorkspacePostgres sync async c conn versionId = do
             messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
             expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
             time = Time t }
+
+workspaceIdOfPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO WorkspaceId
+workspaceIdOfPostgres sync async c conn vId = do
+    sync $ do
+        [Only workspaceId] <- query conn "SELECT workspaceId FROM WorkspaceVersions WHERE versionId = ? LIMIT 1" (Only vId)
+        return workspaceId
 
 -- NOT CACHEABLE
 getNextWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (Maybe VersionId)

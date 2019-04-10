@@ -16,7 +16,8 @@ import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, SyncFunc, Asy
                    autoUserId, userIdToBuilder, sessionIdToBuilder, newSessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Counter, newCounter, increment, Queue, enqueueAsync, enqueueSync )
-import Workspace ( Workspace(..), VersionId, newWorkspaceId, workspaceIdToBuilder, newVersionId, versionIdFromText, versionIdToBuilder )
+import Workspace ( Workspace(..), VersionId, WorkspaceId, newWorkspaceId, workspaceIdToBuilder, workspaceIdFromText,
+                   newVersionId, versionIdFromText, versionIdToBuilder )
 
 makeSqliteSchedulerContext :: Queue -> Connection -> IO (SchedulerContext (Connection, Queue))
 makeSqliteSchedulerContext q conn = do
@@ -45,6 +46,7 @@ makeSqliteSchedulerContext q conn = do
             remapPointers = remapPointersSqlite sync async c conn,
             pendingQuestions = pendingQuestionsSqlite sync async c conn,
             getWorkspace = getWorkspaceSqlite sync async c conn,
+            workspaceIdOf = workspaceIdOfSqlite sync async c conn,
             getNextWorkspace = getNextWorkspaceSqlite sync async c conn,
             dereference = dereferenceSqlite sync async c conn,
             reifyWorkspace = reifyWorkspaceSqlite sync async c conn,
@@ -205,10 +207,7 @@ sendAnswerSqlite sync async c conn userId versionId msg = do
                                 ":workspaceId" := (workspaceId :: Text),
                                 ":time" := t,
                                 ":prevVersion" := Just versionIdText]
-            -- TODO: XXX If we revisit, and thus change an answer, this will need to be an INSERT OR REPLACE or we'll need to start
-            -- actually using this time parameter. If this is all that is changed, then we'll get a model of edits where we see
-            -- the following questions upon return, possibly referring to pointers in an answer that no longer exist.
-            executeNamed conn "INSERT OR REPLACE INTO Answers (versionId, answer) VALUES (:versionId, :answer)" [
+            executeNamed conn "INSERT INTO Answers (versionId, answer) VALUES (:versionId, :answer)" [
                                 ":versionId" := vIdText,
                                 ":answer" := msgText]
     insertCommand sync async c conn userId vId (Reply msg)
@@ -294,6 +293,7 @@ pendingQuestionsSqlite sync async c conn versionId = do
 
 -- TODO: Maybe maintain a cache of workspaces.
 -- NOT CACHEABLE but the components should be. Cacheable if answered, for now at least.
+
 getWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO Workspace
 getWorkspaceSqlite sync async c conn versionId = do
     let !versionIdText = toText (versionIdToBuilder versionId)
@@ -319,6 +319,14 @@ getWorkspaceSqlite sync async c conn versionId = do
             messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
             expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
             time = Time t }
+
+
+workspaceIdOfSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO WorkspaceId
+workspaceIdOfSqlite sync async c conn vId = do
+    let !vIdText = toText (versionIdToBuilder vId)
+    sync $ do
+        [Only workspaceId] <- query conn "SELECT workspaceId FROM WorkspaceVersions WHERE versionId = ? LIMIT 1" (Only vIdText)
+        return $ workspaceIdFromText workspaceId
 
 -- NOT CACHEABLE
 getNextWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (Maybe VersionId)

@@ -12,7 +12,7 @@ import Exp ( Pattern, Exp', Konts', EvalState' )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, applyLabel, stripLabel )
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Util ( Counter, newCounter )
-import Workspace ( Workspace(..), VersionId )
+import Workspace ( Workspace(..), WorkspaceId, VersionId )
 
 data CacheState = CacheState {
     functionCounter :: Counter,
@@ -74,6 +74,7 @@ makeCachingSchedulerContext cache ctxt = do
                 remapPointers = remapPointersCaching cache ctxt,
                 pendingQuestions = pendingQuestionsCaching cache ctxt,
                 getWorkspace = getWorkspaceCaching cache ctxt,
+                workspaceIdOf = workspaceIdOfCaching cache ctxt,
                 getNextWorkspace = getNextWorkspaceCaching cache ctxt,
                 dereference = dereferenceCaching cache ctxt,
                 reifyWorkspace = reifyWorkspaceCaching cache ctxt,
@@ -179,6 +180,9 @@ pendingQuestionsCaching cache ctxt workspaceId = do
 getWorkspaceCaching :: CacheState -> SchedulerContext e -> VersionId -> IO Workspace
 getWorkspaceCaching cache ctxt workspaceId = do
     (\m -> case M.lookup workspaceId m of Just a -> a) <$> readTVarIO (workspacesC cache)
+
+workspaceIdOfCaching :: CacheState -> SchedulerContext e -> VersionId -> IO WorkspaceId
+workspaceIdOfCaching cache ctxt versionId = error "workspaceIdOfCachinge: TODO XXX"
 
 getNextWorkspaceCaching :: CacheState -> SchedulerContext e -> IO (Maybe VersionId)
 getNextWorkspaceCaching cache ctxt = error "getNextWorkspaceCaching: not implemented"

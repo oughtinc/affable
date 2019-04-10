@@ -30,7 +30,7 @@ import Exp ( Pattern, Name(..), Exp(..) )
 import Message ( Message(..), Pointer, stripLabel )
 import Scheduler ( SessionId, UserId, Event(..), SchedulerFn, SchedulerContext(..),
                    newUserId, canonicalizeEvents, getWorkspace, createInitialWorkspace, labelMessage, createWorkspace )
-import Workspace ( VersionId, Workspace(..) )
+import Workspace ( Workspace(..), WorkspaceId, VersionId )
 
 data Response = OK | Error T.Text deriving ( Generic )
 
@@ -83,20 +83,20 @@ nextHandler lookupWorkspace nextWorkspace (user@(User userId), mSessionId) = lif
     print ("Next", userId, mSessionId) -- DELETEME
     mWorkspaceId <- nextWorkspace user mSessionId
     case mWorkspaceId of
-        Just (workspaceId, sessionId) -> fmap (\ws -> Just (ws, sessionId)) (lookupWorkspace workspaceId)
+        Just (versionId, sessionId) -> fmap (\ws -> Just (ws, sessionId)) (lookupWorkspace versionId)
         Nothing -> return Nothing
 
 commandHandler :: (UserId -> VersionId -> [Event] -> IO ()) -> Server CommandAPI
 commandHandler reply = viewHandler :<|> replyHandler :<|> waitHandler
-    where viewHandler (User userId, workspaceId, msgs, ptr) = liftIO $ do
-            print ("View", userId, workspaceId, msgs, ptr) -- DELETEME
-            OK <$ reply userId workspaceId (map Create msgs ++ [Expand ptr])
-          replyHandler (User userId, workspaceId, msgOrPtrs, msg) = liftIO $ do
-            print ("Reply", userId, workspaceId, msgOrPtrs, msg) -- DELETEME
-            OK <$ reply userId workspaceId (map (either Create Expand) msgOrPtrs ++ [Answer msg])
-          waitHandler (User userId, workspaceId, msgOrPtrs) = liftIO $ do
-            print ("Wait", userId, workspaceId, msgOrPtrs) -- DELETEME
-            OK <$ reply userId workspaceId (map (either Create Expand) msgOrPtrs ++ [Submit])
+    where viewHandler (User userId, versionId, msgs, ptr) = liftIO $ do
+            print ("View", userId, versionId, msgs, ptr) -- DELETEME
+            OK <$ reply userId versionId (map Create msgs ++ [Expand ptr])
+          replyHandler (User userId, versionId, msgOrPtrs, msg) = liftIO $ do
+            print ("Reply", userId, versionId, msgOrPtrs, msg) -- DELETEME
+            OK <$ reply userId versionId (map (either Create Expand) msgOrPtrs ++ [Answer msg])
+          waitHandler (User userId, versionId, msgOrPtrs) = liftIO $ do
+            print ("Wait", userId, versionId, msgOrPtrs) -- DELETEME
+            OK <$ reply userId versionId (map (either Create Expand) msgOrPtrs ++ [Submit])
 
 overallHandler :: CompletionContext extra
                -> (Maybe UserId -> IO User)
@@ -118,8 +118,8 @@ overallHandler compCtxt makeUser nextWorkspace deref lookupWorkspace reply
 
 data SessionState = SessionState {
     sessionRequestTChan :: TChan VersionId,
-    sessionResponseTMVarsRef :: IORef (M.Map VersionId (TMVar (UserId, Event))),
-    sessionDrainingTMVarsRef :: IORef (M.Map VersionId (TMVar (UserId, Event))),
+    sessionResponseTMVarsRef :: IORef (M.Map WorkspaceId (TMVar (UserId, Event))),
+    sessionDrainingTMVarsRef :: IORef (M.Map WorkspaceId (TMVar (UserId, Event))),
     sessionDoneRef :: IORef Bool }
 
 -- For a web service, we're going to want to separate reading from the channel from giving a response.
@@ -153,17 +153,18 @@ initServer dbCtxt = do
                     modifyIORef' sessionMapRef (M.insertWith (\_ old -> old) sessionId ss) -- Keep the existing SessionState if it already exists.
                     return (ss, True)
 
-        blockOnUser sessionId workspaceId = liftIO $ do
+        blockOnUser sessionId versionId = liftIO $ do
             (ss, False) <- sessionState sessionId -- Should never be a new SessionState.
             let !responseTMVarsRef = sessionResponseTMVarsRef ss
                 !drainingTMVarsRef = sessionDrainingTMVarsRef ss
                 !requestTChan = sessionRequestTChan ss
+            workspaceId <- workspaceIdOf ctxt versionId -- TODO: This could be handled better.
             mResponseTMVar <- M.lookup workspaceId <$> readIORef drainingTMVarsRef
             case mResponseTMVar of
                 Nothing -> do
                     responseTMVar <- newEmptyTMVarIO
                     modifyIORef' responseTMVarsRef (M.insert workspaceId responseTMVar)
-                    atomically $ writeTChan requestTChan workspaceId
+                    atomically $ writeTChan requestTChan versionId
                     atomically $ takeTMVar responseTMVar
                 Just responseTMVar -> do
                     r@(_, resp) <- atomically $ takeTMVar responseTMVar
@@ -173,15 +174,17 @@ initServer dbCtxt = do
                         _ -> return r
 
         -- TODO: Check if userID is in userIdRef. If not, then ignore.
-        replyFromUser userId workspaceId evts = go =<< canonicalizeEvents ctxt evts
+        replyFromUser userId versionId evts = go =<< canonicalizeEvents ctxt evts
             where go [evt] = do
                     (ss, sessionId) <- userSessionState userId
                     let !responseTMVarsRef = sessionResponseTMVarsRef ss
+                    workspaceId <- workspaceIdOf ctxt versionId
                     Just responseTMVar <- atomicModifyIORef' responseTMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
                     updateUserSession userId sessionId Nothing
                     atomically $ putTMVar responseTMVar (userId, evt)
                   go (evt:evts) = do
                     (ss, sessionId) <- userSessionState userId
+                    workspaceId <- workspaceIdOf ctxt versionId
                     let !responseTMVarsRef = sessionResponseTMVarsRef ss
                         !drainingTMVarsRef = sessionDrainingTMVarsRef ss
                     Just responseTMVar <- atomicModifyIORef' responseTMVarsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) workspaceId)
@@ -238,8 +241,7 @@ initServer dbCtxt = do
         makeUser (Just oldUserId) = do
             uIds <- readIORef userIdRef
             case M.lookup oldUserId uIds of
-                Just _ -> return (User oldUserId) -- TODO: Only keep old user ID if it was in this run.
-                                                  -- Need User ID's to be more unique before they can just be taken for granted.
+                Just _ -> return (User oldUserId)
                 Nothing -> makeUser Nothing
 
         makeSession u@(User userId) mSessionId = do
