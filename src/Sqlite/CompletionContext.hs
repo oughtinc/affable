@@ -30,7 +30,7 @@ completionsForSqlite sync q conn primPatterns sessionId = do
         [fId] <- queryNamed conn "SELECT f.id \
                                  \FROM Functions f \
                                  \INNER JOIN Continuations c ON c.function = f.id \
-                                 \INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
+                                 \INNER JOIN Trace t ON t.versionId = c.versionId \
                                  \INNER JOIN SessionProcesses s ON s.processId = t.processId \
                                  \WHERE s.sessionId = :sessionId AND f.isAnswer = 1 \
                                  \LIMIT 1" [":sessionId" := toText (sessionIdToBuilder sessionId)]
