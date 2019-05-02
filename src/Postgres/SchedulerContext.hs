@@ -181,11 +181,14 @@ sendAnswerPostgres sync async c conn userId versionId msg = do
         withTransaction conn $ do
             -- TODO: Stick all this into a stored procedure.
             -- TODO: XXX "Updating" the parent means when we return from a function call in the interpreter the parent workspace is out-of-date.
-            [Only pVId] <- query conn "SELECT parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only versionId)
-            [(pWorkspaceId, ppVId)] <- query conn "SELECT workspaceId, parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only pVId)
-            execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
-                         \VALUES (?, ?, ?, ?, ?)"
-                                (parentVId, pWorkspaceId :: WorkspaceId, ppVId :: Maybe VersionId, t, Just (pVId :: VersionId))
+            [Only mpVId] <- query conn "SELECT parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only versionId)
+            case mpVId of
+                Just pVId -> do
+                    [(pWorkspaceId, ppVId)] <- query conn "SELECT workspaceId, parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only pVId)
+                    () <$ execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
+                                       \VALUES (?, ?, ?, ?, ?)"
+                                        (parentVId, pWorkspaceId :: WorkspaceId, ppVId :: Maybe VersionId, t, Just (pVId :: VersionId))
+                Nothing -> return ()
             () <$ execute conn "INSERT INTO Answers ( versionId, answer ) VALUES (?, ?) \
                                \ON CONFLICT(versionId) DO UPDATE SET answer = excluded.answer"
                                 (versionId, msgText)

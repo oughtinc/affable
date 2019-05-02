@@ -213,16 +213,19 @@ sendAnswerSqlite sync async c conn userId versionId msg = do
     t <- increment c
     async $ do
         withTransaction conn $ do
-            [Only pVId] <- query conn "SELECT parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only versionIdText)
-            [(pWorkspaceId, ppVId)] <- query conn "SELECT workspaceId, parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?"
-                                        (Only pVId)
-            executeNamed conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
-                               \VALUES (:versionId, :workspaceId, :parent, :time, :prevVersion)" [
-                                ":versionId" := parentVIdText,
-                                ":workspaceId" := (pWorkspaceId :: Text),
-                                ":parent" := (ppVId :: Maybe Text),
-                                ":time" := t,
-                                ":prevVersion" := Just (pVId :: Text)]
+            [Only mpVId] <- query conn "SELECT parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only versionIdText)
+            case mpVId of
+                Just pVId -> do
+                    [(pWorkspaceId, ppVId)] <- query conn "SELECT workspaceId, parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?"
+                                                (Only pVId)
+                    executeNamed conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
+                                       \VALUES (:versionId, :workspaceId, :parent, :time, :prevVersion)" [
+                                        ":versionId" := parentVIdText,
+                                        ":workspaceId" := (pWorkspaceId :: Text),
+                                        ":parent" := (ppVId :: Maybe Text),
+                                        ":time" := t,
+                                        ":prevVersion" := Just (pVId :: Text)]
+                Nothing -> return ()
             executeNamed conn "INSERT INTO Answers (versionId, answer) VALUES (:versionId, :answer)" [
                                 ":versionId" := versionIdText,
                                 ":answer" := msgText]
