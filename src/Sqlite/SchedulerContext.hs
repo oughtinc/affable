@@ -204,33 +204,15 @@ createWorkspaceSqlite sync async c conn userId versionId qAsAsked qAsAnswered = 
     insertCommand sync async c conn userId versionId (Ask qAsAsked)
     return (childVersionId, childId, t)
 
-sendAnswerSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> IO (VersionId, LogicalTime)
+sendAnswerSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> IO ()
 sendAnswerSqlite sync async c conn userId versionId msg = do
     let !msgText = toText (messageToBuilder msg)
     let !versionIdText = toText (versionIdToBuilder versionId)
-    parentVId <- newVersionId
-    let !parentVIdText = toText (versionIdToBuilder parentVId)
-    t <- increment c
     async $ do
-        withTransaction conn $ do
-            [Only mpVId] <- query conn "SELECT parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only versionIdText)
-            case mpVId of
-                Just pVId -> do
-                    [(pWorkspaceId, ppVId)] <- query conn "SELECT workspaceId, parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?"
-                                                (Only pVId)
-                    executeNamed conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
-                                       \VALUES (:versionId, :workspaceId, :parent, :time, :prevVersion)" [
-                                        ":versionId" := parentVIdText,
-                                        ":workspaceId" := (pWorkspaceId :: Text),
-                                        ":parent" := (ppVId :: Maybe Text),
-                                        ":time" := t,
-                                        ":prevVersion" := Just (pVId :: Text)]
-                Nothing -> return ()
-            executeNamed conn "INSERT INTO Answers (versionId, answer) VALUES (:versionId, :answer)" [
-                                ":versionId" := versionIdText,
-                                ":answer" := msgText]
+        executeNamed conn "INSERT INTO Answers (versionId, answer) VALUES (:versionId, :answer)" [
+                            ":versionId" := versionIdText,
+                            ":answer" := msgText]
     insertCommand sync async c conn userId versionId (Reply msg)
-    return (parentVId, t)
 
 sendMessageSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> VersionId -> Message -> IO ()
 sendMessageSqlite sync async c conn userId srcVersionId tgtVersionId msg = do

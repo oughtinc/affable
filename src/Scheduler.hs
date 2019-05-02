@@ -50,7 +50,7 @@ data SchedulerContext extra = SchedulerContext {
     -- Possibly we should just separate out making a new version of a workspace from the other operations.
     newVersion :: VersionId -> IO (VersionId, LogicalTime),
     createWorkspace :: UserId -> VersionId -> Message -> Message -> IO (VersionId, WorkspaceId, LogicalTime),
-    sendAnswer :: UserId -> VersionId -> Message -> IO (VersionId, LogicalTime),
+    sendAnswer :: UserId -> VersionId -> Message -> IO (),
     sendMessage :: UserId -> VersionId -> VersionId -> Message -> IO (),
     expandPointer :: UserId -> VersionId -> Pointer -> IO (),
     nextPointer :: IO Pointer,

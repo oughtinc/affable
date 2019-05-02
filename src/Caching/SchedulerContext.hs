@@ -141,28 +141,16 @@ createWorkspaceCaching cache ctxt userId versionId qAsAsked qAsAnswered = do
     atomically $ modifyTVar' (workspacesC cache) (M.insert childVId newChildWorkspace . M.adjust new versionId)
     return r
 
-sendAnswerCaching :: CacheState -> SchedulerContext e -> UserId -> VersionId -> Message -> IO (VersionId, LogicalTime)
+sendAnswerCaching :: CacheState -> SchedulerContext e -> UserId -> VersionId -> Message -> IO ()
 sendAnswerCaching cache ctxt userId versionId msg = do
-    r@(parentVId, t) <- sendAnswer ctxt userId versionId msg
+    sendAnswer ctxt userId versionId msg
     Workspace { parentId = mParentWorkspaceId } <- getWorkspaceCaching cache ctxt versionId
-    let new ws = ws {
-                    parentId = parentVId <$ mParentWorkspaceId,
-                    time = Time t }
     case mParentWorkspaceId of
-        Nothing -> atomically $ do
+        Nothing -> atomically $ modifyTVar' (answersC cache) (M.insert versionId msg)
+        Just parentWorkspaceVersionId -> atomically $ do
+            let new ws = ws { subQuestions = map addAnswer (subQuestions ws) }
             modifyTVar' (workspacesC cache) (M.adjust new versionId)
             modifyTVar' (answersC cache) (M.insert versionId msg)
-        Just parentWorkspaceVersionId -> atomically $ do
-            let addNewParentVersion workspaces = M.insert parentVId new workspaces
-                    where !ws = workspaces M.! parentWorkspaceVersionId
-                          new = ws {
-                                    identity = parentVId,
-                                    previousVersion = Just parentWorkspaceVersionId,
-                                    subQuestions = map addAnswer (subQuestions ws),
-                                    time = Time t }
-            modifyTVar' (workspacesC cache) (M.adjust new versionId . addNewParentVersion)
-            modifyTVar' (answersC cache) (M.insert versionId msg)
-    return r
   where addAnswer sq@(qId, q, _) | qId == versionId = (qId, q, Just msg)
                                  | otherwise = sq
 

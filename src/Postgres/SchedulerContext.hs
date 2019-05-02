@@ -172,28 +172,14 @@ createWorkspacePostgres sync async c conn userId versionId qAsAsked qAsAnswered 
     insertCommand sync async c conn userId versionId (Ask qAsAsked)
     return (childVersionId, childId, t)
 
-sendAnswerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> IO (VersionId, LogicalTime)
+sendAnswerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> IO ()
 sendAnswerPostgres sync async c conn userId versionId msg = do
     let !msgText = toText (messageToBuilder msg)
-    t <- increment c
-    parentVId <- newVersionId
     async $ do
-        withTransaction conn $ do
-            -- TODO: Stick all this into a stored procedure.
-            -- TODO: XXX "Updating" the parent means when we return from a function call in the interpreter the parent workspace is out-of-date.
-            [Only mpVId] <- query conn "SELECT parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only versionId)
-            case mpVId of
-                Just pVId -> do
-                    [(pWorkspaceId, ppVId)] <- query conn "SELECT workspaceId, parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only pVId)
-                    () <$ execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
-                                       \VALUES (?, ?, ?, ?, ?)"
-                                        (parentVId, pWorkspaceId :: WorkspaceId, ppVId :: Maybe VersionId, t, Just (pVId :: VersionId))
-                Nothing -> return ()
-            () <$ execute conn "INSERT INTO Answers ( versionId, answer ) VALUES (?, ?) \
-                               \ON CONFLICT(versionId) DO UPDATE SET answer = excluded.answer"
-                                (versionId, msgText)
+        () <$ execute conn "INSERT INTO Answers ( versionId, answer ) VALUES (?, ?) \
+                           \ON CONFLICT(versionId) DO UPDATE SET answer = excluded.answer"
+                            (versionId, msgText)
     insertCommand sync async c conn userId versionId (Reply msg)
-    return (parentVId, t)
 
 sendMessagePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> VersionId -> Message -> IO ()
 sendMessagePostgres sync async c conn userId srcVersionId tgtVersionId msg = do
