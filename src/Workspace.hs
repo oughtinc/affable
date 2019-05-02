@@ -28,7 +28,9 @@ type VersionId = UUID
 -- This is what needs to be rendered (possibly with stuff hidden) to the user.
 data Workspace = Workspace {
     identity :: !VersionId,
+    workspaceIdentity :: !WorkspaceId,
     parentId :: Maybe VersionId,
+    previousVersion :: Maybe VersionId,
     question :: Question,
     subQuestions :: [(VersionId, Question, Maybe Answer)],
     messageHistory :: [Message], -- TODO: Do we want the history to include who the message was from?

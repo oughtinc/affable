@@ -20,7 +20,7 @@ import Sqlite.CompletionContext ( makeSqliteCompletionContext )
 import Sqlite.SchedulerContext ( makeSqliteSchedulerContext )
 import Time ( Time(..) )
 import Util ( Queue, newQueue, closeQueue, toText, parseUnsafe )
-import Workspace ( Workspace(..), workspaceIdFromText )
+import Workspace ( Workspace(..), versionIdFromText, workspaceIdFromText )
 
 makeSqliteDatabaseContext :: Connection -> IO (DatabaseContext (Connection, Queue))
 makeSqliteDatabaseContext conn = do
@@ -56,13 +56,13 @@ snapshotSqlite conn = do
 
     workspaces <- allWorkspaces
 
-    answers <- M.fromList . map (\(i, ma) -> (workspaceIdFromText i, parseMessageUnsafeDB ma) )
-                <$> query_ conn "SELECT workspaceId, answer FROM Answers"
+    answers <- M.fromList . map (\(i, ma) -> (versionIdFromText i, parseMessageUnsafeDB ma) )
+                <$> query_ conn "SELECT versionId, answer FROM Answers"
 
     answerFunctions <- query_ conn "SELECT s.sessionId, f.id \
                                    \FROM Functions f \
                                    \INNER JOIN Continuations c ON c.function = f.id \
-                                   \INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
+                                   \INNER JOIN Trace t ON t.versionId = c.versionId \
                                    \INNER JOIN SessionProcesses s ON s.processId = t.processId \
                                    \WHERE f.isAnswer = 1"
 
@@ -71,13 +71,13 @@ snapshotSqlite conn = do
     alternatives <- M.fromListWith (++) . map (\(f, ps, e) -> (f, [(parsePatternsUnsafe ps, expFromDB e)]))
                         <$> query_ conn "SELECT function, pattern, body FROM Alternatives ORDER BY rowid ASC"
 
-    links <- M.fromListWith M.union . map (\(i, s, t) -> (workspaceIdFromText i, M.singleton s t))
-                <$> query_ conn "SELECT workspaceId, sourceId, targetId FROM Links"
+    links <- M.fromListWith M.union . map (\(i, s, t) -> (versionIdFromText i, M.singleton s t))
+                <$> query_ conn "SELECT versionId, sourceId, targetId FROM Links"
 
     continuations <- allContinuations (S.fromList $ map snd answerFunctions)
 
-    contArgs <- M.fromListWith M.union . map (\(i, f, n, v) -> ((workspaceIdFromText i, f), M.singleton n (parseMessageUnsafeDB v)))
-                    <$> query_ conn "SELECT workspaceId, function, argNumber, value FROM ContinuationArguments"
+    contArgs <- M.fromListWith M.union . map (\(i, f, n, v) -> ((versionIdFromText i, f), M.singleton n (parseMessageUnsafeDB v)))
+                    <$> query_ conn "SELECT versionId, function, argNumber, value FROM ContinuationArguments"
 
     trace <- theTrace
 
@@ -103,54 +103,56 @@ snapshotSqlite conn = do
                 runQueueS = fmap (M.fromList . map (\p -> (p, case lookup p trace of Just s -> s))) running,
                 sessionsS = sessions }
   where allWorkspaces = do
-            workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
+            workspaces <- query_ conn "SELECT versionId, id, parentWorkspaceVersionId, previousVersion, logicalTime, questionAsAnswered \
                                       \FROM Workspaces"
             messages <- query_ conn "SELECT targetWorkspaceId, content FROM Messages" -- TODO: ORDER
             subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
                                         \FROM Workspaces p \
                                         \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
-                                        \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
+                                        \LEFT OUTER JOIN Answers a ON q.id = a.versionId \
                                         \ORDER BY p.id ASC, q.logicalTime DESC"
-            expanded <- query_ conn "SELECT workspaceId, pointerId, content \
+            expanded <- query_ conn "SELECT versionId, pointerId, content \
                                     \FROM ExpandedPointers e \
                                     \INNER JOIN Pointers p ON e.pointerId = p.id"
-            let messageMap = M.fromListWith (++) $ map (\(i, m) -> (workspaceIdFromText i, [parseMessageUnsafe m])) messages
+            let messageMap = M.fromListWith (++) $ map (\(i, m) -> (versionIdFromText i, [parseMessageUnsafe m])) messages
                 subquestionsMap = M.fromListWith (++) $
                                     map (\(i, qId, q, ma) ->
-                                            (workspaceIdFromText i,
-                                             [(workspaceIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)]))
+                                            (versionIdFromText i,
+                                             [(versionIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)]))
                                         subquestions
-                expandedMap = M.fromListWith M.union $ map (\(i, p, m) -> (workspaceIdFromText i, M.singleton p (parseMessageUnsafe' p m))) expanded
-            return $ M.fromList $ map (\(i, p, t, q) -> let !wsId = workspaceIdFromText i
-                                            in (wsId, Workspace {
-                                                        identity = wsId,
-                                                        parentId = workspaceIdFromText <$> p,
+                expandedMap = M.fromListWith M.union $ map (\(i, p, m) -> (versionIdFromText i, M.singleton p (parseMessageUnsafe' p m))) expanded
+            return $ M.fromList $ map (\(i, wsId, p, pv, t, q) -> let !vId = versionIdFromText i
+                                            in (vId, Workspace {
+                                                        identity = vId,
+                                                        workspaceIdentity = workspaceIdFromText wsId,
+                                                        parentId = versionIdFromText <$> p,
+                                                        previousVersion = versionIdFromText <$> pv,
                                                         question = parseMessageUnsafeDB q,
-                                                        subQuestions = maybe [] id $ M.lookup wsId subquestionsMap,
-                                                        messageHistory = maybe [] id $ M.lookup wsId messageMap,
-                                                        expandedPointers = maybe M.empty id $ M.lookup wsId expandedMap,
+                                                        subQuestions = maybe [] id $ M.lookup vId subquestionsMap,
+                                                        messageHistory = maybe [] id $ M.lookup vId messageMap,
+                                                        expandedPointers = maybe M.empty id $ M.lookup vId expandedMap,
                                                         time = Time t })) workspaces
 
         theTrace = do
-            ts <- query_ conn "SELECT processId, varEnv, funEnv, workspaceId, expression, continuation FROM Trace ORDER BY t DESC"
+            ts <- query_ conn "SELECT processId, varEnv, funEnv, versionId, expression, continuation FROM Trace ORDER BY t DESC"
             return $ map (\(pId, varEnv, funEnv, s, e, k) ->
                             (processIdFromText pId,
                              (parseUnsafe parseVarEnv varEnv,
                               parseUnsafe parseFunEnv funEnv,
-                              workspaceIdFromText s,
+                              versionIdFromText s,
                               expFromDB e,
                               parseKont1UnsafeDB k))) ts
 
         allContinuations answerFunctions = do
             let toName fId | fId `S.member` answerFunctions = ANSWER
                            | otherwise = LOCAL fId
-            ks <- query_ conn "SELECT workspaceId, function, next FROM Continuations"
-            vars <- query_ conn "SELECT workspaceId, function, variable, value FROM ContinuationEnvironments"
+            ks <- query_ conn "SELECT versionId, function, next FROM Continuations"
+            vars <- query_ conn "SELECT versionId, function, variable, value FROM ContinuationEnvironments"
             let !funEnvs = M.fromListWith (M.unionWith M.union) $
                             map (\(i, f, x, v) ->
-                                    (workspaceIdFromText i, M.singleton (toName f) (M.singleton x (parseMessageUnsafeDB v)))) vars
+                                    (versionIdFromText i, M.singleton (toName f) (M.singleton x (parseMessageUnsafeDB v)))) vars
             return $ M.fromListWith M.union $
-                        map (\(i, f, k) -> let !wsId = workspaceIdFromText i
+                        map (\(i, f, k) -> let !wsId = versionIdFromText i
                                                !funEnv = maybe M.empty id $ M.lookup wsId funEnvs
                                            in (wsId, M.singleton f (CallKont funEnv (toName f) wsId (parseKont1UnsafeDB k)))) ks
 
@@ -161,19 +163,18 @@ initDBSqlite conn = do
     execute_ conn "\
         \CREATE TABLE IF NOT EXISTS Workspaces (\n\
         \   id TEXT PRIMARY KEY,\n\
-        \   parentWorkspaceVersionId TEXT NULL,\n\
         \   questionAsAsked TEXT NOT NULL,\n\
-        \   questionAsAnswered TEXT NOT NULL,\n\
-        \   FOREIGN KEY ( parentWorkspaceVersionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE\n\
+        \   questionAsAnswered TEXT NOT NULL\n\
         \);"
-    execute_ conn "CREATE INDEX IF NOT EXISTS Workspaces_IDX_ParentWorkspaces_Id ON Workspaces(parentWorkspaceVersionId, id);"
     execute_ conn "\
         \CREATE TABLE IF NOT EXISTS WorkspaceVersions (\n\
         \   versionId TEXT PRIMARY KEY,\n\
         \   workspaceId TEXT NOT NULL,\n\
+        \   parentWorkspaceVersionId TEXT NULL,\n\
         \   logicalTime INTEGER NOT NULL,\n\
         \   previousVersion TEXT NULL,\n\
         \   FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE,\n\
+        \   FOREIGN KEY ( parentWorkspaceVersionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
         \   FOREIGN KEY ( previousVersion ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE\n\
         \);"
     execute_ conn "\
@@ -302,7 +303,11 @@ initDBSqlite conn = do
         \);"
     execute_ conn "\
         \CREATE VIEW IF NOT EXISTS Latest_WorkspaceVersions AS\n\
-        \   SELECT DISTINCT c.workspaceId, FIRST_VALUE(c.versionId) OVER w AS versionId, FIRST_VALUE(c.logicalTime) OVER w AS logicalTime\n\
+        \   SELECT DISTINCT\n\
+        \       c.workspaceId,\n\
+        \       FIRST_VALUE(c.versionId) OVER w AS versionId,\n\
+        \       FIRST_VALUE(c.parentWorkspaceVersionId) OVER w AS parentWorkspaceVersionId,\n\
+        \       FIRST_VALUE(c.logicalTime) OVER w AS logicalTime\n\
         \   FROM WorkspaceVersions c\n\
         \   WINDOW w AS (PARTITION BY c.workspaceId ORDER BY c.logicalTime DESC);"
     -- TODO: Can this be done better? Does Sqlite have some equivalent to MSSQL's CROSS APPLY or Postgres' LATERAL?
@@ -346,6 +351,6 @@ initDBSqlite conn = do
         \          c.logicalTime, cw.questionAsAsked, a.answer\n\
         \   FROM Latest_WorkspaceVersions l\n\
         \   INNER JOIN Prior_Versions w ON w.latest = l.versionId\n\
-        \   INNER JOIN Workspaces cw ON cw.parentWorkspaceVersionId = w.versionId\n\
-        \   INNER JOIN Latest_WorkspaceVersions c ON c.workspaceId = cw.id\n\
+        \   INNER JOIN Latest_WorkspaceVersions c ON c.parentWorkspaceVersionId = w.versionId\n\
+        \   INNER JOIN Workspaces cw ON cw.id = c.workspaceId\n\
         \   LEFT OUTER JOIN Answers a ON a.versionId = c.versionId;"

@@ -19,6 +19,7 @@ import Text.Megaparsec ( parseMaybe ) -- megaparsec
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
                  canonicalizeMessage, normalizeMessage, generalizeMessage, boundPointers, stripLabel, renumberMessage' )
 import Util ( parseUUID, uuidToBuilder )
+import Time ( LogicalTime )
 import Workspace ( Workspace(..), VersionId, WorkspaceId )
 
 data Event
@@ -47,10 +48,11 @@ data SchedulerContext extra = SchedulerContext {
     newSession :: Maybe SessionId -> IO SessionId,
     -- TODO: XXX Have this take a Bool to specify whether it should make a new version or attach to the current one.
     -- Possibly we should just separate out making a new version of a workspace from the other operations.
-    createWorkspace :: UserId -> VersionId -> Message -> Message -> IO (VersionId, VersionId),
-    sendAnswer :: UserId -> VersionId -> Message -> IO VersionId,
-    sendMessage :: UserId -> VersionId -> VersionId -> Message -> IO VersionId,
-    expandPointer :: UserId -> VersionId -> Pointer -> IO VersionId,
+    newVersion :: VersionId -> IO (VersionId, LogicalTime),
+    createWorkspace :: UserId -> VersionId -> Message -> Message -> IO (VersionId, WorkspaceId, LogicalTime),
+    sendAnswer :: UserId -> VersionId -> Message -> IO (VersionId, LogicalTime),
+    sendMessage :: UserId -> VersionId -> VersionId -> Message -> IO (),
+    expandPointer :: UserId -> VersionId -> Pointer -> IO (),
     nextPointer :: IO Pointer,
     createPointers :: PointerEnvironment -> IO (),
     remapPointers :: PointerRemapping -> IO (),
@@ -62,6 +64,7 @@ data SchedulerContext extra = SchedulerContext {
     reifyWorkspace :: VersionId -> IO Message,
     extraContent :: extra -- This is to support making schedulers that can (e.g.) access SQLite directly.
   }
+
 
 normalize :: SchedulerContext extra -> Message -> IO Message
 normalize ctxt msg = do
@@ -125,12 +128,14 @@ makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeSingleUserScheduler ctxt = do
     let scheduler userId workspace (Create msg) = do
             msg' <- normalize ctxt msg
-            (_, newWorkspaceId) <- createWorkspace ctxt userId (identity workspace) msg msg'
-            Just <$> getWorkspace ctxt newWorkspaceId
+            (vId, _) <- newVersion ctxt (identity workspace)
+            (childVId, _, _) <- createWorkspace ctxt userId vId msg msg'
+            Just <$> getWorkspace ctxt childVId
 
         scheduler userId workspace (Answer msg) = do
             msg <- normalize ctxt msg
-            sendAnswer ctxt userId (identity workspace) msg
+            (vId, _) <- newVersion ctxt (identity workspace)
+            sendAnswer ctxt userId vId msg
             mNewWorkspaceId <- getNextWorkspace ctxt
             case mNewWorkspaceId of
                 Just newWorkspaceId -> Just <$> getWorkspace ctxt newWorkspaceId
@@ -138,11 +143,13 @@ makeSingleUserScheduler ctxt = do
 
         scheduler userId workspace (Send ws msg) = do
             msg <- normalize ctxt msg
-            sendMessage ctxt userId (identity workspace) ws msg
+            (vId, _) <- newVersion ctxt (identity workspace)
+            sendMessage ctxt userId vId ws msg
             Just <$> getWorkspace ctxt (identity workspace)
 
         scheduler userId workspace (Expand ptr) = do
-            expandPointer ctxt userId (identity workspace) ptr
+            (vId, _) <- newVersion ctxt (identity workspace)
+            expandPointer ctxt userId vId ptr
             Just <$> getWorkspace ctxt (identity workspace)
 
         scheduler userId workspace Submit = return $ Just workspace

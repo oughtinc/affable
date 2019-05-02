@@ -97,7 +97,6 @@ addFunctionPostgres sync async conn answerId name = do
 
 linkVarsPostgres :: SyncFunc -> AsyncFunc -> Connection -> VersionId -> PointerRemapping -> IO ()
 linkVarsPostgres sync async conn versionId mapping = do
-    -- TODO: Need to handle versions here? Probably.
     async $ do
         () <$ executeMany conn "INSERT INTO Links ( versionId, sourceId, targetId ) VALUES (?, ?, ?) \
                                \ON CONFLICT (versionId, sourceId) DO UPDATE SET targetId = excluded.targetId"
@@ -106,7 +105,7 @@ linkVarsPostgres sync async conn versionId mapping = do
 linksPostgres :: SyncFunc -> AsyncFunc -> Connection -> VersionId -> IO PointerRemapping
 linksPostgres sync async conn versionId = do
     sync $ do
-        srcTgts <- query conn "SELECT sourceId, targetId FROM Links WHERE versionId = ?" (Only versionId)
+        srcTgts <- query conn "SELECT sourceId, targetId FROM Current_Links WHERE versionId = ?" (Only versionId)
         return $ M.fromList srcTgts
 
 addCaseForPostgres :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()

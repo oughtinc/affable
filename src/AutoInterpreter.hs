@@ -34,7 +34,7 @@ import Message ( Message(..), Pointer, PointerRemapping, messageToBuilder, match
                  stripLabel, matchPointers, expandPointers, substitute, renumberMessage' )
 import Primitive ( makePrimitives )
 import Scheduler ( UserId, Event(..), SchedulerContext(..), SchedulerFn,
-                   autoUserId, relabelMessage, fullyExpand, normalize, generalize, canonicalizeEvents  )
+                   autoUserId, relabelMessage, fullyExpand, normalize, generalize, canonicalizeEvents )
 import Util ( toText, invertMap )
 import Workspace ( VersionId, Workspace(..) )
 
@@ -95,17 +95,16 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
         -- If retrieveArgument produces something then we've recently done a variable lookup and need
         -- to map pointers from it. Otherwise we just map pointers from all the answers that have been
         -- added in the latest batch.
-        linkPointers ANSWER workspace [pattern] = do
-            let !versionId = identity workspace
-            liftIO $ linkVars autoCtxt versionId $ matchPointers pattern $ question workspace
-        linkPointers _ workspace patterns = do
-            let !versionId = identity workspace
-            mDeref <- retrieveArgument versionId
+        linkPointers ANSWER workspace vId [pattern] = do
+            liftIO $ linkVars autoCtxt vId $ matchPointers pattern (question workspace)
+        linkPointers _ workspace vId patterns = do
+            mDeref <- retrieveArgument (identity workspace)
             case (mDeref, patterns) of
-                (Just a, [pattern]) -> liftIO $ linkVars autoCtxt versionId $ matchPointers pattern a
+                (Just a, [pattern]) -> liftIO $ linkVars autoCtxt vId $ matchPointers pattern a
                 (Nothing, _) -> do
+                    workspace <- liftIO $ getWorkspace ctxt vId
                     let !answered = mapMaybe (\(_, _, ma) -> ma) (subQuestions workspace)
-                    liftIO $ zipWithM_ (\pattern a -> linkVars autoCtxt versionId $ matchPointers pattern a)
+                    liftIO $ zipWithM_ (\pattern a -> linkVars autoCtxt vId $ matchPointers pattern a)
                                        (reverse patterns)
                                        (reverse answered)
                 -- Intentionally incomplete.
@@ -177,6 +176,7 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                             let !mMatch = asum $ map (\(ps, e) -> fmap (\bindings -> (ps, M.union (M.unions bindings) varEnv, e)) $ zipWithM matchMessage ps ms') alts
                             case mMatch of
                                 Just (patterns, varEnv', e) -> do
+                                    (vId, _) <- liftIO $ newVersion ctxt versionId -- TODO: I want to have a way to not use a new version.
                                     varEnv' <- liftIO $ traverse (\case Reference p -> dereference ctxt p; x -> return x) varEnv'
 
                                     -- This is to make it so occurrences of variables bound by as-patterns don't get substituted.
@@ -186,83 +186,81 @@ makeMatcher blockOnUser matchPrim giveArgument retrieveArgument autoCtxt = do
                                                                                     _ -> M.empty)
                                                                       patterns ms') varEnv'
 
-                                    linkPointers f workspace patterns
-                                    globalToLocal <- liftIO $ links autoCtxt versionId
+                                    linkPointers f workspace vId patterns
+                                    globalToLocal <- liftIO $ links autoCtxt vId
 
                                     -- This is a bit hacky. If this approach is the way to go, make these patterns individual constructors.
                                     case e of
                                         LetFun _ (Call _ [Var ptr]) -> do -- expand case
                                             let !p = maybe ptr id $ M.lookup ptr $ invertMap globalToLocal
                                             arg <- liftIO $ dereference ctxt p
-                                            vId <- liftIO $ expandPointer ctxt autoUserId versionId p
-                                            giveArgument vId arg -- TODO: XXX Or versionId?
+                                            liftIO $ expandPointer ctxt autoUserId vId p
+                                            giveArgument vId arg -- TODO: Or versionId?
                                             eval (M.insert ptr arg varEnv') funEnv vId e k -- TODO: Think about this.
                                         LetFun _ (Call _ args) -> do -- ask cases
                                             let !localToGlobal = invertMap globalToLocal
-                                            -- TODO: XXX Redo this so we add all workspaces to one version and return that version.
-                                            vId <- foldM (\vId argExp -> do
-                                                                let !m = case argExp of Call ANSWER [Value m] -> m; Prim _ (Value m) -> m
-                                                                let !arg = substitute bindings m
-                                                                pattern <- liftIO $ relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt arg
-                                                                fst <$> liftIO (createWorkspace ctxt autoUserId vId
-                                                                                    (renumberMessage' localToGlobal m) pattern))
-                                                          versionId
-                                                          args
+                                            forM_ args $ \argExp -> do
+                                                    let !m = case argExp of Call ANSWER [Value m] -> m; Prim _ (Value m) -> m
+                                                    let !arg = substitute bindings m
+                                                    pattern <- liftIO $ relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt arg
+                                                    () <$ liftIO (createWorkspace ctxt autoUserId vId
+                                                                    (renumberMessage' localToGlobal m) pattern)
                                             eval varEnv' funEnv vId e k -- TODO: Think about this.
                                         Value msg -> do -- reply case
                                             let !msg' = substitute bindings msg
                                             msg <- liftIO $ normalize ctxt =<< case msg' of Reference p -> dereference ctxt p; _ -> relabelMessage ctxt msg'
-                                            vId <- liftIO $ sendAnswer ctxt autoUserId versionId msg
+                                            liftIO $ sendAnswer ctxt autoUserId vId msg
                                             eval varEnv' funEnv vId e k -- TODO: Think about this.
-                                        -- _ -> eval varEnv' funEnv versionId e k -- Intentionally missing this case.
+                                        -- _ -> eval varEnv' funEnv vId e k -- Intentionally missing this case.
                                 Nothing -> matchPending workspace
                         [] -> matchPending workspace
             retryLoop
           where matchFailed workspace ms' = do
                     let !versionId = identity workspace
+                    (vId, _) <- liftIO $ newVersion ctxt versionId -- TODO: I want to have a way to not use a new version.
                     patterns <- liftIO $ mapM (relabelMessage ctxt) ms'
                     let !(Just bindings) = M.unions <$> zipWithM matchMessage patterns ms' -- This shouldn't fail.
                     bindings <- liftIO $ traverse (\case Reference p -> dereference ctxt p; x -> return x) bindings
                     let !varEnv' = M.union bindings varEnv
 
-                    linkPointers f workspace patterns
-                    globalToLocal <- liftIO $ links autoCtxt versionId
+                    linkPointers f workspace vId patterns
+                    globalToLocal <- liftIO $ links autoCtxt vId
 
-                    let loop vId = blockOnUser vId >>= processEvent vId
-                        processEvent vId (userId, Create msg) = do
+                    let loop = blockOnUser vId >>= processEvent
+                        processEvent (userId, Create msg) = do
                             pattern <- liftIO $ relabelMessage ctxt =<< normalize ctxt =<< generalize ctxt msg
-                            (vId', _) <- liftIO $ createWorkspace ctxt userId vId msg pattern
-                            loop vId'
-                        processEvent vId (userId, Expand ptr) = do -- TODO: Make this more resilient to pointers that are not in scope.
-                            vId' <- liftIO $ expandPointer ctxt userId vId ptr
+                            (_, _, _) <- liftIO $ createWorkspace ctxt userId vId msg pattern
+                            loop
+                        processEvent (userId, Expand ptr) = do -- TODO: Make this more resilient to pointers that are not in scope.
+                            liftIO $ expandPointer ctxt userId vId ptr
                             arg <- liftIO $ dereference ctxt ptr
-                            giveArgument vId arg
+                            giveArgument vId arg -- TODO: Or versionId?
                             g <- liftIO $ newFunction autoCtxt
                             let !ptr' = maybe ptr id $ M.lookup ptr globalToLocal
-                            return (vId', M.singleton ptr' arg, LetFun g (Call g [Var ptr']))
-                        processEvent vId (userId, Answer msg@(Structured [Reference p])) = do -- dereference pointers -- TODO: Do this?
+                            return (M.singleton ptr' arg, LetFun g (Call g [Var ptr']))
+                        processEvent (userId, Answer msg@(Structured [Reference p])) = do -- dereference pointers -- TODO: Do this?
                             msg' <- liftIO $ dereference ctxt p
-                            vId' <- liftIO $ sendAnswer ctxt userId vId msg'
-                            return (vId', M.empty, Value $ renumberMessage' globalToLocal msg)
-                        processEvent vId (userId, Answer msg) = do
+                            liftIO $ sendAnswer ctxt userId vId msg'
+                            return (M.empty, Value $ renumberMessage' globalToLocal msg)
+                        processEvent (userId, Answer msg) = do
                             msg' <- liftIO $ relabelMessage ctxt =<< normalize ctxt msg
-                            vId' <- liftIO $ sendAnswer ctxt userId vId msg'
-                            return (vId', M.empty, Value $ renumberMessage' globalToLocal msg)
-                        -- processEvent vId (userId, Send ws msg) = -- Intentionally incomplete pattern match. Should never get here.
-                        processEvent vId (userId, Submit) = do
+                            liftIO $ sendAnswer ctxt userId vId msg'
+                            return (M.empty, Value $ renumberMessage' globalToLocal msg)
+                        -- processEvent (userId, Send ws msg) = -- Intentionally incomplete pattern match. Should never get here.
+                        processEvent (userId, Submit) = do
                             workspace <- liftIO $ getWorkspace ctxt vId -- Refresh workspace.
                             -- Get unanswered questions.
                             let !qs = mapMaybe (\(_, q, ma) -> maybe (Just q) (\_ -> Nothing) ma) $ subQuestions workspace
-                            if null qs then loop vId else do -- If qs is empty there's nothing to wait on so just do nothing.
+                            if null qs then loop else do -- If qs is empty there's nothing to wait on so just do nothing.
                                 g <- liftIO $ newFunction autoCtxt
                                 let args = map (\q -> primToCall (matchPrim q) q) qs
-                                return (vId, M.empty, LetFun g (Call g args))
-                        processEvent vId (userId, Init) = error "processEvent Init: Shouldn't happen."
+                                return (M.empty, LetFun g (Call g args))
+                        processEvent (userId, Init) = error "processEvent Init: Shouldn't happen."
 
                         primToCall (Just p) q = Prim p (Value $ renumberMessage' globalToLocal q)
                         primToCall Nothing q = Call ANSWER [Value $ renumberMessage' globalToLocal q]
 
-                    (vId, extraBindings, e) <- loop versionId
+                    (extraBindings, e) <- loop
                     liftIO $ addCaseFor autoCtxt f patterns e
                     liftIO $ debugCode
                     eval (M.union extraBindings varEnv') funEnv vId e k
@@ -273,7 +271,7 @@ makeInterpreterScheduler isSequential autoCtxt initWorkspaceId = do
     let !ctxt = schedulerContext autoCtxt
 
     requestTChan <- liftIO (newTChanIO :: IO (TChan (Maybe VersionId)))
-    responseTMVarsRef <- liftIO $ newIORef (M.empty :: M.Map VersionId (TMVar (UserId, Event)))
+    responseTMVarsRef <- liftIO $ newIORef (M.empty :: M.Map VersionId (TMVar (UserId, Event))) -- TODO: Make this use workspaceIds?
 
     let blockOnUser versionId = liftIO $ do
             responseTMVar <- newEmptyTMVarIO
@@ -340,8 +338,10 @@ spawnInterpreter blockOnUser begin end isSequential autoCtxt = do
 
     argumentsRef <- liftIO $ newIORef (M.empty :: M.Map VersionId Message)
 
-    let giveArgument versionId p = liftIO $ modifyIORef' argumentsRef $ M.insert versionId p
-        retrieveArgument versionId = liftIO $ atomicModifyIORef' argumentsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) versionId)
+    let giveArgument versionId p = liftIO $ do
+            modifyIORef' argumentsRef $ M.insert versionId p
+        retrieveArgument versionId = liftIO $ do
+            atomicModifyIORef' argumentsRef (swap . M.updateLookupWithKey (\_ _ -> Nothing) versionId)
 
     (primEnv', matchPrim) <- liftIO $ makePrimitives ctxt
     let !primEnv = fmap (\f x y -> liftIO (f x y)) primEnv'

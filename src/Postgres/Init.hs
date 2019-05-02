@@ -103,7 +103,7 @@ snapshotPostgres conn = do
                 runQueueS = fmap (M.fromList . map (\p -> (p, case lookup p trace of Just s -> s))) running,
                 sessionsS = sessions }
   where allWorkspaces = do
-            workspaces <- query_ conn "SELECT id, parentWorkspaceVersionId, logicalTime, questionAsAnswered \
+            workspaces <- query_ conn "SELECT versionId, id, parentWorkspaceVersionId, previousVersion, logicalTime, questionAsAnswered \
                                       \FROM Workspaces"
             messages <- query_ conn "SELECT targetWorkspaceVersionId, content FROM Messages" -- TODO: ORDER
             subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
@@ -117,14 +117,16 @@ snapshotPostgres conn = do
             let messageMap = M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
                 subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
                 expandedMap = M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
-            return $ M.fromList $ map (\(i, p, t, q) -> (i, Workspace {
-                                                                identity = i,
-                                                                parentId = p,
-                                                                question = parseMessageUnsafeDB q,
-                                                                subQuestions = maybe [] id $ M.lookup i subquestionsMap,
-                                                                messageHistory = maybe [] id $ M.lookup i messageMap,
-                                                                expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
-                                                                time = Time t })) workspaces
+            return $ M.fromList $ map (\(i, wsId, p, pv, t, q) -> (i, Workspace {
+                                                                       identity = i,
+                                                                       workspaceIdentity = wsId,
+                                                                       parentId = p,
+                                                                       previousVersion = pv,
+                                                                       question = parseMessageUnsafeDB q,
+                                                                       subQuestions = maybe [] id $ M.lookup i subquestionsMap,
+                                                                       messageHistory = maybe [] id $ M.lookup i messageMap,
+                                                                       expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
+                                                                       time = Time t })) workspaces
 
         theTrace = do
             ts <- query_ conn "SELECT processId, varEnv, funEnv, versionId, expression, continuation FROM Trace ORDER BY t DESC"
@@ -143,26 +145,26 @@ snapshotPostgres conn = do
                         map (\(i, f, k) -> let !funEnv = maybe M.empty id $ M.lookup i funEnvs
                                            in (i, M.singleton f (CallKont funEnv (toName f) i (parseKont1UnsafeDB k)))) ks
 
+-- TODO: Figure out what indexes need to be added and add them.
 initDBPostgres :: Connection -> IO ()
 initDBPostgres conn = do
     execute_ conn "\
         \CREATE TABLE IF NOT EXISTS Workspaces (\n\
         \   id UUID PRIMARY KEY,\n\
-        \   parentWorkspaceVersionId UUID NULL,\n\
         \   questionAsAsked TEXT NOT NULL,\n\
         \   questionAsAnswered TEXT NOT NULL\n\
         \);"
-    execute_ conn "CREATE INDEX IF NOT EXISTS Workspaces_IDX_ParentWorkspaces_Id ON Workspaces(parentWorkspaceVersionId, id);"
     execute_ conn "\
         \CREATE TABLE IF NOT EXISTS WorkspaceVersions (\n\
         \   versionId UUID PRIMARY KEY,\n\
         \   workspaceId UUID NOT NULL,\n\
+        \   parentWorkspaceVersionId UUID NULL,\n\
         \   logicalTime INTEGER NOT NULL,\n\
         \   previousVersion UUID NULL,\n\
         \   FOREIGN KEY ( workspaceId ) REFERENCES Workspaces ( id ) ON DELETE CASCADE,\n\
+        \   FOREIGN KEY ( parentWorkspaceVersionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE,\n\
         \   FOREIGN KEY ( previousVersion ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE\n\
         \);"
-    execute_ conn "ALTER TABLE Workspaces ADD FOREIGN KEY ( parentWorkspaceVersionId ) REFERENCES WorkspaceVersions ( versionId ) ON DELETE CASCADE;"
     execute_ conn "\
         \CREATE TABLE IF NOT EXISTS Messages (\n\
         \   id SERIAL PRIMARY KEY,\n\
@@ -306,7 +308,11 @@ initDBPostgres conn = do
     -- assuming the workspace exists at all on the "active" timeline.
     execute_ conn "\
         \CREATE OR REPLACE VIEW Latest_WorkspaceVersions AS\n\
-        \   SELECT DISTINCT c.workspaceId, FIRST_VALUE(c.versionId) OVER w AS versionId, FIRST_VALUE(c.logicalTime) OVER w AS logicalTime\n\
+        \   SELECT DISTINCT\n\
+        \       c.workspaceId,\n\
+        \       FIRST_VALUE(c.versionId) OVER w AS versionId,\n\
+        \       FIRST_VALUE(c.parentWorkspaceVersionId) OVER w AS parentWorkspaceVersionId,\n\
+        \       FIRST_VALUE(c.logicalTime) OVER w AS logicalTime\n\
         \   FROM WorkspaceVersions c\n\
         \   WINDOW w AS (PARTITION BY c.workspaceId ORDER BY c.logicalTime DESC)"
     -- The Current_* views are aggregating all prior versions of a latest workspace version, e.g. all pointers that were
@@ -338,7 +344,7 @@ initDBPostgres conn = do
         \          c.logicalTime, cw.questionAsAsked, a.answer\n\
         \   FROM Latest_WorkspaceVersions l\n\
         \   CROSS JOIN priorVersions(l.versionId) w\n\
-        \   INNER JOIN Workspaces cw ON cw.parentWorkspaceVersionId = w.versionId\n\
-        \   INNER JOIN Latest_WorkspaceVersions c ON c.workspaceId = cw.id\n\
+        \   INNER JOIN Latest_WorkspaceVersions c ON c.parentWorkspaceVersionId = w.versionId\n\
+        \   INNER JOIN Workspaces cw ON cw.id = c.workspaceId\n\
         \   LEFT OUTER JOIN Answers a ON a.versionId = c.versionId"
     return ()

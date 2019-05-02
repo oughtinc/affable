@@ -108,7 +108,7 @@ linksSqlite :: SyncFunc -> AsyncFunc -> Connection -> VersionId -> IO PointerRem
 linksSqlite sync async conn versionId = do
     let !vIdText = toText (versionIdToBuilder versionId)
     sync $ do
-        srcTgts <- query conn "SELECT sourceId, targetId FROM Links WHERE versionId = ?" (Only vIdText)
+        srcTgts <- query conn "SELECT sourceId, targetId FROM Current_Links WHERE versionId = ?" (Only vIdText)
         return $ M.fromList srcTgts
 
 addCaseForSqlite :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()

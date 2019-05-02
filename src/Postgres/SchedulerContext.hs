@@ -36,6 +36,7 @@ makePostgresSchedulerContext q conn = do
             doAtomically = sync,
             createInitialWorkspace = createInitialWorkspacePostgres sync async c conn,
             newSession = newSessionPostgres sync async c conn,
+            newVersion = newVersionPostgres sync async c conn,
             createWorkspace = createWorkspacePostgres sync async c conn,
             sendAnswer = sendAnswerPostgres sync async c conn,
             sendMessage = sendMessagePostgres sync async c conn,
@@ -66,7 +67,7 @@ reifyWorkspacePostgres sync async c conn versionId = do
                      \     SELECT w.id FROM Workspaces w INNER JOIN ds ON w.parentWorkspaceVersionId = ds.id \
                      \) INSERT INTO Descendants ( id ) SELECT id FROM ds" (Only versionId)
 
-        workspaces <- query_ conn "SELECT id, parentWorkspaceVersionId, logicalTime, questionAsAnswered \
+        workspaces <- query_ conn "SELECT versionId, id, parentWorkspaceVersionId, previousVersion, logicalTime, questionAsAnswered \
                                   \FROM Workspaces WHERE id IN (SELECT id FROM Descendants)"
         messages <- query_ conn "SELECT targetWorkspaceVersionId, content \
                                 \FROM Messages \
@@ -87,14 +88,16 @@ reifyWorkspacePostgres sync async c conn versionId = do
         let messageMap = M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
             subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
             expandedMap = M.empty -- M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
-        return $ M.fromList $ map (\(i, p, t, q) -> (i, Workspace {
-                                                            identity = i,
-                                                            parentId = p,
-                                                            question = parseMessageUnsafeDB q,
-                                                            subQuestions = maybe [] id $ M.lookup i subquestionsMap,
-                                                            messageHistory = maybe [] id $ M.lookup i messageMap,
-                                                            expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
-                                                            time = Time t })) workspaces
+        return $ M.fromList $ map (\(i, wsId, p, pv, t, q) -> (i, Workspace {
+                                                                    identity = i,
+                                                                    workspaceIdentity = wsId,
+                                                                    parentId = p,
+                                                                    previousVersion = pv,
+                                                                    question = parseMessageUnsafeDB q,
+                                                                    subQuestions = maybe [] id $ M.lookup i subquestionsMap,
+                                                                    messageHistory = maybe [] id $ M.lookup i messageMap,
+                                                                    expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
+                                                                    time = Time t })) workspaces
     return (workspaceToMessage workspaces versionId)
 
 -- TODO: Bulkify this.
@@ -122,10 +125,11 @@ createInitialWorkspacePostgres sync async c conn msg = do
     vId <- newVersionId
     async $ do
         withTransaction conn $ do
-            execute conn "INSERT INTO Workspaces ( id, parentWorkspaceVersionId, questionAsAsked, questionAsAnswered ) VALUES (?, ?, ?, ?)"
-                                (workspaceId, Nothing :: Maybe VersionId, msgText, msgText)
-            () <$ execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) VALUES (?, ?, ?, ?)"
-                                (vId, workspaceId, t, Nothing :: Maybe VersionId)
+            execute conn "INSERT INTO Workspaces ( id, questionAsAsked, questionAsAnswered ) VALUES (?, ?, ?)"
+                                (workspaceId, msgText, msgText)
+            () <$ execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
+                               \VALUES (?, ?, ?, ?, ?)"
+                                (vId, workspaceId, Nothing :: Maybe VersionId, t, Nothing :: Maybe VersionId)
     insertCommand sync async c conn autoUserId vId (Ask msg)
     return vId
 
@@ -138,75 +142,70 @@ newSessionPostgres sync async c conn (Just sessionId) = do
         () <$ execute conn "INSERT INTO Sessions ( sessionId ) VALUES (?) ON CONFLICT DO NOTHING" (Only sessionId)
     return sessionId
 
-createWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> Message -> IO (VersionId, VersionId)
+newVersionPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO (VersionId, LogicalTime)
+newVersionPostgres sync async c conn versionId = do
+    t <- increment c
+    vId <- newVersionId
+    async $ do
+        withTransaction conn $ do
+            [(workspaceId, pVId)] <- query conn "SELECT workspaceId, parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only versionId)
+            () <$ execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
+                               \VALUES (?, ?, ?, ?, ?)"
+                                (vId, workspaceId :: WorkspaceId, pVId :: Maybe VersionId, t, Just versionId)
+    return (vId, t)
+
+createWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> Message -> IO (VersionId, WorkspaceId, LogicalTime)
 createWorkspacePostgres sync async c conn userId versionId qAsAsked qAsAnswered = do
     let !qAsAskedText = toText (messageToBuilder qAsAsked)
         !qAsAnsweredText = toText (messageToBuilder qAsAnswered)
-    childId <- newWorkspaceId
     t <- increment c
-    vId <- newVersionId
+    childId <- newWorkspaceId
     childVersionId <- newVersionId
     async $ do
         withTransaction conn $ do
-            -- TODO: XXX Stick all this into a stored procedure.
-            [Only workspaceId] <- query conn "SELECT w.workspaceId FROM WorkspaceVersions w WHERE w.versionId = ?" (Only versionId)
-            execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) VALUES (?, ?, ?, ?)"
-                                (vId, workspaceId :: WorkspaceId, t, Just versionId)
-            execute conn "INSERT INTO Workspaces ( id, parentWorkspaceVersionId, questionAsAsked, questionAsAnswered ) VALUES (?, ?, ?, ?)"
-                                (childId, Just vId, qAsAskedText, qAsAnsweredText)
-            () <$ execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) VALUES (?, ?, ?, ?)"
-                                (childVersionId, childId, t, Nothing :: Maybe VersionId)
-    insertCommand sync async c conn userId vId (Ask qAsAsked)
-    return (vId, childVersionId)
+            -- TODO: Stick all this into a stored procedure.
+            execute conn "INSERT INTO Workspaces ( id, questionAsAsked, questionAsAnswered ) VALUES (?, ?, ?)"
+                                (childId, qAsAskedText, qAsAnsweredText)
+            () <$ execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
+                               \VALUES (?, ?, ?, ?, ?)"
+                                (childVersionId, childId, Just versionId, t, Nothing :: Maybe VersionId)
+    insertCommand sync async c conn userId versionId (Ask qAsAsked)
+    return (childVersionId, childId, t)
 
-sendAnswerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> IO VersionId
+sendAnswerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> IO (VersionId, LogicalTime)
 sendAnswerPostgres sync async c conn userId versionId msg = do
     let !msgText = toText (messageToBuilder msg)
     t <- increment c
-    vId <- newVersionId
+    parentVId <- newVersionId
     async $ do
         withTransaction conn $ do
-            -- TODO: XXX Stick all this into a stored procedure.
-            [Only workspaceId] <- query conn "SELECT w.workspaceId FROM WorkspaceVersions w WHERE w.versionId = ?" (Only versionId)
-            execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) VALUES (?, ?, ?, ?)"
-                                (vId, workspaceId :: WorkspaceId, t, Just versionId)
+            -- TODO: Stick all this into a stored procedure.
+            -- TODO: XXX "Updating" the parent means when we return from a function call in the interpreter the parent workspace is out-of-date.
+            [Only pVId] <- query conn "SELECT parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only versionId)
+            [(pWorkspaceId, ppVId)] <- query conn "SELECT workspaceId, parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only pVId)
+            execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
+                         \VALUES (?, ?, ?, ?, ?)"
+                                (parentVId, pWorkspaceId :: WorkspaceId, ppVId :: Maybe VersionId, t, Just (pVId :: VersionId))
             () <$ execute conn "INSERT INTO Answers ( versionId, answer ) VALUES (?, ?) \
                                \ON CONFLICT(versionId) DO UPDATE SET answer = excluded.answer"
-                                (vId, msgText)
-    insertCommand sync async c conn userId vId (Reply msg)
-    return vId
+                                (versionId, msgText)
+    insertCommand sync async c conn userId versionId (Reply msg)
+    return (parentVId, t)
 
-sendMessagePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> VersionId -> Message -> IO VersionId
+sendMessagePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> VersionId -> Message -> IO ()
 sendMessagePostgres sync async c conn userId srcVersionId tgtVersionId msg = do
     let !msgText = toText (messageToBuilder msg)
-    t <- increment c
-    vId <- newVersionId
     async $ do
-        withTransaction conn $ do
-            -- TODO: XXX Stick all this into a stored procedure.
-            [Only tgtId] <- query conn "SELECT w.workspaceId FROM WorkspaceVersions w WHERE w.versionId = ?" (Only tgtVersionId)
-            execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) VALUES (?, ?, ?, ?)"
-                                (vId, tgtId :: WorkspaceId, t, Just tgtVersionId)
-            () <$ execute conn "INSERT INTO Messages ( sourceWorkspaceVersionId, targetWorkspaceVersionId, content ) VALUES (?, ?, ?)"
-                                (srcVersionId, vId, msgText)
-    insertCommand sync async c conn userId srcVersionId (Send vId msg) -- TODO: Think about this.
-    return vId
+        () <$ execute conn "INSERT INTO Messages ( sourceWorkspaceVersionId, targetWorkspaceVersionId, content ) VALUES (?, ?, ?)"
+                            (srcVersionId, tgtVersionId, msgText)
+    insertCommand sync async c conn userId srcVersionId (Send tgtVersionId msg) -- TODO: Think about this.
 
 -- TODO: Bulkify this.
-expandPointerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Pointer -> IO VersionId
+expandPointerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Pointer -> IO ()
 expandPointerPostgres sync async c conn userId versionId ptr = do
-    t <- increment c
-    vId <- newVersionId
     async $ do
-        withTransaction conn $ do
-            -- TODO: XXX Stick all this into a stored procedure.
-            [Only workspaceId] <- query conn "SELECT w.workspaceId FROM WorkspaceVersions w WHERE w.versionId = ?" (Only versionId)
-            execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, logicalTime, previousVersion ) VALUES (?, ?, ?, ?)"
-                                (vId, workspaceId :: WorkspaceId, t, Just versionId)
-            () <$ execute conn "INSERT INTO ExpandedPointers ( versionId, pointerId ) VALUES (?, ?) ON CONFLICT DO NOTHING"
-                                (vId, ptr)
-    insertCommand sync async c conn userId vId (View ptr)
-    return vId
+        () <$ execute conn "INSERT INTO ExpandedPointers ( versionId, pointerId ) VALUES (?, ?) ON CONFLICT DO NOTHING" (versionId, ptr)
+    insertCommand sync async c conn userId versionId (View ptr)
 
 nextPointerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO Pointer
 nextPointerPostgres sync async c conn = do
@@ -243,10 +242,10 @@ pendingQuestionsPostgres sync async c conn versionId = do
 getWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO Workspace
 getWorkspacePostgres sync async c conn versionId = do
     sync $ do
-        [(p, t, q)] <- query conn "SELECT w.parentWorkspaceVersionId, v.logicalTime, w.questionAsAnswered \
-                                  \FROM WorkspaceVersions v \
-                                  \INNER JOIN Workspaces w ON w.id = v.workspaceId \
-                                  \WHERE v.versionId = ?" (Only versionId)
+        [(wsId, p, pv, t, q)] <- query conn "SELECT v.workspaceId, v.parentWorkspaceVersionId, v.previousVersion, v.logicalTime, w.questionAsAnswered \
+                                            \FROM WorkspaceVersions v \
+                                            \INNER JOIN Workspaces w ON w.id = v.workspaceId \
+                                            \WHERE v.versionId = ?" (Only versionId)
         messages <- query conn "SELECT content FROM Current_Messages WHERE targetWorkspaceVersionId = ?" (Only versionId) -- TODO: ORDER
         subquestions <- query conn "SELECT w.versionId, w.questionAsAsked, w.answer \
                                    \FROM Current_Subquestions w \
@@ -258,7 +257,9 @@ getWorkspacePostgres sync async c conn versionId = do
                                \WHERE e.versionId = ?" (Only versionId)
         return $ Workspace {
             identity = versionId,
+            workspaceIdentity = wsId,
             parentId = p,
+            previousVersion = pv,
             question = parseMessageUnsafeDB q,
             subQuestions = map (\(qId, q, ma) -> (qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)) subquestions,
             messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
