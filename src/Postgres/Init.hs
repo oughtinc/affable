@@ -50,7 +50,6 @@ primitivesToHaskellPostgres conn = do
         putStr " = "
         T.putStrLn body
 
--- TODO: Completely go over this to handle versions.
 snapshotPostgres :: Connection -> IO Snapshot
 snapshotPostgres conn = do
     [Only fCounter] <- query_ conn "SELECT MAX(id) FROM Functions"

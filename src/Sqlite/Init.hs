@@ -49,7 +49,6 @@ primitivesToHaskellSqlite conn = do
         putStr " = "
         T.putStrLn body
 
--- TODO: XXX This needs a lot of work.
 snapshotSqlite :: Connection -> IO Snapshot
 snapshotSqlite conn = do
     [Only fCounter] <- query_ conn "SELECT MAX(id) FROM Functions"
@@ -103,16 +102,25 @@ snapshotSqlite conn = do
                 runQueueS = fmap (M.fromList . map (\p -> (p, case lookup p trace of Just s -> s))) running,
                 sessionsS = sessions }
   where allWorkspaces = do
-            workspaces <- query_ conn "SELECT versionId, id, parentWorkspaceVersionId, previousVersion, logicalTime, questionAsAnswered \
-                                      \FROM Workspaces"
-            messages <- query_ conn "SELECT targetWorkspaceId, content FROM Messages" -- TODO: ORDER
-            subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
-                                        \FROM Workspaces p \
-                                        \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
-                                        \LEFT OUTER JOIN Answers a ON q.id = a.versionId \
-                                        \ORDER BY p.id ASC, q.logicalTime DESC"
-            expanded <- query_ conn "SELECT versionId, pointerId, content \
-                                    \FROM ExpandedPointers e \
+            workspaces <- query_ conn "SELECT v.versionId, v.workspaceId, v.parentWorkspaceVersionId, v.previousVersion, v.logicalTime, w.questionAsAnswered \
+                                      \FROM WorkspaceVersions v \
+                                      \INNER JOIN Workspaces w ON w.id = v.workspaceId"
+            messages <- query_ conn "SELECT d.versionId, m.content \
+                                    \FROM WorkspaceVersions d \
+                                    \INNER JOIN WorkspaceVersions tgt ON tgt.workspaceId = d.workspaceId AND tgt.logicalTime <= d.logicalTime \
+                                    \INNER JOIN Messages m ON m.targetWorkspaceVersionId = tgt.versionId \
+                                    \ORDER BY tgt.logicalTime ASC"
+            subquestions <- query_ conn "SELECT d.versionId, q.versionId, qw.questionAsAsked, a.answer \
+                                        \FROM WorkspaceVersions d \
+                                        \INNER JOIN WorkspaceVersions p ON p.workspaceId = d.workspaceId AND p.logicalTime <= d.logicalTime \
+                                        \INNER JOIN WorkspaceVersions q ON q.parentWorkspaceVersionId = p.versionId \
+                                        \INNER JOIN Workspaces qw ON qw.id = q.workspaceId \
+                                        \LEFT OUTER JOIN Answers a ON q.versionId = a.versionId \
+                                        \ORDER BY p.versionId ASC, q.logicalTime DESC"
+            expanded <- query_ conn "SELECT d.versionId, e.pointerId, p.content \
+                                    \FROM WorkspaceVersions d \
+                                    \INNER JOIN WorkspaceVersions v ON v.workspaceId = d.workspaceId AND v.logicalTime <= d.logicalTime \
+                                    \INNER JOIN ExpandedPointers e ON e.versionId = v.versionId \
                                     \INNER JOIN Pointers p ON e.pointerId = p.id"
             let messageMap = M.fromListWith (++) $ map (\(i, m) -> (versionIdFromText i, [parseMessageUnsafe m])) messages
                 subquestionsMap = M.fromListWith (++) $
