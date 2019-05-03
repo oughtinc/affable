@@ -54,36 +54,44 @@ makeSqliteSchedulerContext q conn = do
             extraContent = (conn, q)
         }
 
--- TODO: XXX This needs to be reworked significantly to incorporate versioning.
 -- NOT CACHEABLE
 reifyWorkspaceSqlite :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO Message
 reifyWorkspaceSqlite sync async c conn versionId = do
     let !versionIdText = toText (versionIdToBuilder versionId)
     workspaces <- sync $ do
-        execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMARY KEY ASC )"
-        execute_ conn "DELETE FROM Descendants"
-        executeNamed conn "WITH RECURSIVE ds(id) AS ( \
-                          \     VALUES (:root) \
-                          \ UNION ALL \
-                          \     SELECT w.id FROM Workspaces w INNER JOIN ds ON w.parentWorkspaceVersionId = ds.id \
-                          \) INSERT INTO Descendants ( id ) SELECT id FROM ds" [":root" := versionIdText]
-        workspaces <- query_ conn "SELECT versionId, id, parentWorkspaceVersionId, previousVersionId, logicalTime, questionAsAnswered \
-                                  \FROM Workspaces WHERE id IN (SELECT id FROM Descendants)"
-        messages <- query_ conn "SELECT targetWorkspaceVersionId, content \
-                                \FROM Messages \
-                                \WHERE targetWorkspaceVersionId IN (SELECT id FROM Descendants) \
-                                \ORDER BY id ASC"
-        subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
-                                    \FROM Workspaces p \
-                                    \INNER JOIN Workspaces q ON q.parentWorkspaceVersionId = p.id \
-                                    \LEFT OUTER JOIN Answers a ON q.id = a.versionId \
-                                    \WHERE p.id IN (SELECT id FROM Descendants) \
-                                    \ORDER BY p.id ASC, q.logicalTime DESC"
+        execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendents ( id UUID PRIMARY KEY, workspaceId UUID NOT NULL, logicalTime INTEGER NOT NULL )"
+        execute_ conn "DELETE FROM Descendents"
+        executeNamed conn "WITH RECURSIVE ds(id, prev, workspaceId, t) AS ( \
+                          \     SELECT versionId, previousVersion, workspaceId, logicalTime FROM WorkspaceVersions WHERE versionId = :root \
+                          \ UNION \
+                          \     SELECT w.versionId, w.previousVersion, w.workspaceId, w.logicalTime \
+                          \     FROM WorkspaceVersions w \
+                          \     INNER JOIN ds ON w.parentWorkspaceVersionId = ds.id OR ds.prev = w.versionId \
+                          \) INSERT INTO Descendents ( id, workspaceId, logicalTime ) \
+                          \  SELECT id, workspaceId, t FROM ds" [":root" := versionIdText]
+        workspaces <- query_ conn "SELECT v.versionId, v.workspaceId, v.parentWorkspaceVersionId, v.previousVersion, v.logicalTime, w.questionAsAnswered \
+                                  \FROM Descendents d \
+                                  \INNER JOIN WorkspaceVersions v ON v.versionId = d.id \
+                                  \INNER JOIN Workspaces w ON w.id = v.workspaceId"
+        messages <- query_ conn "SELECT d.id, m.content \
+                                \FROM Descendents d \
+                                \INNER JOIN WorkspaceVersions tgt ON tgt.workspaceId = d.workspaceId AND tgt.logicalTime <= d.logicalTime \
+                                \INNER JOIN Messages m ON m.targetWorkspaceVersionId = tgt.versionId \
+                                \WHERE tgt.versionId IN (SELECT id FROM Descendents) \
+                                \ORDER BY tgt.logicalTime ASC"
+        subquestions <- query_ conn "SELECT d.id, q.versionId, qw.questionAsAsked, a.answer \
+                                    \FROM Descendents d \
+                                    \INNER JOIN WorkspaceVersions p ON p.workspaceId = d.workspaceId AND p.logicalTime <= d.logicalTime \
+                                    \INNER JOIN WorkspaceVersions q ON q.parentWorkspaceVersionId = p.versionId \
+                                    \INNER JOIN Workspaces qw ON qw.id = q.workspaceId \
+                                    \LEFT OUTER JOIN Answers a ON q.versionId = a.versionId \
+                                    \WHERE p.versionId IN (SELECT id FROM Descendents) \
+                                    \ORDER BY p.versionId ASC, q.logicalTime DESC"
         {-
         expanded <- query_ conn "SELECT versionId, pointerId, content \
                                 \FROM ExpandedPointers e \
                                 \INNER JOIN Pointers p ON e.pointerId = p.id \
-                                \WHERE versionId IN (SELECT id FROM Descendants)"
+                                \WHERE versionId IN (SELECT id FROM Descendents)"
         -}
         let messageMap = M.fromListWith (++) $ map (\(i, m) -> (versionIdFromText i, [parseMessageUnsafe m])) messages
             subquestionsMap = M.fromListWith (++) $

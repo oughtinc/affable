@@ -302,6 +302,32 @@ initDBPostgres conn = do
         \   )\n\
         \   SELECT id AS versionId FROM versions\n\
         \$$"
+    execute_ conn "\
+        \CREATE OR REPLACE FUNCTION messagesAsOf(pVersionId UUID)\n\
+        \RETURNS TABLE (id INTEGER, sourceWorkspaceVersionId UUID, targetWorkspaceVersionId UUID, content TEXT) LANGUAGE SQL STABLE AS $$\n\
+        \   SELECT m.id, pVersionId AS sourceWorkspaceVersionId, m.targetWorkspaceVersionId, m.content\n\
+        \   FROM priorVersions(pVersionId) w\n\
+        \   INNER JOIN Messages m ON m.sourceWorkspaceVersionId = w.versionId\n\
+        \   INNER JOIN WorkspaceVersions t ON t.versionId = m.targetWorkspaceVersionId\n\
+        \$$"
+    execute_ conn "\
+        \CREATE OR REPLACE FUNCTION expandedPointersAsOf(pVersionId UUID)\n\
+        \RETURNS TABLE (versionId UUID, pointerId INTEGER) LANGUAGE SQL STABLE AS $$\n\
+        \   SELECT pVersionId, p.pointerId\n\
+        \   FROM priorVersions(pVersionId) w\n\
+        \   INNER JOIN ExpandedPointers p ON p.versionId = w.versionId\n\
+        \$$"
+    execute_ conn "\
+        \CREATE OR REPLACE FUNCTION subquestionsAsOf(pVersionId UUID)\n\
+        \RETURNS TABLE (parentWorkspaceVersionId UUID, workspaceId UUID, versionId UUID, logicalTime INTEGER, questionAsAsked TEXT, answer TEXT)\n\
+        \LANGUAGE SQL STABLE AS $$\n\
+        \   SELECT pVersionId AS parentWorkspaceVersionId, c.workspaceId, c.versionId,\n\
+        \          c.logicalTime, cw.questionAsAsked, a.answer\n\
+        \   FROM priorVersions(pVersionId) w\n\
+        \   INNER JOIN WorkspaceVersions c ON c.parentWorkspaceVersionId = w.versionId\n\
+        \   INNER JOIN Workspaces cw ON cw.id = c.workspaceId\n\
+        \   LEFT OUTER JOIN Answers a ON a.versionId = c.versionId\n\
+        \$$"
     -- TODO: Use a materialized view? Maybe a materialized view of the latest workspace and all its previous versions.
     -- The workspace versions that aren't the previous version of any other workspace version are the leaves of the
     -- branching timeline. Then, the leaf with the latest logicalTime will be the version on the "active" timeline

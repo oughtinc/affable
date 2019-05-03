@@ -46,8 +46,6 @@ data SchedulerContext extra = SchedulerContext {
     doAtomically :: SyncFunc,
     createInitialWorkspace :: Message -> IO VersionId,
     newSession :: Maybe SessionId -> IO SessionId,
-    -- TODO: XXX Have this take a Bool to specify whether it should make a new version or attach to the current one.
-    -- Possibly we should just separate out making a new version of a workspace from the other operations.
     newVersion :: VersionId -> IO (VersionId, LogicalTime),
     createWorkspace :: UserId -> VersionId -> Message -> Message -> IO (VersionId, WorkspaceId, LogicalTime),
     sendAnswer :: UserId -> VersionId -> Message -> IO (),
@@ -159,33 +157,33 @@ makeSingleUserScheduler ctxt = do
     return scheduler
 
 -- TODO: This could also be done in a way to better reuse existing pointers rather than make new pointers.
--- TODO: Should the expanded pointers be indicated some way?
--- TODO: XXX Modify to show versions.
+-- TODO: XXX Should the expanded pointers be indicated some way? Yes.
 workspaceToMessage :: M.Map VersionId Workspace -> VersionId -> Message
 workspaceToMessage workspaces versionId = go (M.lookup versionId workspaces)
-    where go (Just workspace) | null subQs && null msgs = Structured [Text "Question: ", question workspace]
+    where go (Just workspace) | null subQs && null msgs = Structured (Text "Question: ":question workspace:prevs)
                               | null subQs = Structured (Text "Question: "
                                                         : question workspace
                                                         : Text " Messages: 1. "
-                                                        : msgs)
+                                                        : (msgs ++ prevs))
                               | null msgs = Structured (Text "Question: "
                                                        : question workspace
                                                        : Text " Subquestions: 1. "
-                                                       : subQs)
+                                                       : (subQs ++ prevs))
                               | otherwise =  Structured (Text "Question: "
                                                         : question workspace
                                                         : Text " Messages: 1. "
                                                         : msgs
                                                         ++ (Text " Subquestions: 1. "
-                                                           : subQs))
-            where subQs = goSub 1 (subQuestions workspace)
+                                                           : (subQs ++ prevs)))
+            where prevs = maybe [] (\vId -> [Text " Previous: ", workspaceToMessage workspaces vId]) $ previousVersion workspace
+                  subQs = goSub 1 (subQuestions workspace)
                   msgs = goMsg 1 (messageHistory workspace)
                   goSub !i [] = []
                   goSub i ((_, _, Nothing):qs) = goSub i qs
                   goSub 1 ((wsId, _, Just a):qs) -- To avoid [Text "...", Text "..."]
-                    = go (M.lookup wsId workspaces):Text " Answer:":a:goSub 2 qs
+                    = go (M.lookup wsId workspaces):Text " Answer: ":a:goSub 2 qs
                   goSub i ((wsId, _, Just a):qs)
-                    = Text (fromString (' ':show i ++ ". ")):go (M.lookup wsId workspaces):Text " Answer:":a:goSub (i+1) qs
+                    = Text (fromString (' ':show i ++ ". ")):go (M.lookup wsId workspaces):Text " Answer: ":a:goSub (i+1) qs
                   goMsg !i [] = []
                   goMsg 1 (m:ms) = m:goMsg 2 ms
                   goMsg i (m:ms) = Text (fromString (' ':show i ++ ". ")):m:goMsg (i+1) ms

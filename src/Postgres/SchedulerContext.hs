@@ -54,36 +54,38 @@ makePostgresSchedulerContext q conn = do
         }
 
 -- NOT CACHEABLE
--- TODO: XXX This needs to be reworked significantly to incorporate versioning.
 reifyWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO Message
 reifyWorkspacePostgres sync async c conn versionId = do
     workspaces <- sync $ do
         -- TODO: Replace with function.
-        execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMARY KEY )"
-        execute_ conn "DELETE FROM Descendants"
-        execute conn "WITH RECURSIVE ds(id) AS ( \
-                     \     VALUES (?) \
-                     \ UNION ALL \
-                     \     SELECT w.id FROM Workspaces w INNER JOIN ds ON w.parentWorkspaceVersionId = ds.id \
-                     \) INSERT INTO Descendants ( id ) SELECT id FROM ds" (Only versionId)
+        execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendents ( id UUID PRIMARY KEY, logicalTime INTEGER NOT NULL )"
+        execute_ conn "DELETE FROM Descendents"
+        execute conn "WITH RECURSIVE ds(id, t) AS ( \
+                     \      SELECT v.versionId, v.logicalTime \
+                     \      FROM (VALUES (?)) x(id) \
+                     \      CROSS JOIN priorVersions(CAST(x.id AS UUID)) y \
+                     \      INNER JOIN WorkspaceVersions v ON v.versionId = y.versionId \
+                     \ UNION \
+                     \      SELECT w.versionId, w.logicalTime FROM WorkspaceVersions w INNER JOIN ds ON w.parentWorkspaceVersionId = ds.id \
+                     \) INSERT INTO Descendents ( id, logicalTime ) SELECT id, t FROM ds" (Only versionId)
 
-        workspaces <- query_ conn "SELECT versionId, id, parentWorkspaceVersionId, previousVersion, logicalTime, questionAsAnswered \
-                                  \FROM Workspaces WHERE id IN (SELECT id FROM Descendants)"
-        messages <- query_ conn "SELECT targetWorkspaceVersionId, content \
-                                \FROM Messages \
-                                \WHERE targetWorkspaceVersionId IN (SELECT id FROM Descendants) \
-                                \ORDER BY id ASC"
-        subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
-                                    \FROM Workspaces p \
-                                    \INNER JOIN Workspaces q ON q.parentWorkspaceVersionId = p.id \
-                                    \LEFT OUTER JOIN Answers a ON q.id = a.versionId -- FIXME \
-                                    \WHERE p.id IN (SELECT id FROM Descendants) \
-                                    \ORDER BY p.id ASC, q.logicalTime DESC"
+        workspaces <- query_ conn "SELECT v.versionId, v.workspaceId, v.parentWorkspaceVersionId, v.previousVersion, v.logicalTime, w.questionAsAnswered \
+                                  \FROM WorkspaceVersions v \
+                                  \INNER JOIN Workspaces w ON w.id = v.workspaceId \
+                                  \WHERE v.versionId IN (SELECT id FROM Descendents)"
+        messages <- query_ conn "SELECT m.targetWorkspaceVersionId, m.content \
+                                \FROM Descendents d \
+                                \CROSS JOIN messagesAsOf(d.id) m \
+                                \ORDER BY d.logicalTime ASC"
+        subquestions <- query_ conn "SELECT d.id, q.versionId, q.questionAsAsked, q.answer \
+                                    \FROM Descendents d \
+                                    \CROSS JOIN subquestionsAsOf(d.id) q \
+                                    \ORDER BY d.id ASC, q.logicalTime DESC"
         {-
-        expanded <- query_ conn "SELECT versionId, pointerId, content \
+        expanded <- query_ conn "SELECT e.versionId, e.pointerId, p.content \
                                 \FROM ExpandedPointers e \
                                 \INNER JOIN Pointers p ON e.pointerId = p.id \
-                                \WHERE versionId IN (SELECT id FROM Descendants)"
+                                \WHERE e.versionId IN (SELECT id FROM Descendents)"
         -}
         let messageMap = M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
             subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
