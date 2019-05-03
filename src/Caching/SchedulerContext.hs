@@ -1,9 +1,10 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
-module Caching.SchedulerContext ( CacheState(..), createCache, makeCachingSchedulerContext ) where
+module Caching.SchedulerContext ( CacheState(..), createCache, makeCachingSchedulerContext, priorVersions ) where
 import Control.Concurrent.STM ( TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar, modifyTVar' ) -- stm
 import qualified Data.Map as M -- containers
+import qualified Data.Set as S -- containers
 import Data.Maybe ( mapMaybe ) -- base
 
 import AutoScheduler ( FunctionId, ProcessId )
@@ -119,7 +120,13 @@ newSessionCaching cache ctxt mSessionId = do
     return sessionId
 
 newVersionCaching :: CacheState -> SchedulerContext e -> VersionId -> IO (VersionId, LogicalTime)
-newVersionCaching cache ctxt versionId = newVersion ctxt versionId -- TODO: Anything else necessary?
+newVersionCaching cache ctxt versionId = do
+    r@(vId, t) <- newVersion ctxt versionId
+    atomically $ do
+        workspaces <- readTVar (workspacesC cache)
+        let !ws = case M.lookup versionId workspaces of Just ws -> ws
+        modifyTVar' (workspacesC cache) (M.insert vId (ws { identity = vId, previousVersion = Just versionId, time = Time t }))
+    return r
 
 createWorkspaceCaching :: CacheState -> SchedulerContext e -> UserId -> VersionId -> Message -> Message -> IO (VersionId, WorkspaceId, LogicalTime)
 createWorkspaceCaching cache ctxt userId versionId qAsAsked qAsAnswered = do
@@ -141,18 +148,28 @@ createWorkspaceCaching cache ctxt userId versionId qAsAsked qAsAnswered = do
     atomically $ modifyTVar' (workspacesC cache) (M.insert childVId newChildWorkspace . M.adjust new versionId)
     return r
 
+priorVersions :: M.Map VersionId Workspace -> VersionId -> S.Set VersionId
+priorVersions workspaces versionId = go versionId S.empty
+    where go vId = case M.lookup vId workspaces of
+                    Nothing -> id
+                    Just ws -> case previousVersion ws of
+                                    Nothing -> S.insert vId
+                                    Just vId' -> go vId' . S.insert vId
+
 sendAnswerCaching :: CacheState -> SchedulerContext e -> UserId -> VersionId -> Message -> IO ()
 sendAnswerCaching cache ctxt userId versionId msg = do
     sendAnswer ctxt userId versionId msg
-    Workspace { parentId = mParentWorkspaceId } <- getWorkspaceCaching cache ctxt versionId
-    case mParentWorkspaceId of
+    Workspace { parentId = mParentWorkspaceVersionId } <- getWorkspaceCaching cache ctxt versionId
+    case mParentWorkspaceVersionId of
         Nothing -> atomically $ modifyTVar' (answersC cache) (M.insert versionId msg)
         Just parentWorkspaceVersionId -> atomically $ do
-            let new ws = ws { subQuestions = map addAnswer (subQuestions ws) }
-            modifyTVar' (workspacesC cache) (M.adjust new versionId)
+            workspaces <- readTVar (workspacesC cache)
+            let pvs = priorVersions workspaces versionId
+                new ws = ws { subQuestions = map (addAnswer pvs) (subQuestions ws) }
+            writeTVar (workspacesC cache) (M.adjust new parentWorkspaceVersionId workspaces)
             modifyTVar' (answersC cache) (M.insert versionId msg)
-  where addAnswer sq@(qId, q, _) | qId == versionId = (qId, q, Just msg)
-                                 | otherwise = sq
+  where addAnswer pvs sq@(qId, q, _) | qId `S.member` pvs = (versionId, q, Just msg)
+                                     | otherwise = sq
 
 sendMessageCaching :: CacheState -> SchedulerContext e -> UserId -> VersionId -> VersionId -> Message -> IO ()
 sendMessageCaching cache ctxt userId srcId tgtId msg = error "sendMessageCaching: not implemented"
@@ -181,6 +198,7 @@ remapPointersCaching cache ctxt mapping = do
     atomically $ modifyTVar' (pointersC cache) (\ps -> M.union (fmap (ps M.!) mapping) ps)
     remapPointers ctxt mapping
 
+-- TODO: This might need some aggregation magic too?
 pendingQuestionsCaching :: CacheState -> SchedulerContext e -> VersionId -> IO [VersionId]
 pendingQuestionsCaching cache ctxt versionId = do
     ws <- (\m -> case M.lookup versionId m of Just a -> a) <$> readTVarIO (workspacesC cache)
@@ -188,7 +206,17 @@ pendingQuestionsCaching cache ctxt versionId = do
 
 getWorkspaceCaching :: CacheState -> SchedulerContext e -> VersionId -> IO Workspace
 getWorkspaceCaching cache ctxt versionId = do
-    (\m -> case M.lookup versionId m of Just a -> a) <$> readTVarIO (workspacesC cache)
+    (\m -> case M.lookup versionId m of Just a -> {-aggregate m-} a) <$> readTVarIO (workspacesC cache)
+  {-
+  where combine ws ws' = ws {
+                            subQuestions = subQuestions ws' ++ subQuestions ws, -- TODO: Need to smarter to include answers?
+                            messageHistory = messageHistory ws' ++ messageHistory ws,
+                            expandedPointers = expandedPointers ws' `M.union` expandedPointers ws }
+        aggregate workspaces ws = go ws (previousVersion ws)
+            where go !ws Nothing = ws
+                  go !ws (Just vId) = go (combine ws ws') (previousVersion ws')
+                    where !ws' = case M.lookup vId workspaces of Just pv -> pv
+  -}
 
 workspaceIdOfCaching :: CacheState -> SchedulerContext e -> VersionId -> IO WorkspaceId
 workspaceIdOfCaching cache ctxt versionId = workspaceIdentity <$> getWorkspaceCaching cache ctxt versionId

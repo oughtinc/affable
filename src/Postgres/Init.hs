@@ -103,17 +103,22 @@ snapshotPostgres conn = do
                 runQueueS = fmap (M.fromList . map (\p -> (p, case lookup p trace of Just s -> s))) running,
                 sessionsS = sessions }
   where allWorkspaces = do
-            workspaces <- query_ conn "SELECT versionId, id, parentWorkspaceVersionId, previousVersion, logicalTime, questionAsAnswered \
-                                      \FROM Workspaces"
-            messages <- query_ conn "SELECT targetWorkspaceVersionId, content FROM Messages" -- TODO: ORDER
-            subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
-                                        \FROM Workspaces p \
-                                        \INNER JOIN Workspaces q ON q.parentWorkspaceVersionId = p.id -- FIXME \
-                                        \LEFT OUTER JOIN Answers a ON q.id = a.versionId \
-                                        \ORDER BY p.id ASC, q.logicalTime DESC"
-            expanded <- query_ conn "SELECT versionId, pointerId, content \
-                                    \FROM ExpandedPointers e \
+            workspaces <- query_ conn "SELECT v.versionId, v.workspaceId, v.parentWorkspaceVersionId, v.previousVersion, v.logicalTime, w.questionAsAnswered \
+                                      \FROM WorkspaceVersions v \
+                                      \INNER JOIN Workspaces w ON w.id = v.workspaceId"
+            messages <- query_ conn "SELECT m.targetWorkspaceVersionId, m.content \
+                                    \FROM WorkspaceVersions v \
+                                    \CROSS JOIN messagesAsOf(v.versionId) m \
+                                    \ORDER BY v.logicalTime ASC"
+            subquestions <- query_ conn "SELECT p.versionId, q.versionId, q.questionAsAsked, q.answer \
+                                        \FROM WorkspaceVersions p \
+                                        \CROSS JOIN subquestionsAsOf(p.versionId) q \
+                                        \ORDER BY p.versionId ASC, q.logicalTime DESC"
+            expanded <- query_ conn "SELECT e.versionId, e.pointerId, p.content \
+                                    \FROM WorkspaceVersions v \
+                                    \CROSS JOIN expandedPointersAsOf(v.versionId) e \
                                     \INNER JOIN Pointers p ON e.pointerId = p.id"
+
             let messageMap = M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
                 subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
                 expandedMap = M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded

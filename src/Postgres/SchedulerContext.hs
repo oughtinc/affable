@@ -83,9 +83,9 @@ reifyWorkspacePostgres sync async c conn versionId = do
                                     \ORDER BY d.id ASC, q.logicalTime DESC"
         {-
         expanded <- query_ conn "SELECT e.versionId, e.pointerId, p.content \
-                                \FROM ExpandedPointers e \
-                                \INNER JOIN Pointers p ON e.pointerId = p.id \
-                                \WHERE e.versionId IN (SELECT id FROM Descendents)"
+                                \FROM Descendents d \
+                                \CROSS JOIN expandedPointersAsOf(d.versionId) e \
+                                \INNER JOIN Pointers p ON e.pointerId = p.id"
         -}
         let messageMap = M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
             subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
