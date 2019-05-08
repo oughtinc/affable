@@ -6,19 +6,19 @@ import Completions ( CompletionContext )
 import Exp  ( Exp', Pattern, Konts', EvalState' )
 import Message ( Message, Pointer, PointerRemapping )
 import Scheduler ( SchedulerContext, SessionId )
-import Workspace ( Workspace, WorkspaceId )
+import Workspace ( Workspace, VersionId )
 
 data Snapshot = Snapshot {
     functionCounterS :: FunctionId,
-    workspacesS :: M.Map WorkspaceId Workspace,
+    workspacesS :: M.Map VersionId Workspace,
     -- messagesS :: ,
-    answersS :: M.Map WorkspaceId Message,
+    answersS :: M.Map VersionId Message,
     answerFunctionsS :: M.Map SessionId FunctionId,
     pointersS :: M.Map Pointer Message,
     alternativesS :: M.Map FunctionId [([Pattern], Exp')],
-    linksS :: M.Map WorkspaceId PointerRemapping,
-    continuationsS :: M.Map WorkspaceId (M.Map FunctionId Konts'),
-    continuationArgumentsS :: M.Map (WorkspaceId, FunctionId) (M.Map Int Message),
+    linksS :: M.Map VersionId PointerRemapping,
+    continuationsS :: M.Map VersionId (M.Map FunctionId Konts'),
+    continuationArgumentsS :: M.Map (VersionId, FunctionId) (M.Map Int Message),
     traceS :: [(ProcessId, EvalState')], -- Stored newest first.
     runQueueS :: M.Map SessionId (M.Map ProcessId EvalState'),
     sessionsS :: M.Map SessionId [ProcessId] }

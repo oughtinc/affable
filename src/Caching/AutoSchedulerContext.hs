@@ -4,12 +4,12 @@ import Control.Monad ( when ) -- base
 import qualified Data.Map as M -- containers
 
 import AutoScheduler ( AutoSchedulerContext(..), ProcessId, FunctionId, AddContinuationResult(..), nameToId, idToName )
-import Caching.SchedulerContext ( CacheState(..) )
+import Caching.SchedulerContext ( CacheState(..), priorVersions )
 import Exp ( Pattern, Exp(..), Exp', EvalState', Name(..), Value, Konts', KontsId', Konts(..) )
 import Message ( PointerRemapping )
 import Scheduler ( SchedulerContext(..), SessionId )
 import Util ( increment )
-import Workspace ( WorkspaceId )
+import Workspace ( VersionId )
 
 makeCachingAutoSchedulerContext :: CacheState -> AutoSchedulerContext e -> SessionId -> IO (AutoSchedulerContext e)
 makeCachingAutoSchedulerContext cache autoCtxt sessionId = do
@@ -68,13 +68,17 @@ nextFunctionCaching cache autoCtxt = do
 addFunctionCaching :: CacheState -> AutoSchedulerContext e -> Name -> IO ()
 addFunctionCaching cache autoCtxt name = return () -- addFunction autoCtxt name
 
-linkVarsCaching :: CacheState -> AutoSchedulerContext e -> WorkspaceId -> PointerRemapping -> IO ()
-linkVarsCaching cache autoCtxt workspaceId mapping = do
-    atomically $ modifyTVar' (linksC cache) (M.insertWith M.union workspaceId mapping)
-    linkVars autoCtxt workspaceId mapping
+linkVarsCaching :: CacheState -> AutoSchedulerContext e -> VersionId -> PointerRemapping -> IO ()
+linkVarsCaching cache autoCtxt versionId mapping = do
+    atomically $ modifyTVar' (linksC cache) (M.insertWith M.union versionId mapping)
+    linkVars autoCtxt versionId mapping
 
-linksCaching :: CacheState -> AutoSchedulerContext e -> WorkspaceId -> IO PointerRemapping
-linksCaching cache autoCtxt workspaceId = (\m -> case M.lookup workspaceId m of Just a -> a) <$> readTVarIO (linksC cache)
+linksCaching :: CacheState -> AutoSchedulerContext e -> VersionId -> IO PointerRemapping
+linksCaching cache autoCtxt versionId = atomically $ do
+    workspaces <- readTVar (workspacesC cache)
+    let pvs = priorVersions workspaces versionId
+    linksMap <- readTVar (linksC cache)
+    return $! foldMap (\vId -> maybe M.empty id (M.lookup vId linksMap)) pvs
 
 addCaseForCaching :: CacheState -> AutoSchedulerContext e -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()
 addCaseForCaching cache autoCtxt answerId f patterns e = do
@@ -83,15 +87,15 @@ addCaseForCaching cache autoCtxt answerId f patterns e = do
     addCaseFor autoCtxt f patterns e
 
 saveContinuationCaching :: CacheState -> AutoSchedulerContext e -> FunctionId -> Konts' -> IO ()
-saveContinuationCaching cache autoCtxt answerId k@(CallKont _ f workspaceId _) = do
+saveContinuationCaching cache autoCtxt answerId k@(CallKont _ f versionId _) = do
     let !fId = nameToId answerId f
-    atomically $ modifyTVar' (continuationsC cache) (M.insertWith M.union workspaceId (M.singleton fId k))
+    atomically $ modifyTVar' (continuationsC cache) (M.insertWith M.union versionId (M.singleton fId k))
     saveContinuation autoCtxt k
 
 loadContinuationCaching :: CacheState -> AutoSchedulerContext e -> FunctionId -> KontsId' -> IO Konts'
-loadContinuationCaching cache autoCtxt answerId (workspaceId, f) = do
+loadContinuationCaching cache autoCtxt answerId (versionId, f) = do
     let !fId = nameToId answerId f
-    (\m -> case M.lookup fId m of Just a -> a) . (\m -> case M.lookup workspaceId m of Just a -> a) <$> readTVarIO (continuationsC cache)
+    (\m -> case M.lookup fId m of Just a -> a) . (\m -> case M.lookup versionId m of Just a -> a) <$> readTVarIO (continuationsC cache)
 
 recordStateCaching :: CacheState -> AutoSchedulerContext e -> SessionId -> ProcessId -> EvalState' -> IO ()
 recordStateCaching cache autoCtxt sessionId processId state = do
@@ -129,13 +133,13 @@ terminateCaching cache autoCtxt sessionId processId = do
     terminate autoCtxt processId
 
 addContinuationArgumentCaching :: CacheState -> AutoSchedulerContext e -> FunctionId -> KontsId' -> Int -> Value -> IO AddContinuationResult
-addContinuationArgumentCaching cache autoCtxt answerId kId@(workspaceId, f) argNumber v = do
+addContinuationArgumentCaching cache autoCtxt answerId kId@(versionId, f) argNumber v = do
     let !fId = nameToId answerId f
-    atomically $ modifyTVar' (continuationArgumentsC cache) (M.insertWith M.union (workspaceId, fId) (M.singleton argNumber v))
+    atomically $ modifyTVar' (continuationArgumentsC cache) (M.insertWith M.union (versionId, fId) (M.singleton argNumber v))
     addContinuationArgument autoCtxt kId argNumber v
 
 continuationArgumentsCaching :: CacheState -> AutoSchedulerContext e -> FunctionId -> KontsId' -> IO (Konts', [Value])
-continuationArgumentsCaching cache autoCtxt answerId kId@(workspaceId, f) = do
+continuationArgumentsCaching cache autoCtxt answerId kId@(versionId, f) = do
     let !fId = nameToId answerId f
-    vs <- M.elems . (\m -> case M.lookup (workspaceId, fId) m of Just a -> a) <$> readTVarIO (continuationArgumentsC cache)
+    vs <- M.elems . (\m -> case M.lookup (versionId, fId) m of Just a -> a) <$> readTVarIO (continuationArgumentsC cache)
     fmap (\k -> (k, vs)) $ loadContinuationCaching cache autoCtxt answerId kId

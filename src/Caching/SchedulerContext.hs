@@ -1,9 +1,10 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
-module Caching.SchedulerContext ( CacheState(..), createCache, makeCachingSchedulerContext ) where
+module Caching.SchedulerContext ( CacheState(..), createCache, makeCachingSchedulerContext, priorVersions ) where
 import Control.Concurrent.STM ( TVar, atomically, newTVarIO, readTVar, readTVarIO, writeTVar, modifyTVar' ) -- stm
 import qualified Data.Map as M -- containers
+import qualified Data.Set as S -- containers
 import Data.Maybe ( mapMaybe ) -- base
 
 import AutoScheduler ( FunctionId, ProcessId )
@@ -12,19 +13,20 @@ import Exp ( Pattern, Exp', Konts', EvalState' )
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping, applyLabel, stripLabel )
 import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, workspaceToMessage, eventMessage, renumberEvent )
 import Util ( Counter, newCounter )
-import Workspace ( Workspace(..), WorkspaceId )
+import Time ( Time(..), LogicalTime )
+import Workspace ( Workspace(..), WorkspaceId, VersionId )
 
 data CacheState = CacheState {
     functionCounter :: Counter,
-    workspacesC :: TVar (M.Map WorkspaceId Workspace),
+    workspacesC :: TVar (M.Map VersionId Workspace),
     -- messagesC :: ,
-    answersC :: TVar (M.Map WorkspaceId Message),
+    answersC :: TVar (M.Map VersionId Message),
     answerFunctionsC :: TVar (M.Map SessionId FunctionId),
     pointersC :: TVar (M.Map Pointer Message),
     alternativesC :: TVar (M.Map FunctionId [([Pattern], Exp')]),
-    linksC :: TVar (M.Map WorkspaceId PointerRemapping),
-    continuationsC :: TVar (M.Map WorkspaceId (M.Map FunctionId Konts')),
-    continuationArgumentsC :: TVar (M.Map (WorkspaceId, FunctionId) (M.Map Int Message)),
+    linksC :: TVar (M.Map VersionId PointerRemapping),
+    continuationsC :: TVar (M.Map VersionId (M.Map FunctionId Konts')),
+    continuationArgumentsC :: TVar (M.Map (VersionId, FunctionId) (M.Map Int Message)),
     traceC :: TVar [(ProcessId, EvalState')], -- Stored newest first.
     runQueueC :: TVar (M.Map SessionId (M.Map ProcessId EvalState')),
     sessionsC :: TVar (M.Map SessionId [ProcessId]) }
@@ -65,6 +67,7 @@ makeCachingSchedulerContext cache ctxt = do
                 doAtomically = id, -- doAtomically ctxt, -- TODO: XXX Think about this.
                 createInitialWorkspace = createInitialWorkspaceCaching cache ctxt,
                 newSession = newSessionCaching cache ctxt,
+                newVersion = newVersionCaching cache ctxt,
                 createWorkspace = createWorkspaceCaching cache ctxt,
                 sendAnswer = sendAnswerCaching cache ctxt,
                 sendMessage = sendMessageCaching cache ctxt,
@@ -74,6 +77,7 @@ makeCachingSchedulerContext cache ctxt = do
                 remapPointers = remapPointersCaching cache ctxt,
                 pendingQuestions = pendingQuestionsCaching cache ctxt,
                 getWorkspace = getWorkspaceCaching cache ctxt,
+                workspaceIdOf = workspaceIdOfCaching cache ctxt,
                 getNextWorkspace = getNextWorkspaceCaching cache ctxt,
                 dereference = dereferenceCaching cache ctxt,
                 reifyWorkspace = reifyWorkspaceCaching cache ctxt,
@@ -90,10 +94,10 @@ makeCachingSchedulerContext cache ctxt = do
 --      createPointers - Asynchronous
 --      remapPointers - Asynchronous
 
-reifyWorkspaceCaching :: CacheState -> SchedulerContext e -> WorkspaceId -> IO Message
-reifyWorkspaceCaching cache ctxt workspaceId = do
+reifyWorkspaceCaching :: CacheState -> SchedulerContext e -> VersionId -> IO Message
+reifyWorkspaceCaching cache ctxt versionId = do
     workspaces <- readTVarIO (workspacesC cache)
-    return (workspaceToMessage workspaces workspaceId)
+    return (workspaceToMessage workspaces versionId)
 
 dereferenceCaching :: CacheState -> SchedulerContext e -> Pointer -> IO Message
 dereferenceCaching cache ctxt ptr = do
@@ -102,7 +106,7 @@ dereferenceCaching cache ctxt ptr = do
         Just msg -> return $! applyLabel ptr msg
         -- Intentionally incomplete.
 
-createInitialWorkspaceCaching :: CacheState -> SchedulerContext e -> Message -> IO WorkspaceId
+createInitialWorkspaceCaching :: CacheState -> SchedulerContext e -> Message -> IO VersionId
 createInitialWorkspaceCaching cache ctxt msg = do
     wsId <- createInitialWorkspace ctxt msg
     ws <- getWorkspace ctxt wsId
@@ -115,45 +119,68 @@ newSessionCaching cache ctxt mSessionId = do
     atomically $ modifyTVar' (sessionsC cache) (M.unionWith (++) (M.singleton sessionId []))
     return sessionId
 
-createWorkspaceCaching :: CacheState -> SchedulerContext e -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
-createWorkspaceCaching cache ctxt userId workspaceId qAsAsked qAsAnswered = do
-    wsId <- createWorkspace ctxt userId workspaceId qAsAsked qAsAnswered
-    let newWorkspace = Workspace {
-                        identity = wsId,
-                        parentId = Just workspaceId,
-                        question = qAsAnswered,
-                        subQuestions = [],
-                        messageHistory = [],
-                        expandedPointers = M.empty,
-                        time = 0 }
-    atomically $ modifyTVar' (workspacesC cache) (M.insert wsId newWorkspace . M.adjust (insertSubQuestion wsId) workspaceId)
-    return wsId
-  where insertSubQuestion wsId ws@(Workspace { subQuestions = sqs }) = ws { subQuestions = sqs ++ [(wsId, qAsAsked, Nothing)] }
+newVersionCaching :: CacheState -> SchedulerContext e -> VersionId -> IO (VersionId, LogicalTime)
+newVersionCaching cache ctxt versionId = do
+    r@(vId, t) <- newVersion ctxt versionId
+    atomically $ do
+        workspaces <- readTVar (workspacesC cache)
+        let !ws = case M.lookup versionId workspaces of Just ws -> ws
+        modifyTVar' (workspacesC cache) (M.insert vId (ws { identity = vId, previousVersion = Just versionId, time = Time t }))
+    return r
 
-sendAnswerCaching :: CacheState -> SchedulerContext e -> UserId -> WorkspaceId -> Message -> IO ()
-sendAnswerCaching cache ctxt userId workspaceId msg = do
-    Workspace { parentId = mParentWorkspaceId } <- getWorkspaceCaching cache ctxt workspaceId
-    case mParentWorkspaceId of
-        Nothing -> atomically $ modifyTVar' (answersC cache) (M.insert workspaceId msg)
-        Just parentWorkspaceId -> do
-            atomically $ do
-                modifyTVar' (workspacesC cache) (M.adjust (insertSubQuestion workspaceId msg) parentWorkspaceId)
-                modifyTVar' (answersC cache) (M.insert workspaceId msg)
-    sendAnswer ctxt userId workspaceId msg
-  where insertSubQuestion wsId msg ws@(Workspace { subQuestions = sqs }) = ws { subQuestions = map addAnswer sqs }
-            where addAnswer sq@(qId, q, _) | qId == wsId = (qId, q, Just msg)
-                                           | otherwise = sq
+createWorkspaceCaching :: CacheState -> SchedulerContext e -> UserId -> VersionId -> Message -> Message -> IO (VersionId, WorkspaceId, LogicalTime)
+createWorkspaceCaching cache ctxt userId versionId qAsAsked qAsAnswered = do
+    r@(childVId, childId, t) <- createWorkspace ctxt userId versionId qAsAsked qAsAnswered
+    let newChildWorkspace = Workspace {
+                             identity = childVId,
+                             workspaceIdentity = childId,
+                             parentId = Just versionId,
+                             previousVersion = Nothing,
+                             question = qAsAnswered,
+                             subQuestions = [],
+                             messageHistory = [],
+                             expandedPointers = M.empty,
+                             time = Time t }
+        new ws = ws {
+                    subQuestions = subQuestions ws ++ [(childVId, qAsAsked, Nothing)],
+                    time = Time t }
 
-sendMessageCaching :: CacheState -> SchedulerContext e -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
+    atomically $ modifyTVar' (workspacesC cache) (M.insert childVId newChildWorkspace . M.adjust new versionId)
+    return r
+
+priorVersions :: M.Map VersionId Workspace -> VersionId -> S.Set VersionId
+priorVersions workspaces versionId = go versionId S.empty
+    where go vId = case M.lookup vId workspaces of
+                    Nothing -> id
+                    Just ws -> case previousVersion ws of
+                                    Nothing -> S.insert vId
+                                    Just vId' -> go vId' . S.insert vId
+
+sendAnswerCaching :: CacheState -> SchedulerContext e -> UserId -> VersionId -> Message -> IO ()
+sendAnswerCaching cache ctxt userId versionId msg = do
+    sendAnswer ctxt userId versionId msg
+    Workspace { parentId = mParentWorkspaceVersionId } <- getWorkspaceCaching cache ctxt versionId
+    case mParentWorkspaceVersionId of
+        Nothing -> atomically $ modifyTVar' (answersC cache) (M.insert versionId msg)
+        Just parentWorkspaceVersionId -> atomically $ do
+            workspaces <- readTVar (workspacesC cache)
+            let pvs = priorVersions workspaces versionId
+                new ws = ws { subQuestions = map (addAnswer pvs) (subQuestions ws) }
+            writeTVar (workspacesC cache) (M.adjust new parentWorkspaceVersionId workspaces)
+            modifyTVar' (answersC cache) (M.insert versionId msg)
+  where addAnswer pvs sq@(qId, q, _) | qId `S.member` pvs = (versionId, q, Just msg)
+                                     | otherwise = sq
+
+sendMessageCaching :: CacheState -> SchedulerContext e -> UserId -> VersionId -> VersionId -> Message -> IO ()
 sendMessageCaching cache ctxt userId srcId tgtId msg = error "sendMessageCaching: not implemented"
 
-expandPointerCaching :: CacheState -> SchedulerContext e -> UserId -> WorkspaceId -> Pointer -> IO ()
-expandPointerCaching cache ctxt userId workspaceId ptr = do
+expandPointerCaching :: CacheState -> SchedulerContext e -> UserId -> VersionId -> Pointer -> IO ()
+expandPointerCaching cache ctxt userId versionId ptr = do
+    expandPointer ctxt userId versionId ptr
     atomically $ do
         msg <- applyLabel ptr . (\m -> case M.lookup ptr m of Just a -> a) <$> readTVar (pointersC cache)
-        modifyTVar' (workspacesC cache) $ M.adjust (insertPointer msg) workspaceId
-    expandPointer ctxt userId workspaceId ptr
-  where insertPointer msg ws@(Workspace { expandedPointers = ep }) = ws { expandedPointers = M.insert ptr msg ep }
+        let new ws = ws { expandedPointers = M.insert ptr msg (expandedPointers ws) }
+        modifyTVar' (workspacesC cache) (M.adjust new versionId)
 
 nextPointerCaching :: CacheState -> SchedulerContext e -> IO Pointer
 nextPointerCaching cache ctxt = do
@@ -171,14 +198,28 @@ remapPointersCaching cache ctxt mapping = do
     atomically $ modifyTVar' (pointersC cache) (\ps -> M.union (fmap (ps M.!) mapping) ps)
     remapPointers ctxt mapping
 
-pendingQuestionsCaching :: CacheState -> SchedulerContext e -> WorkspaceId -> IO [WorkspaceId]
-pendingQuestionsCaching cache ctxt workspaceId = do
-    ws <- (\m -> case M.lookup workspaceId m of Just a -> a) <$> readTVarIO (workspacesC cache)
+-- TODO: This might need some aggregation magic too?
+pendingQuestionsCaching :: CacheState -> SchedulerContext e -> VersionId -> IO [VersionId]
+pendingQuestionsCaching cache ctxt versionId = do
+    ws <- (\m -> case M.lookup versionId m of Just a -> a) <$> readTVarIO (workspacesC cache)
     return $ mapMaybe (\(wsId, _, ma) -> maybe (Just wsId) (const Nothing) ma) (subQuestions ws)
 
-getWorkspaceCaching :: CacheState -> SchedulerContext e -> WorkspaceId -> IO Workspace
-getWorkspaceCaching cache ctxt workspaceId = do
-    (\m -> case M.lookup workspaceId m of Just a -> a) <$> readTVarIO (workspacesC cache)
+getWorkspaceCaching :: CacheState -> SchedulerContext e -> VersionId -> IO Workspace
+getWorkspaceCaching cache ctxt versionId = do
+    (\m -> case M.lookup versionId m of Just a -> {-aggregate m-} a) <$> readTVarIO (workspacesC cache)
+  {-
+  where combine ws ws' = ws {
+                            subQuestions = subQuestions ws' ++ subQuestions ws, -- TODO: Need to smarter to include answers?
+                            messageHistory = messageHistory ws' ++ messageHistory ws,
+                            expandedPointers = expandedPointers ws' `M.union` expandedPointers ws }
+        aggregate workspaces ws = go ws (previousVersion ws)
+            where go !ws Nothing = ws
+                  go !ws (Just vId) = go (combine ws ws') (previousVersion ws')
+                    where !ws' = case M.lookup vId workspaces of Just pv -> pv
+  -}
 
-getNextWorkspaceCaching :: CacheState -> SchedulerContext e -> IO (Maybe WorkspaceId)
+workspaceIdOfCaching :: CacheState -> SchedulerContext e -> VersionId -> IO WorkspaceId
+workspaceIdOfCaching cache ctxt versionId = workspaceIdentity <$> getWorkspaceCaching cache ctxt versionId
+
+getNextWorkspaceCaching :: CacheState -> SchedulerContext e -> IO (Maybe VersionId)
 getNextWorkspaceCaching cache ctxt = error "getNextWorkspaceCaching: not implemented"

@@ -16,11 +16,11 @@ import Scheduler ( SchedulerContext(..), Event, UserId, SessionId, SyncFunc, Asy
                    autoUserId, workspaceToMessage, eventMessage, renumberEvent, newSessionId )
 import Time ( Time(..), LogicalTime )
 import Util ( toText, Counter, newCounter, increment, Queue, enqueueAsync, enqueueSync )
-import Workspace ( Workspace(..), WorkspaceId, newWorkspaceId )
+import Workspace ( Workspace(..), WorkspaceId, VersionId, newWorkspaceId, newVersionId )
 
 makePostgresSchedulerContext :: Queue -> Connection -> IO (SchedulerContext (Connection, Queue))
 makePostgresSchedulerContext q conn = do
-    [Only t] <- enqueueSync q $ query_ conn "SELECT COUNT(*) FROM Commands"
+    [Only t] <- enqueueSync q $ query_ conn "SELECT COUNT(*) FROM WorkspaceVersions"
     c <- newCounter t
     qThreadId <- enqueueSync q myThreadId
     let sync action = do
@@ -36,6 +36,7 @@ makePostgresSchedulerContext q conn = do
             doAtomically = sync,
             createInitialWorkspace = createInitialWorkspacePostgres sync async c conn,
             newSession = newSessionPostgres sync async c conn,
+            newVersion = newVersionPostgres sync async c conn,
             createWorkspace = createWorkspacePostgres sync async c conn,
             sendAnswer = sendAnswerPostgres sync async c conn,
             sendMessage = sendMessagePostgres sync async c conn,
@@ -45,6 +46,7 @@ makePostgresSchedulerContext q conn = do
             remapPointers = remapPointersPostgres sync async c conn,
             pendingQuestions = pendingQuestionsPostgres sync async c conn,
             getWorkspace = getWorkspacePostgres sync async c conn,
+            workspaceIdOf = workspaceIdOfPostgres sync async c conn,
             getNextWorkspace = getNextWorkspacePostgres sync async c conn,
             dereference = dereferencePostgres sync async c conn,
             reifyWorkspace = reifyWorkspacePostgres sync async c conn,
@@ -52,46 +54,53 @@ makePostgresSchedulerContext q conn = do
         }
 
 -- NOT CACHEABLE
-reifyWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> WorkspaceId -> IO Message
-reifyWorkspacePostgres sync async c conn workspaceId = do
+reifyWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO Message
+reifyWorkspacePostgres sync async c conn versionId = do
     workspaces <- sync $ do
-        execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendants ( id INTEGER PRIMARY KEY )"
-        execute_ conn "DELETE FROM Descendants"
-        execute conn "WITH RECURSIVE ds(id) AS ( \
-                     \     VALUES (?) \
-                     \ UNION ALL \
-                     \     SELECT w.id FROM Workspaces w INNER JOIN ds ON w.parentWorkspaceId = ds.id \
-                     \) INSERT INTO Descendants ( id ) SELECT id FROM ds" (Only workspaceId)
-        workspaces <- query_ conn "SELECT id, parentWorkspaceId, logicalTime, questionAsAnswered \
-                                  \FROM Workspaces WHERE id IN (SELECT id FROM Descendants)"
-        messages <- query_ conn "SELECT targetWorkspaceId, content \
-                                \FROM Messages \
-                                \WHERE targetWorkspaceId IN (SELECT id FROM Descendants) \
-                                \ORDER BY id ASC"
-        subquestions <- query_ conn "SELECT p.id, q.id, q.questionAsAsked, a.answer \
-                                    \FROM Workspaces p \
-                                    \INNER JOIN Workspaces q ON q.parentWorkspaceId = p.id \
-                                    \LEFT OUTER JOIN Answers a ON q.id = a.workspaceId \
-                                    \WHERE p.id IN (SELECT id FROM Descendants) \
-                                    \ORDER BY p.id ASC, q.logicalTime DESC"
+        -- TODO: Replace with function.
+        execute_ conn "CREATE TEMP TABLE IF NOT EXISTS Descendents ( id UUID PRIMARY KEY, logicalTime INTEGER NOT NULL )"
+        execute_ conn "DELETE FROM Descendents"
+        execute conn "WITH RECURSIVE ds(id, t) AS ( \
+                     \      SELECT v.versionId, v.logicalTime \
+                     \      FROM (VALUES (?)) x(id) \
+                     \      CROSS JOIN priorVersions(CAST(x.id AS UUID)) y \
+                     \      INNER JOIN WorkspaceVersions v ON v.versionId = y.versionId \
+                     \ UNION \
+                     \      SELECT w.versionId, w.logicalTime FROM WorkspaceVersions w INNER JOIN ds ON w.parentWorkspaceVersionId = ds.id \
+                     \) INSERT INTO Descendents ( id, logicalTime ) SELECT id, t FROM ds" (Only versionId)
+
+        workspaces <- query_ conn "SELECT v.versionId, v.workspaceId, v.parentWorkspaceVersionId, v.previousVersion, v.logicalTime, w.questionAsAnswered \
+                                  \FROM WorkspaceVersions v \
+                                  \INNER JOIN Workspaces w ON w.id = v.workspaceId \
+                                  \WHERE v.versionId IN (SELECT id FROM Descendents)"
+        messages <- query_ conn "SELECT m.targetWorkspaceVersionId, m.content \
+                                \FROM Descendents d \
+                                \CROSS JOIN messagesAsOf(d.id) m \
+                                \ORDER BY d.logicalTime ASC"
+        subquestions <- query_ conn "SELECT d.id, q.versionId, q.questionAsAsked, q.answer \
+                                    \FROM Descendents d \
+                                    \CROSS JOIN subquestionsAsOf(d.id) q \
+                                    \ORDER BY d.id ASC, q.logicalTime DESC"
         {-
-        expanded <- query_ conn "SELECT workspaceId, pointerId, content \
-                                \FROM ExpandedPointers e \
-                                \INNER JOIN Pointers p ON e.pointerId = p.id \
-                                \WHERE workspaceId IN (SELECT id FROM Descendants)"
+        expanded <- query_ conn "SELECT e.versionId, e.pointerId, p.content \
+                                \FROM Descendents d \
+                                \CROSS JOIN expandedPointersAsOf(d.versionId) e \
+                                \INNER JOIN Pointers p ON e.pointerId = p.id"
         -}
         let messageMap = M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
             subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
             expandedMap = M.empty -- M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
-        return $ M.fromList $ map (\(i, p, t, q) -> (i, Workspace {
-                                                            identity = i,
-                                                            parentId = p,
-                                                            question = parseMessageUnsafeDB q,
-                                                            subQuestions = maybe [] id $ M.lookup i subquestionsMap,
-                                                            messageHistory = maybe [] id $ M.lookup i messageMap,
-                                                            expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
-                                                            time = Time t })) workspaces
-    return (workspaceToMessage workspaces workspaceId)
+        return $ M.fromList $ map (\(i, wsId, p, pv, t, q) -> (i, Workspace {
+                                                                    identity = i,
+                                                                    workspaceIdentity = wsId,
+                                                                    parentId = p,
+                                                                    previousVersion = pv,
+                                                                    question = parseMessageUnsafeDB q,
+                                                                    subQuestions = maybe [] id $ M.lookup i subquestionsMap,
+                                                                    messageHistory = maybe [] id $ M.lookup i messageMap,
+                                                                    expandedPointers = maybe M.empty id $ M.lookup i expandedMap,
+                                                                    time = Time t })) workspaces
+    return (workspaceToMessage workspaces versionId)
 
 -- TODO: Bulkify this.
 -- CACHEABLE
@@ -101,27 +110,30 @@ dereferencePostgres sync async c conn ptr = do
         [Only t] <- query conn "SELECT content FROM Pointers WHERE id = ? LIMIT 1" (Only ptr)
         return $! parseMessageUnsafe' ptr t
 
-insertCommand :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> Command -> IO ()
-insertCommand sync async c conn userId workspaceId cmd = do
+insertCommand :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Command -> IO ()
+insertCommand sync async c conn userId versionId cmd = do
     let !cmdText = toText (commandToBuilder cmd)
     async $ do
-        mt <- query conn "SELECT commandTime FROM Commands WHERE workspaceId = ? ORDER BY commandTime DESC LIMIT 1" (Only workspaceId)
+        mt <- query conn "SELECT commandTime FROM Commands WHERE versionId = ? ORDER BY commandTime DESC LIMIT 1" (Only versionId)
         let t = case mt of [] -> 0; [Only t'] -> t'+1
-        () <$ execute conn "INSERT INTO Commands (workspaceId, commandTime, userId, command) VALUES (?, ?, ?, ?)"
-                            (workspaceId, t :: Int64, userId, cmdText)
+        () <$ execute conn "INSERT INTO Commands ( versionId, commandTime, userId, command ) VALUES (?, ?, ?, ?)"
+                            (versionId, t :: Int64, userId, cmdText)
 
-createInitialWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> Message -> IO WorkspaceId
+createInitialWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> Message -> IO VersionId
 createInitialWorkspacePostgres sync async c conn msg = do
     workspaceId <- newWorkspaceId
     t <- increment c
     let !msgText = toText (messageToBuilder msg)
+    vId <- newVersionId
     async $ do
         withTransaction conn $ do
-            () <$ execute conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
+            execute conn "INSERT INTO Workspaces ( id, questionAsAsked, questionAsAnswered ) VALUES (?, ?, ?)"
+                                (workspaceId, msgText, msgText)
+            () <$ execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
                                \VALUES (?, ?, ?, ?, ?)"
-                                 (workspaceId, t :: LogicalTime, Nothing :: Maybe WorkspaceId, msgText, msgText)
-    insertCommand sync async c conn autoUserId workspaceId (Ask msg)
-    return workspaceId
+                                (vId, workspaceId, Nothing :: Maybe VersionId, t, Nothing :: Maybe VersionId)
+    insertCommand sync async c conn autoUserId vId (Ask msg)
+    return vId
 
 newSessionPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> Maybe SessionId -> IO SessionId
 newSessionPostgres sync async c conn Nothing = do
@@ -129,49 +141,62 @@ newSessionPostgres sync async c conn Nothing = do
     newSessionPostgres sync async c conn (Just sessionId)
 newSessionPostgres sync async c conn (Just sessionId) = do
     async $ do
-        () <$ execute conn "INSERT INTO Sessions (sessionId) VALUES (?) ON CONFLICT DO NOTHING" (Only sessionId)
+        () <$ execute conn "INSERT INTO Sessions ( sessionId ) VALUES (?) ON CONFLICT DO NOTHING" (Only sessionId)
     return sessionId
 
-createWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId
-createWorkspacePostgres sync async c conn userId workspaceId qAsAsked qAsAnswered = do
+newVersionPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO (VersionId, LogicalTime)
+newVersionPostgres sync async c conn versionId = do
+    t <- increment c
+    vId <- newVersionId
+    async $ do
+        withTransaction conn $ do
+            [(workspaceId, pVId)] <- query conn "SELECT workspaceId, parentWorkspaceVersionId FROM WorkspaceVersions WHERE versionId = ?" (Only versionId)
+            () <$ execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
+                               \VALUES (?, ?, ?, ?, ?)"
+                                (vId, workspaceId :: WorkspaceId, pVId :: Maybe VersionId, t, Just versionId)
+    return (vId, t)
+
+createWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> Message -> IO (VersionId, WorkspaceId, LogicalTime)
+createWorkspacePostgres sync async c conn userId versionId qAsAsked qAsAnswered = do
     let !qAsAskedText = toText (messageToBuilder qAsAsked)
         !qAsAnsweredText = toText (messageToBuilder qAsAnswered)
-    wsId <- newWorkspaceId
     t <- increment c
+    childId <- newWorkspaceId
+    childVersionId <- newVersionId
     async $ do
-        () <$ execute conn "INSERT INTO Workspaces (id, logicalTime, parentWorkspaceId, questionAsAsked, questionAsAnswered) \
-                           \VALUES (?, ?, ?, ?, ?)"
-                            (wsId, t :: LogicalTime, Just workspaceId, qAsAskedText, qAsAnsweredText)
-    insertCommand sync async c conn userId workspaceId (Ask qAsAsked)
-    return wsId
+        withTransaction conn $ do
+            -- TODO: Stick all this into a stored procedure.
+            execute conn "INSERT INTO Workspaces ( id, questionAsAsked, questionAsAnswered ) VALUES (?, ?, ?)"
+                                (childId, qAsAskedText, qAsAnsweredText)
+            () <$ execute conn "INSERT INTO WorkspaceVersions ( versionId, workspaceId, parentWorkspaceVersionId, logicalTime, previousVersion ) \
+                               \VALUES (?, ?, ?, ?, ?)"
+                                (childVersionId, childId, Just versionId, t, Nothing :: Maybe VersionId)
+    insertCommand sync async c conn userId versionId (Ask qAsAsked)
+    return (childVersionId, childId, t)
 
-sendAnswerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> Message -> IO ()
-sendAnswerPostgres sync async c conn userId workspaceId msg = do
+sendAnswerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Message -> IO ()
+sendAnswerPostgres sync async c conn userId versionId msg = do
     let !msgText = toText (messageToBuilder msg)
-    t <- increment c
     async $ do
-        () <$ execute conn "INSERT INTO Answers (workspaceId, logicalTimeAnswered, answer) VALUES (?, ?, ?) \
-                           \ON CONFLICT(workspaceId) DO UPDATE SET logicalTimeAnswered = excluded.logicalTimeAnswered, answer = excluded.answer"
-                            (workspaceId, t :: LogicalTime, msgText)
-    insertCommand sync async c conn userId workspaceId (Reply msg)
+        () <$ execute conn "INSERT INTO Answers ( versionId, answer ) VALUES (?, ?) \
+                           \ON CONFLICT(versionId) DO UPDATE SET answer = excluded.answer"
+                            (versionId, msgText)
+    insertCommand sync async c conn userId versionId (Reply msg)
 
-sendMessagePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> WorkspaceId -> Message -> IO ()
-sendMessagePostgres sync async c conn userId srcId tgtId msg = do
+sendMessagePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> VersionId -> Message -> IO ()
+sendMessagePostgres sync async c conn userId srcVersionId tgtVersionId msg = do
     let !msgText = toText (messageToBuilder msg)
-    t <- increment c
     async $ do
-        () <$ execute conn "INSERT INTO Messages (sourceWorkspaceId, targetWorkspaceId, logicalTimeSent, content) VALUES (?, ?, ?, ?)"
-                            (srcId, tgtId, t :: LogicalTime, msgText)
-    insertCommand sync async c conn userId srcId (Send tgtId msg)
+        () <$ execute conn "INSERT INTO Messages ( sourceWorkspaceVersionId, targetWorkspaceVersionId, content ) VALUES (?, ?, ?)"
+                            (srcVersionId, tgtVersionId, msgText)
+    insertCommand sync async c conn userId srcVersionId (Send tgtVersionId msg) -- TODO: Think about this.
 
 -- TODO: Bulkify this.
-expandPointerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> WorkspaceId -> Pointer -> IO ()
-expandPointerPostgres sync async c conn userId workspaceId ptr = do
-    t <- increment c
+expandPointerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> UserId -> VersionId -> Pointer -> IO ()
+expandPointerPostgres sync async c conn userId versionId ptr = do
     async $ do
-        () <$ execute conn "INSERT INTO ExpandedPointers (workspaceId, pointerId, logicalTimeExpanded) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
-                            (workspaceId, ptr, t :: LogicalTime)
-    insertCommand sync async c conn userId workspaceId (View ptr)
+        () <$ execute conn "INSERT INTO ExpandedPointers ( versionId, pointerId ) VALUES (?, ?) ON CONFLICT DO NOTHING" (versionId, ptr)
+    insertCommand sync async c conn userId versionId (View ptr)
 
 nextPointerPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO Pointer
 nextPointerPostgres sync async c conn = do
@@ -182,63 +207,71 @@ nextPointerPostgres sync async c conn = do
 createPointersPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> PointerEnvironment -> IO ()
 createPointersPostgres sync async c conn env = do
     async $
-        () <$ executeMany conn "INSERT INTO Pointers (id, content) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) env))
+        () <$ executeMany conn "INSERT INTO Pointers ( id, content ) VALUES (?, ?)" (M.assocs (fmap (toText . messageToBuilderDB) env))
 
 remapPointersPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> PointerRemapping -> IO ()
 remapPointersPostgres sync async c conn mapping = do
     async $
-        () <$ executeMany conn "INSERT INTO Pointers (id, content) \
+        () <$ executeMany conn "INSERT INTO Pointers ( id, content ) \
                                \SELECT m.new, p.content \
                                \FROM Pointers p \
                                \INNER JOIN (VALUES (?, ?)) m(new, old) ON m.old = p.id" (M.assocs mapping)
 
 -- NOT CACHEABLE
-pendingQuestionsPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> WorkspaceId -> IO [WorkspaceId]
-pendingQuestionsPostgres sync async c conn workspaceId = do
+pendingQuestionsPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO [VersionId]
+pendingQuestionsPostgres sync async c conn versionId = do
     sync $ do
-        subquestions <- query conn "SELECT w.id \
-                                   \FROM Workspaces w \
-                                   \LEFT OUTER JOIN Answers a ON a.workspaceId = w.id \
-                                   \WHERE w.parentWorkspaceId = ? \
-                                   \  AND a.answer IS NULL ORDER BY logicalTime ASC" (Only workspaceId)
+        subquestions <- query conn "SELECT w.versionId \
+                                   \FROM Current_Subquestions w \
+                                   \LEFT OUTER JOIN Answers a ON a.versionId = w.versionId \
+                                   \WHERE w.parentWorkspaceVersionId = ? \
+                                   \  AND a.answer IS NULL ORDER BY w.logicalTime ASC" (Only versionId)
         return $ map (\(Only qId) -> qId) subquestions
 
 -- TODO: Maybe maintain a cache of workspaces.
 -- NOT CACHEABLE but the components should be. Cacheable if answered, for now at least.
-getWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> WorkspaceId -> IO Workspace
-getWorkspacePostgres sync async c conn workspaceId = do
+getWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO Workspace
+getWorkspacePostgres sync async c conn versionId = do
     sync $ do
-        [(p, t, q)] <- query conn "SELECT parentWorkspaceId, logicalTime, questionAsAnswered \
-                                  \FROM Workspaces \
-                                  \WHERE id = ? \
-                                  \ORDER BY logicalTime DESC LIMIT 1" (Only workspaceId)
-        messages <- query conn "SELECT content FROM Messages WHERE targetWorkspaceId = ?" (Only workspaceId) -- TODO: ORDER
-        subquestions <- query conn "SELECT w.id, w.questionAsAsked, a.answer \
-                                   \FROM Workspaces w \
-                                   \LEFT OUTER JOIN Answers a ON w.id = a.workspaceId \
-                                   \WHERE w.parentWorkspaceId = ? \
-                                   \ORDER BY w.logicalTime ASC" (Only workspaceId)
-        expanded <- query conn "SELECT pointerId, content \
-                               \FROM ExpandedPointers e \
+        [(wsId, p, pv, t, q)] <- query conn "SELECT v.workspaceId, v.parentWorkspaceVersionId, v.previousVersion, v.logicalTime, w.questionAsAnswered \
+                                            \FROM WorkspaceVersions v \
+                                            \INNER JOIN Workspaces w ON w.id = v.workspaceId \
+                                            \WHERE v.versionId = ?" (Only versionId)
+        messages <- query conn "SELECT content FROM Current_Messages WHERE targetWorkspaceVersionId = ?" (Only versionId) -- TODO: ORDER
+        subquestions <- query conn "SELECT w.versionId, w.questionAsAsked, w.answer \
+                                   \FROM Current_Subquestions w \
+                                   \WHERE w.parentWorkspaceVersionId = ? \
+                                   \ORDER BY w.logicalTime ASC" (Only versionId)
+        expanded <- query conn "SELECT p.id, p.content \
+                               \FROM Current_ExpandedPointers e \
                                \INNER JOIN Pointers p ON e.pointerId = p.id \
-                               \WHERE e.workspaceId = ?" (Only workspaceId)
+                               \WHERE e.versionId = ?" (Only versionId)
         return $ Workspace {
-            identity = workspaceId,
+            identity = versionId,
+            workspaceIdentity = wsId,
             parentId = p,
+            previousVersion = pv,
             question = parseMessageUnsafeDB q,
             subQuestions = map (\(qId, q, ma) -> (qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)) subquestions,
             messageHistory = map (\(Only m) -> parseMessageUnsafe m) messages,
             expandedPointers = M.fromList $ map (\(p, m) -> (p, parseMessageUnsafe' p m)) expanded,
             time = Time t }
 
+workspaceIdOfPostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> VersionId -> IO WorkspaceId
+workspaceIdOfPostgres sync async c conn vId = do
+    sync $ do
+        [Only workspaceId] <- query conn "SELECT workspaceId FROM WorkspaceVersions WHERE versionId = ? LIMIT 1" (Only vId)
+        return workspaceId
+
 -- NOT CACHEABLE
-getNextWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (Maybe WorkspaceId)
+getNextWorkspacePostgres :: SyncFunc -> AsyncFunc -> Counter -> Connection -> IO (Maybe VersionId)
 getNextWorkspacePostgres sync async c conn = do
     sync $ do
         -- This gets a workspace that doesn't currently have an answer.
-        result <- query_ conn "SELECT w.id \
-                              \FROM Workspaces w \
-                              \WHERE NOT EXISTS(SELECT * FROM Answers a WHERE a.workspaceId = w.id) ORDER BY w.logicalTime DESC LIMIT 1"
+        result <- query_ conn "SELECT w.versionId \
+                              \FROM Current_Subquestions w \
+                              \WHERE w.answer IS NULL \
+                              \ORDER BY w.logicalTime DESC LIMIT 1"
         case result of
             [] -> return Nothing
             [Only workspaceId] -> return (Just workspaceId)

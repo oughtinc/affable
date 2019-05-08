@@ -18,7 +18,7 @@ import Text.Megaparsec.Char ( char, string ) -- megaparsec
 import Text.Megaparsec.Char.Lexer ( decimal ) -- megaparsec
 
 import Message ( Message(..), Pointer, messageToBuilder, messageToBuilderDB, messageParser', messageToHaskell, messageToPattern )
-import Workspace ( WorkspaceId, workspaceIdToBuilder, parseWorkspaceId )
+import Workspace ( VersionId, versionIdToBuilder, parseVersionId )
 import Util ( mapToBuilder, parseMap, parseUnsafe )
 
 type Value = Message
@@ -121,10 +121,10 @@ type Primitive = Int
 data Name = ANSWER | LOCAL !Int64 deriving ( Eq, Ord, Show )
 
 type Exp' = Exp Primitive Name Var
-type Kont1' = Kont1 WorkspaceId Primitive Name Var
-type KontsId' = KontsId WorkspaceId Name
-type Konts' = Konts WorkspaceId Primitive Name Var
-type EvalState' = EvalState WorkspaceId Primitive Name Var
+type Kont1' = Kont1 VersionId Primitive Name Var
+type KontsId' = KontsId VersionId Name
+type Konts' = Konts VersionId Primitive Name Var
+type EvalState' = EvalState VersionId Primitive Name Var
 
 intersperseChar :: Char -> (a -> Builder) -> [a] -> Builder
 intersperseChar c f = mconcat . intersperse (singleton c) . map f
@@ -185,18 +185,18 @@ expToHaskell alternativesFor = go 0
                   !alts = alternativesFor f
                   f' ps = indentBuilder <> fromText "  " <> nameToBuilder f <> singleton '(' <> intersperseChar ',' messageToPattern ps <> singleton ')'
 
--- TODO: Can fix fBuilder as nameToBuilder as I expect to have f = Name and s = WorkspaceId for keying in the database.
+-- TODO: Can fix fBuilder as nameToBuilder as I expect to have f = Name and s = VersionId for keying in the database.
 -- NOTE: All this isn't quite as bad as it looks, at least in the concurrent case. If CallKont gets represented by an
 -- key for a database table, then Kont1 values will tend to be fairly small.
 --
--- The overall idea is that I'll have a database table of Konts keyed by WorkspaceId and Name that holds the contents of
+-- The overall idea is that I'll have a database table of Konts keyed by VersionId and Name that holds the contents of
 -- CallKonts or maybe JoinKonts. Konts occurring in Kont1 values (which will
--- only be Done, PrimKont, and NotifyKont in the concurrent case), will be represented as WorkspaceId-Name pairs.
+-- only be Done, PrimKont, and NotifyKont in the concurrent case), will be represented as VersionId-Name pairs.
 -- The actual representation of Kont1 values that are actually used will then be fairly small.
-kont1ToBuilderDB' :: (p -> Builder) -> (f -> Builder) -> Kont1 WorkspaceId p f v -> Builder
+kont1ToBuilderDB' :: (p -> Builder) -> (f -> Builder) -> Kont1 VersionId p f v -> Builder
 kont1ToBuilderDB' pBuilder fBuilder = go
     where go Done = fromText "Done"
-          go (PrimKont p s k) = fromText "(PrimKont " <> pBuilder p <> singleton ' ' <> workspaceIdToBuilder s <> singleton ' ' <> go k <> singleton ')'
+          go (PrimKont p s k) = fromText "(PrimKont " <> pBuilder p <> singleton ' ' <> versionIdToBuilder s <> singleton ' ' <> go k <> singleton ')'
           go (NotifyKont argNumber numArgs kId) = fromText "(NotifyKont " <> T.decimal argNumber <> singleton ' '
                                                                           <> T.decimal numArgs <> singleton ' '
                                                                           <> kontsIdToBuilderDB fBuilder kId <> singleton ')'
@@ -206,7 +206,7 @@ kont1ToBuilderDB = kont1ToBuilderDB' T.decimal nameToBuilder
 
 kont1ParserDB :: Parsec Void T.Text Kont1'
 kont1ParserDB = (Done <$ string "Done")
-            <|> (PrimKont <$> (string "(PrimKont " *> decimal) <*> (char ' ' *> parseWorkspaceId) <*> (char ' ' *> kont1ParserDB) <* char ')')
+            <|> (PrimKont <$> (string "(PrimKont " *> decimal) <*> (char ' ' *> parseVersionId) <*> (char ' ' *> kont1ParserDB) <* char ')')
             <|> (NotifyKont <$> (string "(NotifyKont " *> decimal) <*> (char ' ' *> decimal) <*> (char ' ' *> kontsIdParserDB) <* char ')')
             <?> "kont1"
 
@@ -215,10 +215,10 @@ parseKont1UnsafeDB :: T.Text -> Kont1'
 parseKont1UnsafeDB = parseUnsafe kont1ParserDB
 
 kontsIdParserDB :: Parsec Void T.Text KontsId'
-kontsIdParserDB = (,) <$> (char '(' *> parseWorkspaceId) <*> (char ',' *> nameParser) <* char ')' <?> "continuation ID"
+kontsIdParserDB = (,) <$> (char '(' *> parseVersionId) <*> (char ',' *> nameParser) <* char ')' <?> "continuation ID"
 
-kontsIdToBuilderDB :: (f -> Builder) -> KontsId WorkspaceId f -> Builder
-kontsIdToBuilderDB fBuilder (s, f) = singleton '(' <> workspaceIdToBuilder s <> singleton ',' <> fBuilder f <> singleton ')'
+kontsIdToBuilderDB :: (f -> Builder) -> KontsId VersionId f -> Builder
+kontsIdToBuilderDB fBuilder (s, f) = singleton '(' <> versionIdToBuilder s <> singleton ',' <> fBuilder f <> singleton ')'
 
 -- I don't really want to store these as strings or really at all, but, for now, it is the most direct thing to do.
 varEnvToBuilder :: VarEnv Var -> Builder

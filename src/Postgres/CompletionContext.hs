@@ -30,7 +30,7 @@ completionsForPostgres sync q conn primPatterns sessionId = do
         [fId] <- query conn "SELECT f.id \
                             \FROM Functions f \
                             \INNER JOIN Continuations c ON c.function = f.id \
-                            \INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
+                            \INNER JOIN Trace t ON t.versionId = c.versionId \
                             \INNER JOIN SessionProcesses s ON s.processId = t.processId \
                             \WHERE s.sessionId = ? AND f.isAnswer = 1 \
                             \LIMIT 1" (Only sessionId)

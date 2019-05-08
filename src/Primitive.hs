@@ -12,22 +12,22 @@ import Data.Text.Read ( signed, decimal ) -- text
 import Exp ( Primitive, PrimEnv, Pattern, Value )
 import Message ( Message(..), matchMessage )
 import Scheduler ( SchedulerContext(..), autoUserId, relabelMessage, fullyExpand, normalize )
-import Workspace ( WorkspaceId, parentId )
+import Workspace ( VersionId, parentId )
 
-type PrimFunc extra = SchedulerContext extra -> WorkspaceId -> [Value] -> IO Value
+type PrimFunc extra = SchedulerContext extra -> VersionId -> [Value] -> IO Value
 
 don'tKnow :: Message
 don'tKnow = Structured [Text "Don't know"]
 
 -- TODO: Assumes variables in pattern are in ascending order.
-makePrimitive :: SchedulerContext extra -> Pattern -> PrimFunc extra -> (WorkspaceId -> Value -> IO Value)
+makePrimitive :: SchedulerContext extra -> Pattern -> PrimFunc extra -> (VersionId -> Value -> IO Value)
 makePrimitive ctxt pattern body workspaceId msg = do
     answer <- maybe (return don'tKnow) (body ctxt workspaceId . M.elems) . matchMessage pattern =<< fullyExpand ctxt msg
     answer <- relabelMessage ctxt =<< normalize ctxt answer
     sendAnswer ctxt autoUserId workspaceId answer
     return answer
 
-makePrimitives :: SchedulerContext extra -> IO (PrimEnv WorkspaceId IO Primitive, Value -> Maybe Primitive)
+makePrimitives :: SchedulerContext extra -> IO (PrimEnv VersionId IO Primitive, Value -> Maybe Primitive)
 makePrimitives ctxt = return (primEnv, matchPrim)
     where !primEnv = M.fromList $ map (\(p, pattern, _, body) -> (p, makePrimitive ctxt pattern body)) primitives
           -- TODO: This could be more efficient.

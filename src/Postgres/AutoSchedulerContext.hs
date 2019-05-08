@@ -14,7 +14,7 @@ import Message ( PointerRemapping, messageToBuilder, parseMessageUnsafeDB, parse
 import Scheduler ( SchedulerContext(..), SessionId, SyncFunc, AsyncFunc )
 import Postgres.SchedulerContext ( makePostgresSchedulerContext )
 import Util ( toText, Queue, enqueueSync, enqueueAsync, parseUnsafe )
-import Workspace ( WorkspaceId )
+import Workspace ( VersionId )
 
 makePostgresAutoSchedulerContext :: SchedulerContext (Connection, Queue) -> SessionId -> IO (AutoSchedulerContext (Connection, Queue))
 makePostgresAutoSchedulerContext ctxt sessionId = do
@@ -30,7 +30,7 @@ makePostgresAutoSchedulerContext ctxt sessionId = do
         ss <- query conn "SELECT f.id \
                          \FROM Functions f \
                          \INNER JOIN Continuations c ON c.function = f.id \
-                         \INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
+                         \INNER JOIN Trace t ON t.versionId = c.versionId \
                          \INNER JOIN SessionProcesses s ON s.processId = t.processId \
                          \WHERE s.sessionId = ? AND f.isAnswer = 1 \
                          \LIMIT 1" (Only sessionId)
@@ -78,7 +78,7 @@ allAlternativesPostgres sync async conn answerId sessionId = do
                            \FROM Alternatives \
                            \WHERE function IN (SELECT c.function \
                            \                   FROM Continuations c \
-                           \                   INNER JOIN Trace t ON t.workspaceId = c.workspaceId \
+                           \                   INNER JOIN Trace t ON t.versionId = c.versionId \
                            \                   INNER JOIN SessionProcesses s ON s.processId = t.processId \
                            \                   WHERE s.sessionId = ?)"
                            (Only sessionId) -- TODO: ORDER BY
@@ -93,19 +93,19 @@ nextFunctionPostgres sync async conn = do
 addFunctionPostgres :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> Name -> IO ()
 addFunctionPostgres sync async conn answerId name = do
     async $ do
-        () <$ execute conn "INSERT INTO Functions (id) VALUES (?) ON CONFLICT (id) DO NOTHING" (Only (nameToId answerId name))
+        () <$ execute conn "INSERT INTO Functions ( id ) VALUES (?) ON CONFLICT (id) DO NOTHING" (Only (nameToId answerId name))
 
-linkVarsPostgres :: SyncFunc -> AsyncFunc -> Connection -> WorkspaceId -> PointerRemapping -> IO ()
-linkVarsPostgres sync async conn workspaceId mapping = do
+linkVarsPostgres :: SyncFunc -> AsyncFunc -> Connection -> VersionId -> PointerRemapping -> IO ()
+linkVarsPostgres sync async conn versionId mapping = do
     async $ do
-        () <$ executeMany conn "INSERT INTO Links ( workspaceId, sourceId, targetId ) VALUES (?, ?, ?) \
-                               \ON CONFLICT (workspaceId, sourceId) DO UPDATE SET targetId = excluded.targetId"
-                (map (\(srcId, tgtId) -> (workspaceId, srcId, tgtId)) (M.toList mapping))
+        () <$ executeMany conn "INSERT INTO Links ( versionId, sourceId, targetId ) VALUES (?, ?, ?) \
+                               \ON CONFLICT (versionId, sourceId) DO UPDATE SET targetId = excluded.targetId"
+                (map (\(srcId, tgtId) -> (versionId, srcId, tgtId)) (M.toList mapping))
 
-linksPostgres :: SyncFunc -> AsyncFunc -> Connection -> WorkspaceId -> IO PointerRemapping
-linksPostgres sync async conn workspaceId = do
+linksPostgres :: SyncFunc -> AsyncFunc -> Connection -> VersionId -> IO PointerRemapping
+linksPostgres sync async conn versionId = do
     sync $ do
-        srcTgts <- query conn "SELECT sourceId, targetId FROM Links WHERE workspaceId = ?" (Only workspaceId)
+        srcTgts <- query conn "SELECT sourceId, targetId FROM Current_Links WHERE versionId = ?" (Only versionId)
         return $ M.fromList srcTgts
 
 addCaseForPostgres :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> Name -> [Pattern] -> Exp' -> IO ()
@@ -118,38 +118,38 @@ addCaseForPostgres sync async conn answerId f patterns e = do
                             (fId, toText (patternsToBuilder patterns), toText (expToBuilderDB e))
 
 saveContinuationPostgres :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> Konts' -> IO ()
-saveContinuationPostgres sync async conn answerId (CallKont funEnv f workspaceId k) = do
+saveContinuationPostgres sync async conn answerId (CallKont funEnv f versionId k) = do
     let !fId = nameToId answerId f
     async $ do
         withTransaction conn $ do
             -- TODO: XXX This will probably need to change to an INSERT OR REPLACE (or maybe an INSERT OR IGNORE) if we just
             -- naively have revisits update the answer and automation.
-            execute conn "INSERT INTO Continuations ( workspaceId, function, next ) VALUES (?, ?, ?) \
-                         \ON CONFLICT (workspaceId, function) DO UPDATE SET next = excluded.next"
-                                (workspaceId, fId, toText (kont1ToBuilderDB k))
+            execute conn "INSERT INTO Continuations ( versionId, function, next ) VALUES (?, ?, ?) \
+                         \ON CONFLICT (versionId, function) DO UPDATE SET next = excluded.next"
+                                (versionId, fId, toText (kont1ToBuilderDB k))
             -- TODO: This isn't storing the full funEnv. Can we rebuild a suitable version anyway, by simply taking
             -- all the ContinuationEnvironments associated with this Workspace?
             -- TODO: This also doesn't store any entries with empty VarEnvs. For now, when I consume funEnv, I'll just assume a
             -- lookup that fails means an empty VarEnv.
-            () <$ executeMany conn "INSERT INTO ContinuationEnvironments ( workspaceId, function, variable, value ) VALUES (?, ?, ?, ?) \
-                                   \ON CONFLICT(workspaceId, function, variable) DO UPDATE SET value = excluded.value"
-                    (map (\(x, v) -> (workspaceId, fId, x, toText (messageToBuilder v))) -- TODO: Do this outside of the critical section.
+            () <$ executeMany conn "INSERT INTO ContinuationEnvironments ( versionId, function, variable, value ) VALUES (?, ?, ?, ?) \
+                                   \ON CONFLICT(versionId, function, variable) DO UPDATE SET value = excluded.value"
+                    (map (\(x, v) -> (versionId, fId, x, toText (messageToBuilder v))) -- TODO: Do this outside of the critical section.
                          (M.toList (maybe M.empty id $ M.lookup f funEnv)))
 
 -- CACHEABLE
 loadContinuationPostgres :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> KontsId' -> IO Konts'
-loadContinuationPostgres sync async conn answerId (workspaceId, f) = do
+loadContinuationPostgres sync async conn answerId (versionId, f) = do
     let !fId = nameToId answerId f
     sync $ do
-        [Only k] <- query conn "SELECT next FROM Continuations WHERE workspaceId = ? AND function = ? LIMIT 1" (workspaceId, fId)
+        [Only k] <- query conn "SELECT next FROM Continuations WHERE versionId = ? AND function = ? LIMIT 1" (versionId, fId)
         -- TODO: Here we just get every VarEnv for every function in the Workspace. I don't know if this is right.
         -- It definitely gets more than we need or than was there when the continuation was saved, but that's harmless.
         -- The issue is if we can have branching continuations within a single Workspace. I'm pretty sure the answer
         -- is "no", at least for now.
-        vars <- query conn "SELECT function, variable, value FROM ContinuationEnvironments WHERE workspaceId = ?" (Only workspaceId)
+        vars <- query conn "SELECT function, variable, value FROM ContinuationEnvironments WHERE versionId = ?" (Only versionId)
         -- TODO: Verify that parseMessageUnsafeDB is the right function to use?
         let !funEnv = M.fromListWith M.union $ map (\(g, x, v) -> (idToName answerId g, M.singleton x (parseMessageUnsafeDB v))) vars
-        return (CallKont funEnv f workspaceId (parseKont1UnsafeDB k))
+        return (CallKont funEnv f versionId (parseKont1UnsafeDB k))
 
 recordStatePostgres :: SyncFunc -> AsyncFunc -> Connection -> ProcessId -> EvalState' -> IO ()
 recordStatePostgres sync async conn processId (varEnv, funEnv, s, e, k) = do {
@@ -164,12 +164,12 @@ recordStatePostgres sync async conn processId (varEnv, funEnv, s, e, k) = do {
     seen <- sync $ do {
         rs <- queryNamed conn "SELECT 1 \
                               \FROM Trace \
-                              \WHERE varEnv = :varEnv AND funEnv = :funEnv AND workspaceId = :workspaceId \
+                              \WHERE varEnv = :varEnv AND funEnv = :funEnv AND versionId = :versionId \
                               \  AND expression = :expression AND continuation = :continuation \
                               \LIMIT 1" [
                                 ":varEnv" := varEnvText,
                                 ":funEnv" := funEnvText,
-                                ":workspaceId" := s,
+                                ":versionId" := s,
                                 ":expression" := expText,
                                 ":continuation" := continuationText];
         return (not (null (rs :: [Only Int64]))) };
@@ -179,7 +179,7 @@ recordStatePostgres sync async conn processId (varEnv, funEnv, s, e, k) = do {
       else do
     -- -}
         async $ do
-            () <$ execute conn "INSERT INTO Trace ( processId, varEnv, funEnv, workspaceId, expression, continuation ) VALUES (?, ?, ?, ?, ?, ?)"
+            () <$ execute conn "INSERT INTO Trace ( processId, varEnv, funEnv, versionId, expression, continuation ) VALUES (?, ?, ?, ?, ?, ?)"
                                 (processId,
                                  varEnvText, -- TODO: Seems like the varEnv will also be in funEnv
                                  funEnvText, -- and so doesn't need to be stored separately.
@@ -191,7 +191,7 @@ recordStatePostgres sync async conn processId (varEnv, funEnv, s, e, k) = do {
 currentStatePostgres :: SyncFunc -> AsyncFunc -> Connection -> ProcessId -> IO EvalState'
 currentStatePostgres sync async conn pId = do
     sync $ do
-        [(varEnv, funEnv, s, e, k)] <- query conn "SELECT varEnv, funEnv, workspaceId, expression, continuation \
+        [(varEnv, funEnv, s, e, k)] <- query conn "SELECT varEnv, funEnv, versionId, expression, continuation \
                                                   \FROM Trace \
                                                   \WHERE processId = ? \
                                                   \ORDER BY t DESC \
@@ -203,7 +203,7 @@ newProcessPostgres sync async conn sessionId = do
     processId <- newProcessId
     async $ do
         withTransaction conn $ do
-            execute conn "INSERT INTO RunQueue (processId) VALUES (?)" (Only processId)
+            execute conn "INSERT INTO RunQueue ( processId ) VALUES (?)" (Only processId)
             () <$ execute conn "INSERT INTO SessionProcesses ( sessionId, processId ) VALUES (?, ?)" (sessionId, processId)
     return processId
 
@@ -221,32 +221,32 @@ terminatePostgres sync async conn processId = do
         () <$ execute conn "DELETE FROM RunQueue WHERE processId = ?" (Only processId)
 
 addContinuationArgumentPostgres :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> KontsId' -> Int -> Value -> IO AddContinuationResult
-addContinuationArgumentPostgres sync async conn answerId (workspaceId, f) argNumber v = do
+addContinuationArgumentPostgres sync async conn answerId (versionId, f) argNumber v = do
     let !fId = nameToId answerId f
     let !vText = toText (messageToBuilder v)
     async $ do
         {-
         vs <- queryNamed conn "SELECT value \
                               \FROM ContinuationArguments \
-                              \WHERE workspaceId = :workspaceId AND function = :function AND argNumber = :argNumber \
+                              \WHERE versionId = :versionId AND function = :function AND argNumber = :argNumber \
                               \LIMIT 1" [
-                            ":workspaceId" := workspaceId,
+                            ":versionId" := versionId,
                             ":function" := fId,
                             ":argNumber" := argNumber]
         case vs of
             [] -> do
         -}
                 -- TODO: Can remove the 'OR REPLACE' if the other code is uncommented.
-                () <$ execute conn "INSERT INTO ContinuationArguments ( workspaceId, function, argNumber, value ) VALUES (?, ?, ?, ?) \
-                                   \ON CONFLICT (workspaceId, function, argNumber) DO UPDATE SET value = excluded.value"
-                                    (workspaceId, fId, argNumber, vText)
+                () <$ execute conn "INSERT INTO ContinuationArguments ( versionId, function, argNumber, value ) VALUES (?, ?, ?, ?) \
+                                   \ON CONFLICT (versionId, function, argNumber) DO UPDATE SET value = excluded.value"
+                                    (versionId, fId, argNumber, vText)
                 -- return NEW
         {-
             [Only v'] | vText == v' -> return SAME
                       | otherwise -> do -- TODO: Formulate an approach that doesn't involve in-place updates.
                             executeNamed conn "UPDATE ContinuationArguments SET value = :value \
-                                              \WHERE workspaceId =  :workspaceId AND function = :function AND argNumber = :argNumber" [
-                                                ":workspaceId" := workspaceId,
+                                              \WHERE versionId =  :versionId AND function = :function AND argNumber = :argNumber" [
+                                                ":versionId" := versionId,
                                                 ":function" := fId,
                                                 ":argNumber" := argNumber,
                                                 ":value" := vText]
@@ -256,12 +256,12 @@ addContinuationArgumentPostgres sync async conn answerId (workspaceId, f) argNum
 
 -- NOT CACHEABLE
 continuationArgumentsPostgres :: SyncFunc -> AsyncFunc -> Connection -> FunctionId -> KontsId' -> IO (Konts', [Value])
-continuationArgumentsPostgres sync async conn answerId kId@(workspaceId, f) = do
+continuationArgumentsPostgres sync async conn answerId kId@(versionId, f) = do
     let !fId = nameToId answerId f
     vs <- sync $ do
         vals <- query conn "SELECT value \
                            \FROM ContinuationArguments \
-                           \WHERE workspaceId = ? AND function = ? \
-                           \ORDER BY argNumber ASC" (workspaceId, fId)
+                           \WHERE versionId = ? AND function = ? \
+                           \ORDER BY argNumber ASC" (versionId, fId)
         return $ map (\(Only v) -> parseMessageUnsafeDB v) vals
     fmap (\k -> (k, vs)) $ loadContinuationPostgres sync async conn answerId kId

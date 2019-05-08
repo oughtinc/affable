@@ -19,13 +19,14 @@ import Text.Megaparsec ( parseMaybe ) -- megaparsec
 import Message ( Message(..), Pointer, PointerEnvironment, PointerRemapping,
                  canonicalizeMessage, normalizeMessage, generalizeMessage, boundPointers, stripLabel, renumberMessage' )
 import Util ( parseUUID, uuidToBuilder )
-import Workspace ( Workspace(..), WorkspaceId )
+import Time ( LogicalTime )
+import Workspace ( Workspace(..), VersionId, WorkspaceId )
 
 data Event
     = Create Message -- ask
     | Answer Message -- reply
     | Expand Pointer -- view
-    | Send WorkspaceId Message -- send
+    | Send VersionId Message -- send
     | Submit -- wait
     | Init
   deriving ( Eq, Ord, Show )
@@ -43,22 +44,25 @@ type AsyncFunc = IO () -> IO ()
 
 data SchedulerContext extra = SchedulerContext {
     doAtomically :: SyncFunc,
-    createInitialWorkspace :: Message -> IO WorkspaceId,
+    createInitialWorkspace :: Message -> IO VersionId,
     newSession :: Maybe SessionId -> IO SessionId,
-    createWorkspace :: UserId -> WorkspaceId -> Message -> Message -> IO WorkspaceId,
-    sendAnswer :: UserId -> WorkspaceId -> Message -> IO (),
-    sendMessage :: UserId -> WorkspaceId -> WorkspaceId -> Message -> IO (),
-    expandPointer :: UserId -> WorkspaceId -> Pointer -> IO (),
+    newVersion :: VersionId -> IO (VersionId, LogicalTime),
+    createWorkspace :: UserId -> VersionId -> Message -> Message -> IO (VersionId, WorkspaceId, LogicalTime),
+    sendAnswer :: UserId -> VersionId -> Message -> IO (),
+    sendMessage :: UserId -> VersionId -> VersionId -> Message -> IO (),
+    expandPointer :: UserId -> VersionId -> Pointer -> IO (),
     nextPointer :: IO Pointer,
     createPointers :: PointerEnvironment -> IO (),
     remapPointers :: PointerRemapping -> IO (),
-    pendingQuestions :: WorkspaceId -> IO [WorkspaceId],
-    getWorkspace :: WorkspaceId -> IO Workspace,
-    getNextWorkspace :: IO (Maybe WorkspaceId),
+    pendingQuestions :: VersionId -> IO [VersionId],
+    getWorkspace :: VersionId -> IO Workspace,
+    workspaceIdOf :: VersionId -> IO WorkspaceId, -- TODO: This can probably be handled in a better way.
+    getNextWorkspace :: IO (Maybe VersionId),
     dereference :: Pointer -> IO Message,
-    reifyWorkspace :: WorkspaceId -> IO Message,
+    reifyWorkspace :: VersionId -> IO Message,
     extraContent :: extra -- This is to support making schedulers that can (e.g.) access SQLite directly.
   }
+
 
 normalize :: SchedulerContext extra -> Message -> IO Message
 normalize ctxt msg = do
@@ -122,12 +126,14 @@ makeSingleUserScheduler :: SchedulerContext extra -> IO SchedulerFn
 makeSingleUserScheduler ctxt = do
     let scheduler userId workspace (Create msg) = do
             msg' <- normalize ctxt msg
-            newWorkspaceId <- createWorkspace ctxt userId (identity workspace) msg msg'
-            Just <$> getWorkspace ctxt newWorkspaceId
+            (vId, _) <- newVersion ctxt (identity workspace)
+            (childVId, _, _) <- createWorkspace ctxt userId vId msg msg'
+            Just <$> getWorkspace ctxt childVId
 
         scheduler userId workspace (Answer msg) = do
             msg <- normalize ctxt msg
-            sendAnswer ctxt userId (identity workspace) msg
+            (vId, _) <- newVersion ctxt (identity workspace)
+            sendAnswer ctxt userId vId msg
             mNewWorkspaceId <- getNextWorkspace ctxt
             case mNewWorkspaceId of
                 Just newWorkspaceId -> Just <$> getWorkspace ctxt newWorkspaceId
@@ -135,11 +141,13 @@ makeSingleUserScheduler ctxt = do
 
         scheduler userId workspace (Send ws msg) = do
             msg <- normalize ctxt msg
-            sendMessage ctxt userId (identity workspace) ws msg
+            (vId, _) <- newVersion ctxt (identity workspace)
+            sendMessage ctxt userId vId ws msg
             Just <$> getWorkspace ctxt (identity workspace)
 
         scheduler userId workspace (Expand ptr) = do
-            expandPointer ctxt userId (identity workspace) ptr
+            (vId, _) <- newVersion ctxt (identity workspace)
+            expandPointer ctxt userId vId ptr
             Just <$> getWorkspace ctxt (identity workspace)
 
         scheduler userId workspace Submit = return $ Just workspace
@@ -149,32 +157,33 @@ makeSingleUserScheduler ctxt = do
     return scheduler
 
 -- TODO: This could also be done in a way to better reuse existing pointers rather than make new pointers.
--- TODO: Should the expanded pointers be indicated some way?
-workspaceToMessage :: M.Map WorkspaceId Workspace -> WorkspaceId -> Message
-workspaceToMessage workspaces workspaceId = go (M.lookup workspaceId workspaces)
-    where go (Just workspace) | null subQs && null msgs = Structured [Text "Question: ", question workspace]
+-- TODO: XXX Should the expanded pointers be indicated some way? Yes.
+workspaceToMessage :: M.Map VersionId Workspace -> VersionId -> Message
+workspaceToMessage workspaces versionId = go (M.lookup versionId workspaces)
+    where go (Just workspace) | null subQs && null msgs = Structured (Text "Question: ":question workspace:prevs)
                               | null subQs = Structured (Text "Question: "
                                                         : question workspace
                                                         : Text " Messages: 1. "
-                                                        : msgs)
+                                                        : (msgs ++ prevs))
                               | null msgs = Structured (Text "Question: "
                                                        : question workspace
                                                        : Text " Subquestions: 1. "
-                                                       : subQs)
+                                                       : (subQs ++ prevs))
                               | otherwise =  Structured (Text "Question: "
                                                         : question workspace
                                                         : Text " Messages: 1. "
                                                         : msgs
                                                         ++ (Text " Subquestions: 1. "
-                                                           : subQs))
-            where subQs = goSub 1 (subQuestions workspace)
+                                                           : (subQs ++ prevs)))
+            where prevs = maybe [] (\vId -> [Text " Previous: ", workspaceToMessage workspaces vId]) $ previousVersion workspace
+                  subQs = goSub 1 (subQuestions workspace)
                   msgs = goMsg 1 (messageHistory workspace)
                   goSub !i [] = []
                   goSub i ((_, _, Nothing):qs) = goSub i qs
                   goSub 1 ((wsId, _, Just a):qs) -- To avoid [Text "...", Text "..."]
-                    = go (M.lookup wsId workspaces):Text " Answer:":a:goSub 2 qs
+                    = go (M.lookup wsId workspaces):Text " Answer: ":a:goSub 2 qs
                   goSub i ((wsId, _, Just a):qs)
-                    = Text (fromString (' ':show i ++ ". ")):go (M.lookup wsId workspaces):Text " Answer:":a:goSub (i+1) qs
+                    = Text (fromString (' ':show i ++ ". ")):go (M.lookup wsId workspaces):Text " Answer: ":a:goSub (i+1) qs
                   goMsg !i [] = []
                   goMsg 1 (m:ms) = m:goMsg 2 ms
                   goMsg i (m:ms) = Text (fromString (' ':show i ++ ". ")):m:goMsg (i+1) ms
