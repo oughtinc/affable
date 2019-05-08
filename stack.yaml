@@ -43,7 +43,7 @@ extra-deps:
 # Override default flag values for local packages and extra-deps
 flags:
     direct-sqlite:
-        systemlib: true
+        systemlib: false
 
 # Extra package databases containing global packages
 # extra-package-dbs: []
