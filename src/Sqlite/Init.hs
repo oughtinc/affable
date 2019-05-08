@@ -113,7 +113,9 @@ snapshotSqlite conn = do
             subquestions <- query_ conn "SELECT d.versionId, q.versionId, qw.questionAsAsked, a.answer \
                                         \FROM WorkspaceVersions d \
                                         \INNER JOIN WorkspaceVersions p ON p.workspaceId = d.workspaceId AND p.logicalTime <= d.logicalTime \
-                                        \INNER JOIN WorkspaceVersions q ON q.parentWorkspaceVersionId = p.versionId \
+                                        \INNER JOIN ( \
+                                        \   SELECT q.*, RANK() OVER (PARTITION BY q.workspaceId ORDER BY q.logicalTime DESC) AS ranking \
+                                        \   FROM WorkspaceVersions q) q ON q.parentWorkspaceVersionId = p.versionId AND q.ranking = 1 \
                                         \INNER JOIN Workspaces qw ON qw.id = q.workspaceId \
                                         \LEFT OUTER JOIN Answers a ON q.versionId = a.versionId \
                                         \ORDER BY p.versionId ASC, q.logicalTime DESC"
@@ -122,6 +124,7 @@ snapshotSqlite conn = do
                                     \INNER JOIN WorkspaceVersions v ON v.workspaceId = d.workspaceId AND v.logicalTime <= d.logicalTime \
                                     \INNER JOIN ExpandedPointers e ON e.versionId = v.versionId \
                                     \INNER JOIN Pointers p ON e.pointerId = p.id"
+
             let messageMap = M.fromListWith (++) $ map (\(i, m) -> (versionIdFromText i, [parseMessageUnsafe m])) messages
                 subquestionsMap = M.fromListWith (++) $
                                     map (\(i, qId, q, ma) ->

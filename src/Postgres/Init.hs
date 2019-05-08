@@ -102,7 +102,8 @@ snapshotPostgres conn = do
                 runQueueS = fmap (M.fromList . map (\p -> (p, case lookup p trace of Just s -> s))) running,
                 sessionsS = sessions }
   where allWorkspaces = do
-            workspaces <- query_ conn "SELECT v.versionId, v.workspaceId, v.parentWorkspaceVersionId, v.previousVersion, v.logicalTime, w.questionAsAnswered \
+            workspaces <- query_ conn "SELECT v.versionId, v.workspaceId, v.parentWorkspaceVersionId, v.previousVersion, \
+                                      \       v.logicalTime, w.questionAsAnswered \
                                       \FROM WorkspaceVersions v \
                                       \INNER JOIN Workspaces w ON w.id = v.workspaceId"
             messages <- query_ conn "SELECT m.targetWorkspaceVersionId, m.content \
@@ -111,7 +112,10 @@ snapshotPostgres conn = do
                                     \ORDER BY v.logicalTime ASC"
             subquestions <- query_ conn "SELECT p.versionId, q.versionId, q.questionAsAsked, q.answer \
                                         \FROM WorkspaceVersions p \
-                                        \CROSS JOIN subquestionsAsOf(p.versionId) q \
+                                        \CROSS JOIN LATERAL ( \
+                                        \   SELECT q.*, RANK() OVER (PARTITION BY q.workspaceId ORDER BY q.logicalTime DESC) AS ranking \
+                                        \   FROM subquestionsAsOf(p.versionId) q) q \
+                                        \WHERE q.ranking = 1 \
                                         \ORDER BY p.versionId ASC, q.logicalTime DESC"
             expanded <- query_ conn "SELECT e.versionId, e.pointerId, p.content \
                                     \FROM WorkspaceVersions v \
