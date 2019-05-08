@@ -79,25 +79,28 @@ reifyWorkspaceSqlite sync async c conn versionId = do
                                 \INNER JOIN Messages m ON m.targetWorkspaceVersionId = tgt.versionId \
                                 \WHERE tgt.versionId IN (SELECT id FROM Descendents) \
                                 \ORDER BY tgt.logicalTime ASC"
+        -- TODO: Ensure ordering is correct.
         subquestions <- query_ conn "SELECT d.id, q.versionId, qw.questionAsAsked, a.answer \
                                     \FROM Descendents d \
                                     \INNER JOIN WorkspaceVersions p ON p.workspaceId = d.workspaceId AND p.logicalTime <= d.logicalTime \
-                                    \INNER JOIN WorkspaceVersions q ON q.parentWorkspaceVersionId = p.versionId \
+                                    \INNER JOIN ( \
+                                    \   SELECT q.*, RANK() OVER (PARTITION BY q.workspaceId ORDER BY q.logicalTime DESC) AS ranking \
+                                    \   FROM WorkspaceVersions q) q ON q.parentWorkspaceVersionId = p.versionId AND q.ranking = 1 \
                                     \INNER JOIN Workspaces qw ON qw.id = q.workspaceId \
                                     \LEFT OUTER JOIN Answers a ON q.versionId = a.versionId \
                                     \WHERE p.versionId IN (SELECT id FROM Descendents) \
                                     \ORDER BY p.versionId ASC, q.logicalTime DESC"
-        {-
-        expanded <- query_ conn "SELECT versionId, pointerId, content \
-                                \FROM ExpandedPointers e \
+        expanded <- query_ conn "SELECT d.id, e.pointerId, p.content \
+                                \FROM Descendents d \
+                                \INNER JOIN WorkspaceVersions v ON v.workspaceId = d.workspaceId AND v.logicalTime <= d.logicalTime \
+                                \INNER JOIN ExpandedPointers e ON e.versionId = v.versionId \
                                 \INNER JOIN Pointers p ON e.pointerId = p.id \
-                                \WHERE versionId IN (SELECT id FROM Descendents)"
-        -}
+                                \WHERE v.versionId IN (SELECT id FROM Descendents)"
         let messageMap = M.fromListWith (++) $ map (\(i, m) -> (versionIdFromText i, [parseMessageUnsafe m])) messages
             subquestionsMap = M.fromListWith (++) $
                                 map (\(i, qId, q, ma) ->
                                         (versionIdFromText i, [(versionIdFromText qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
-            expandedMap = M.empty -- M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
+            expandedMap = M.fromListWith M.union $ map (\(i, p, m) -> (versionIdFromText i, M.singleton p (parseMessageUnsafe' p m))) expanded
         return $ M.fromList $ map (\(i, wsId, p, pv, t, q) -> let !vId = versionIdFromText i
                                                               in (vId, Workspace {
                                                                         identity = vId,

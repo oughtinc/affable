@@ -77,19 +77,21 @@ reifyWorkspacePostgres sync async c conn versionId = do
                                 \FROM Descendents d \
                                 \CROSS JOIN messagesAsOf(d.id) m \
                                 \ORDER BY d.logicalTime ASC"
+        -- TODO: Ensure ordering is correct.
         subquestions <- query_ conn "SELECT d.id, q.versionId, q.questionAsAsked, q.answer \
                                     \FROM Descendents d \
-                                    \CROSS JOIN subquestionsAsOf(d.id) q \
+                                    \CROSS JOIN LATERAL ( \
+                                    \   SELECT q.*, RANK() OVER (PARTITION BY q.workspaceId ORDER BY q.logicalTime DESC) AS ranking \
+                                    \   FROM subquestionsAsOf(d.id) q) q \
+                                    \WHERE q.ranking = 1 \
                                     \ORDER BY d.id ASC, q.logicalTime DESC"
-        {-
-        expanded <- query_ conn "SELECT e.versionId, e.pointerId, p.content \
+        expanded <- query_ conn "SELECT d.id, e.pointerId, p.content \
                                 \FROM Descendents d \
-                                \CROSS JOIN expandedPointersAsOf(d.versionId) e \
+                                \CROSS JOIN expandedPointersAsOf(d.id) e \
                                 \INNER JOIN Pointers p ON e.pointerId = p.id"
-        -}
         let messageMap = M.fromListWith (++) $ map (\(i, m) -> (i, [parseMessageUnsafe m])) messages
             subquestionsMap = M.fromListWith (++) $ map (\(i, qId, q, ma) -> (i, [(qId, parseMessageUnsafe q, fmap parseMessageUnsafeDB ma)])) subquestions
-            expandedMap = M.empty -- M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
+            expandedMap = M.fromListWith M.union $ map (\(i, p, m) -> (i, M.singleton p (parseMessageUnsafe' p m))) expanded
         return $ M.fromList $ map (\(i, wsId, p, pv, t, q) -> (i, Workspace {
                                                                     identity = i,
                                                                     workspaceIdentity = wsId,
