@@ -157,33 +157,44 @@ makeSingleUserScheduler ctxt = do
     return scheduler
 
 -- TODO: This could also be done in a way to better reuse existing pointers rather than make new pointers.
--- TODO: XXX Should the expanded pointers be indicated some way? Yes.
+-- TODO: There's an "extra" version that corresponds to replying. Since answers aren't part of workspaces but
+-- rather their parents, it would be good to either skip that extra version or include answers for the workspace's
+-- question as part of the reflected structure.
 workspaceToMessage :: M.Map VersionId Workspace -> VersionId -> Message
 workspaceToMessage workspaces versionId = go (M.lookup versionId workspaces)
-    where go (Just workspace) | null subQs && null msgs = Structured (Text "Question: ":question workspace:prevs)
+    where go (Just workspace) | null subQs && null msgs = Structured (Text "Question: ":question workspace:ptrs++prevs)
                               | null subQs = Structured (Text "Question: "
                                                         : question workspace
                                                         : Text " Messages: 1. "
-                                                        : (msgs ++ prevs))
+                                                        : (msgs ++ ptrs ++ prevs))
                               | null msgs = Structured (Text "Question: "
                                                        : question workspace
                                                        : Text " Subquestions: 1. "
-                                                       : (subQs ++ prevs))
+                                                       : (subQs ++ ptrs ++ prevs))
                               | otherwise =  Structured (Text "Question: "
                                                         : question workspace
                                                         : Text " Messages: 1. "
                                                         : msgs
                                                         ++ (Text " Subquestions: 1. "
-                                                           : (subQs ++ prevs)))
+                                                           : (subQs ++ ptrs ++ prevs)))
             where prevs = maybe [] (\vId -> [Text " Previous: ", workspaceToMessage workspaces vId]) $ previousVersion workspace
+                  ptrs | M.null (expandedPointers workspace) = []
+                       | otherwise = [Text " Expanded Pointers: ", Structured (map Reference (M.keys (expandedPointers workspace)))]
+                       -- TODO: Should probably intersperse commas or something here --^
                   subQs = goSub 1 (subQuestions workspace)
                   msgs = goMsg 1 (messageHistory workspace)
+                  subQVersion wsId ma = do -- Clean this up.
+                    w <- M.lookup wsId workspaces
+                    case ma of
+                        Nothing -> return w
+                        _ -> maybe (return w) Just (do wsId' <- previousVersion w; M.lookup wsId' workspaces)
+                          -- ^-- This skips the latest version of the subquestion which corresponds to the version where an answer
+                          --     was attached and thus looks identical to its previous version. Primitives are an exception.
                   goSub !i [] = []
-                  goSub i ((_, _, Nothing):qs) = goSub i qs
-                  goSub 1 ((wsId, _, Just a):qs) -- To avoid [Text "...", Text "..."]
-                    = go (M.lookup wsId workspaces):Text " Answer: ":a:goSub 2 qs
-                  goSub i ((wsId, _, Just a):qs)
-                    = Text (fromString (' ':show i ++ ". ")):go (M.lookup wsId workspaces):Text " Answer: ":a:goSub (i+1) qs
+                  goSub 1 ((wsId, _, ma):qs) -- To avoid [Text "...", Text "..."]
+                    = go (subQVersion wsId ma):maybe (goSub 2 qs) (\a -> Text " Answer: ":a:goSub 2 qs) ma
+                  goSub i ((wsId, _, ma):qs)
+                    = Text (fromString (' ':show i ++ ". ")):go (subQVersion wsId ma):maybe (goSub (i+1) qs) (\a -> Text " Answer: ":a:goSub (i+1) qs) ma
                   goMsg !i [] = []
                   goMsg 1 (m:ms) = m:goMsg 2 ms
                   goMsg i (m:ms) = Text (fromString (' ':show i ++ ". ")):m:goMsg (i+1) ms
