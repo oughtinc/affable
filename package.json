@@ -4,7 +4,7 @@
   "description": "",
   "main": "workspace.js",
   "dependencies": {
-    "axios": "^0.18.0",
+    "axios": "^0.18.1",
     "downshift": "^3.2.6",
     "immutable": "^4.0.0-rc.12",
     "match-sorter": "^2.3.0",
@@ -23,7 +23,7 @@
     "rollup-plugin-node-builtins": "^2.1.2",
     "rollup-plugin-node-globals": "^1.4.0",
     "rollup-plugin-node-resolve": "^4.0.1",
-    "rollup-plugin-typescript2": "^0.19.3",
+    "rollup-plugin-typescript2": "^0.21.1",
     "ts-jest": "^24.0.0",
     "typedoc": "^0.14.2",
     "typescript": "^3.2.4"
