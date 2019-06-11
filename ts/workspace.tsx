@@ -144,9 +144,8 @@ function mappingFromMessage(mapping: Mapping /* mutable */, expansion: Expansion
     }
 }
 
-function mappingFromWorkspace(mapping: Mapping /* mutable */, workspace: Workspace): void {
+function mappingFromWorkspace(mapping: Mapping /* mutable */, workspace: Workspace, seen = Set<Pointer>().asMutable()): void {
     const expansion = workspace.expandedPointers;
-    const seen = Set<Pointer>().asMutable();
     mappingFromMessage(mapping, expansion, workspace.question, seen);
     workspace.subQuestions.forEach(q => {
         const answer = q[2];
@@ -741,39 +740,26 @@ class ScriptUser {
             const workspaceSession = response.data;
             if(workspaceSession === null) return null;
             const sessionId = workspaceSession[2]; // workspaceSession[3];
-            /*
-            const expandedPointers: {[ptr: number]: Message} = {}; //workspaceSession[2];
-            const ep: Array<[Pointer, Message]> = [];
-            for(const k in expandedPointers) {
-                const p = parseInt(k, 10);
-                ep.push([p, expandedPointers[p]]);
-            }
-            const expansion = Map<Pointer, Message>(ep).withMutations(tm => {
-                bindings(tm, ws.question);
-                ws.subQuestions.forEach(qa => {
-                    bindings(tm, qa[1]);
-                    const answer = qa[2];
-                    if(answer !== null) bindings(tm, answer);
-                });
-            });
-            const ws2: Workspace = {
-                identity: ws.identity,
-                expandedPointers: expansion,
-                question: ws.question,
-                subQuestions: List(ws.subQuestions)
-            };
-            const mapping = Map<Pointer, Pointer>().withMutations(tm => mappingFromWorkspace(tm, ws2));
-            const invMapping = mapping.mapEntries(entry => [entry[1], entry[0]]);
-            */
             const user = new ScriptUser(
                                 this.userId,
                                 sessionId,
                                 Map<Pointer, Message>(), // expansion,
-                                Set<string>(), // TODO: Prepopulate expandedOccurrences somehow.
+                                Set<string>(),
                                 Map<Pointer, Pointer>(), // mapping,
                                 Map<Pointer, Pointer>()); // invMapping);
             return [user, workspaceSession[0], workspaceSession[1]] as [ScriptUser, string, any]; // TODO: Why is the cast necessary?
         });
+    }
+
+    scavengeWorkspace(ws: Workspace, ...ms: Array<Message>): ScriptUser {
+            const expansion = this.expandedPointers;
+            const seen = Set<Pointer>().asMutable();
+            const mapping = Map<Pointer, Pointer>().withMutations(tm => {
+                mappingFromWorkspace(tm, ws, seen);
+                ms.forEach(m => mappingFromMessage(tm, expansion, m, seen));
+            });
+            const invMapping = mapping.mapEntries(entry => [entry[1], entry[0]]);
+            return new ScriptUser(this.userId, this.sessionId, expansion, this.expandedOccurrences, mapping, invMapping);
     }
 }
 
@@ -1129,25 +1115,49 @@ getJoin(localStorage.userId).then(joinResponse => {
                 sqs = List<[null, Message, Message|null]>(List(sqsU).map(([x, y]) => [null, x, y] as [null, Message, Message|null]));
             }
             const ep = Map<Pointer, Message>();
-            return <JudgeComponent user={u} finish={finish}
+            const ha = p.honest_answer as Message;
+            const ma = p.malicious_answer as Message;
+            const ws: Workspace = { // just a dummy to reuse mappingFromWorkspace HACK
+                identity: 0,
+                expandedPointers: ep,
+                question: p.question,
+                subQuestions: sqs
+            };
+            const u2 = u.scavengeWorkspace(ws, ha, ma);
+            return <JudgeComponent user={u2} finish={finish}
                                  question={p.question}
                                  subQuestions={sqs}
-                                 honestAnswer={p.honest_answer as Message}
-                                 maliciousAnswer={p.malicious_answer as Message}
+                                 honestAnswer={ha}
+                                 maliciousAnswer={ma}
                                  expandedPointers={ep} />;
         },
         'honest_template': (u: ScriptUser, finish: (u: ScriptUser) => void, p: FEData) => {
             const ep = Map<Pointer, Message>();
-            return <ExpertComponent user={u} finish={finish} label="Honest"
+            const ws: Workspace = { // just a dummy to reuse mappingFromWorkspace
+                identity: 0,
+                expandedPointers: ep,
+                question: p.question,
+                subQuestions: List()
+            };
+            const u2 = u.scavengeWorkspace(ws);
+            return <ExpertComponent user={u2} finish={finish} label="Honest"
                                  question={p.question}
                                  honestAnswer={null}
                                  expandedPointers={ep} />;
         },
         'malicious_template': (u: ScriptUser, finish: (u: ScriptUser) => void, p: FEData) => {
             const ep = Map<Pointer, Message>();
-            return <ExpertComponent user={u} finish={finish} label="Malicious"
+            const ws: Workspace = { // just a dummy to reuse mappingFromWorkspace HACK
+                identity: 0,
+                expandedPointers: ep,
+                question: p.question,
+                subQuestions: List()
+            };
+            const ha = p.honest_answer as Message;
+            const u2 = u.scavengeWorkspace(ws, ha);
+            return <ExpertComponent user={u2} finish={finish} label="Malicious"
                                  question={p.question}
-                                 honestAnswer={p.honest_answer as Message}
+                                 honestAnswer={ha}
                                  expandedPointers={ep} />;
         }
     }
