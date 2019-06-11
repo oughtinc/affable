@@ -37,6 +37,25 @@ export function postNext(body: [{userId: string}, string | null]): Promise<Fetch
     });
 }
 
+// Is there a better type than object to represent a JSON object?
+export function postNextInteraction(body: [{userId: string}, string | null]): Promise<FetchResult<[string, object, string]>>
+{
+  return axios({ url: '/nextInteraction'
+    , method: 'post'
+    , data: body
+    , responseType: 'json'
+    });
+}
+
+export function postInteract(body: [{userId: string}, string, object]): Promise<FetchResult<Result<void>>>
+{
+  return axios({ url: '/interact'
+    , method: 'post'
+    , data: body
+    , responseType: 'json'
+    });
+}
+
 export function getJoin(userId: string | undefined): Promise<FetchResult<{userId: string}>>
 {
   return axios({ url: '/join' + (userId === void(0) ? '' : '?userId=' + encodeURIComponent(userId))

@@ -6,7 +6,7 @@ import Downshift, { StateChangeOptions, ControllerStateAndHelpers } from 'downsh
 
 import { Mapping, Expansion, Message, Workspace, Either, Result, Pointer } from './types';
 import { messageParser } from './parser';
-import { postView, postReply, postWait, postNext, getCompletions, getJoin, getPointer } from './command-api';
+import { postView, postReply, postWait, postNext, postNextInteraction, postInteract, getCompletions, getJoin, getPointer } from './command-api';
 
 /* PEG.js parser input
 Top "message"
@@ -669,10 +669,490 @@ class MainComponent extends React.Component<MainProps, MainState> {
     };
 }
 
+/* Scripting stuff ********************************************************************************************************************/
+
+class ScriptUser {
+    constructor(private readonly userId: string,
+                readonly sessionId: string | null,
+                readonly expandedPointers: Expansion = Map<Pointer, Message>(),
+                readonly expandedOccurrences = Set<string>(),
+                readonly mapping: Mapping = Map<Pointer, Pointer>(),
+                private readonly inverseMapping: Mapping = Map<Pointer, Pointer>()) { }
+
+    private postProcess(r: Result<void>): Result<ScriptUser> {
+        switch(r.tag) {
+            case 'OK':
+                return {tag: 'OK' as 'OK', contents: new ScriptUser(this.userId, this.sessionId)};
+            case 'Error':
+            default:
+                return {tag: 'Error' as 'Error'};
+         }
+    }
+
+    prepareMessage(msg: Message): Message {
+        let msg2: Message | null = null;
+        this.inverseMapping.withMutations(im => { msg2 = renumberMessage(im, msg)[0]; })
+        if(msg2 === null) throw "ScriptUser.prepareMessage: something's wrong";
+        return msg2;
+    }
+
+    reply(m: object): Promise<Result<ScriptUser>> {
+        const sessId = this.sessionId;
+        if(sessId === null) throw 'ScriptUser.reply: null session ID';
+        return postInteract([{userId:this.userId}, sessId, m]).then(r => this.postProcess(r.data));
+    }
+
+    view(ptr: Pointer, path: string): Promise<Result<ScriptUser>> {
+        const expansion = this.expandedPointers;
+        const occurrences = this.expandedOccurrences;
+
+        if(expansion.has(ptr)) { // unlocked
+            const user = new ScriptUser(
+                                this.userId,
+                                this.sessionId,
+                                expansion,
+                                occurrences.has(path) ? occurrences.delete(path) : occurrences.add(path),
+                                this.mapping,
+                                this.inverseMapping);
+            return new Promise((resolve, reject) => resolve({tag: 'OK' as 'OK', contents: user}));
+        } else {
+            return getPointer(ptr).then(r => {
+                const msg: Message | null = r.data;
+                if(msg !== null) {
+                    const mapping = this.mapping.withMutations(tm => mappingFromMessage(tm, expansion, msg, Set<Pointer>().asMutable()));
+                    const invMapping = mapping.mapEntries(entry => [entry[1], entry[0]]);
+                    const user = new ScriptUser(
+                                        this.userId,
+                                        this.sessionId,
+                                        expansion.set(ptr, msg),
+                                        occurrences.add(path),
+                                        mapping,
+                                        invMapping);
+                    return {tag: 'OK' as 'OK', contents: user};
+                }
+                return {tag: 'Error' as 'Error'};
+            });
+        }
+    }
+
+    next(): Promise<[ScriptUser, string, any] | null> {
+        return postNextInteraction([{userId: this.userId}, this.sessionId]).then(response => {
+            // response.data = [templateId, templateData, /*expandedPointers,*/ sessionId]
+            const workspaceSession = response.data;
+            if(workspaceSession === null) return null;
+            const sessionId = workspaceSession[2]; // workspaceSession[3];
+            /*
+            const expandedPointers: {[ptr: number]: Message} = {}; //workspaceSession[2];
+            const ep: Array<[Pointer, Message]> = [];
+            for(const k in expandedPointers) {
+                const p = parseInt(k, 10);
+                ep.push([p, expandedPointers[p]]);
+            }
+            const expansion = Map<Pointer, Message>(ep).withMutations(tm => {
+                bindings(tm, ws.question);
+                ws.subQuestions.forEach(qa => {
+                    bindings(tm, qa[1]);
+                    const answer = qa[2];
+                    if(answer !== null) bindings(tm, answer);
+                });
+            });
+            const ws2: Workspace = {
+                identity: ws.identity,
+                expandedPointers: expansion,
+                question: ws.question,
+                subQuestions: List(ws.subQuestions)
+            };
+            const mapping = Map<Pointer, Pointer>().withMutations(tm => mappingFromWorkspace(tm, ws2));
+            const invMapping = mapping.mapEntries(entry => [entry[1], entry[0]]);
+            */
+            const user = new ScriptUser(
+                                this.userId,
+                                sessionId,
+                                Map<Pointer, Message>(), // expansion,
+                                Set<string>(), // TODO: Prepopulate expandedOccurrences somehow.
+                                Map<Pointer, Pointer>(), // mapping,
+                                Map<Pointer, Pointer>()); // invMapping);
+            return [user, workspaceSession[0], workspaceSession[1]] as [ScriptUser, string, any]; // TODO: Why is the cast necessary?
+        });
+    }
+}
+
+interface TemplateProps<D> {
+    userId: string,
+    sessionId: string | null,
+    templates: {[template: string]: (user: ScriptUser, finish: (u: ScriptUser) => void, props: D) => JSX.Element},
+}
+
+interface Finisher {
+    user: ScriptUser,
+    finish: (user: ScriptUser) => void
+}
+
+interface TemplateState<D> {
+    user: ScriptUser,
+    template: [string, D] | null
+}
+
+class TemplateComponent<D, S> extends React.Component<TemplateProps<D>, TemplateState<D>> {
+    state: TemplateState<D>;
+
+    constructor(props: TemplateProps<D>) {
+        super(props);
+        this.state = {user: new ScriptUser(props.userId, props.sessionId), template: null};
+    }
+
+    nextClick = (evt: React.MouseEvent) => {
+        return this.state.user.next().then(r => {
+            if(r === null) {
+                // Do nothing but probably want to tell the user that.
+            } else {
+                this.setState({user: r[0], template: [r[1], r[2] as D]});
+            }
+        });
+    };
+
+    pointerClick = (evt: React.MouseEvent) => {
+        const target = evt.target as HTMLElement | null;
+        if(target !== null && (target.classList.contains('unexpanded') || target.classList.contains('expanded'))) {
+            this.state.user.view(parseInt(target.dataset.original as string, 10), target.dataset.path as string).then(r => {
+                if(r.tag === 'OK') {
+                    this.setState({user: r.contents});
+                } else {
+                    console.log(r);
+                }
+            });
+            evt.preventDefault();
+        } else {
+            // Let it propagate.
+        }
+    };
+
+    render() {
+        // TODO: Replace all this.
+        const template = this.state.template;
+        if(template === null) {
+            return <div className="nextContainer"><ButtonComponent label="Next" onClick={this.nextClick} /></div>;
+        } else {
+            const templateId = template[0];
+            const sessionId = this.state.user.sessionId;
+            location.hash = sessionId === null ? '' : '#' + sessionId;
+
+            const component = this.props.templates[templateId];
+            if(component === void(0)) throw 'Unknown template: '+templateId;
+
+            return <div className="templateContainer" onClick={this.pointerClick}>{
+                    component(this.state.user, (u: ScriptUser) => this.setState({user: u, template: null}), template[1])
+                   }</div>;
+        }
+    }
+}
+
+interface RQAProps extends Finisher {
+    expandedPointers: Expansion,
+    question: Message,
+    subQuestions: List<[null, Message, Message|null]>
+}
+
+interface RQAData {
+    question: Message,
+    subQuestions?: Array<[Message, Message|null]>
+}
+
+interface RQAState {
+    completions: List<Message>,
+    askInputText: string | null,
+    replyInputText: string
+}
+
+class RQAComponent extends React.Component<RQAProps, RQAState> {
+    state: RQAState;
+
+    constructor(props: RQAProps) {
+        super(props);
+        this.state = {completions: List<Message>(), askInputText: '', replyInputText: ''};
+    }
+
+    askStateChange = (changes: StateChangeOptions<string>) => {
+        if(changes.hasOwnProperty('selectedItem')) {
+            this.setState({askInputText: changes.selectedItem as string | null});
+        } else if(changes.hasOwnProperty('inputValue')) {
+            this.setState({askInputText: changes.inputValue as string | null});
+        }
+    }
+
+    replyInputChange = (evt: React.ChangeEvent) => {
+        const target = evt.target as HTMLInputElement;
+        this.setState({replyInputText: target.value});
+    };
+
+    render() {
+        const askInputText = this.state.askInputText;
+        const completions = this.state.completions;
+        const user = this.props.user;
+        const ctxtProps = {
+            mapping: user.mapping,
+            expansion: user.expandedPointers,
+            expandedOccurrences: user.expandedOccurrences};
+        return <div className="mainContainer">
+                   <QuestionComponent {...ctxtProps} question={this.props.question} />
+                   <div className="subQuestions cell">
+                       {this.props.subQuestions.map((q, i) => // Using index-based keying is reasonable here.
+                            <SubQuestionComponent key={i} index={i} {...ctxtProps} question={q[1]} answer={q[2]} />)}
+                   </div>
+                   <NewQuestionComponent
+                    selectedValue={askInputText}
+                    completions={completions}
+                    onStateChange={this.askStateChange}
+                    onClick={this.askClick} />
+                   <ReplyComponent inputText={this.state.replyInputText} onClick={this.replyClick} onChange={this.replyInputChange} />
+               </div>;
+    }
+
+    askClick = (evt: React.MouseEvent) => {
+        const askInputText = this.state.askInputText;
+        if(askInputText === null) return;
+        const q = messageParser(askInputText);
+        this.props.user.reply({tag: 'Questions', contents: [q]}).then(r => {
+            if(r.tag === 'OK') {
+                this.setState(state => { return {completions: addCompletion(state.completions, q), askInputText: ''}; });
+                const user = r.contents;
+                this.props.finish(user);
+            } else {
+                console.log(r);
+            }
+        });
+    };
+
+    replyClick = (evt: React.MouseEvent) => {
+        const msg = messageParser(this.state.replyInputText);
+        this.props.user.reply({tag: 'Answer', contents: this.props.user.prepareMessage(msg)}).then(r => {
+            if(r.tag === 'OK') {
+                this.setState({completions: List<Message>(), askInputText: '', replyInputText: ''});
+                this.props.finish(this.props.user);
+            } else {
+                console.log(r);
+            }
+        });
+    };
+
+    /*
+    waitClick = (evt: React.MouseEvent) => {
+        this.props.user.reply({tag: 'Questions', contents: []}).then(r => { // TODO: If we start pending questions again.
+            if(r.tag === 'OK') {
+                this.setState({completions: List<Message>(), askInputText: '', replyInputText: ''});
+                this.props.finish(this.props.user);
+            } else {
+                console.log(r);
+            }
+        });
+    };
+    */
+}
+
+interface FEProps extends Finisher {
+    expandedPointers: Expansion,
+    question: Message
+}
+
+interface ExpertProps extends FEProps {
+    honestAnswer: Message | null
+}
+
+interface JudgeProps extends ExpertProps {
+    subQuestions: List<[null, Message, Message|null]>
+    maliciousAnswer: Message | null
+}
+
+interface FEData {
+    question: Message,
+    subQuestions?: Array<[Message, Message|null]>,
+    honest_answer?: Message,
+    malicious_answer?: Message
+}
+
+interface JudgeState {
+    completions: List<Message>,
+    askInputText: string | null
+}
+
+interface ExpertState {
+    replyInputText: string
+}
+
+class JudgeComponent extends React.Component<JudgeProps, JudgeState> {
+    state: JudgeState;
+
+    constructor(props: JudgeProps) {
+        super(props);
+        this.state = {completions: List<Message>(), askInputText: ''};
+    }
+
+    askStateChange = (changes: StateChangeOptions<string>) => {
+        if(changes.hasOwnProperty('selectedItem')) {
+            this.setState({askInputText: changes.selectedItem as string | null});
+        } else if(changes.hasOwnProperty('inputValue')) {
+            this.setState({askInputText: changes.inputValue as string | null});
+        }
+    }
+
+    render() {
+        const askInputText = this.state.askInputText;
+        const completions = this.state.completions;
+        const user = this.props.user;
+        const ctxtProps = {
+            mapping: user.mapping,
+            expansion: user.expandedPointers,
+            expandedOccurrences: user.expandedOccurrences};
+        // TODO: In reality, we'd want to randomly reorder the honest and malicious answers.
+        const ha = this.props.honestAnswer as Message;
+        const ma = this.props.maliciousAnswer as Message;
+        return <div className="mainContainer">
+                   <QuestionComponent {...ctxtProps} question={this.props.question} />
+                   <MessageComponent {...ctxtProps} message={ha} path="honest" />
+                   <MessageComponent {...ctxtProps} message={ma} path="malicious" />
+                   <div className="subQuestions cell">
+                       {this.props.subQuestions.map((q, i) => // Using index-based keying is reasonable here.
+                            <SubQuestionComponent key={i} index={i} {...ctxtProps} question={q[1]} answer={q[2]} />)}
+                   </div>
+                   <NewQuestionComponent
+                    selectedValue={askInputText}
+                    completions={completions}
+                    onStateChange={this.askStateChange}
+                    onClick={this.askClick} />
+                   <ButtonComponent label="First Answer" onClick={this.replyClick(ha)} />
+                   <ButtonComponent label="Second Answer" onClick={this.replyClick(ma)} />
+               </div>;
+    }
+
+    askClick = (evt: React.MouseEvent) => {
+        const askInputText = this.state.askInputText;
+        if(askInputText === null) return;
+        const q = messageParser(askInputText);
+        this.props.user.reply({tag: 'Questions', contents: [q]}).then(r => {
+            if(r.tag === 'OK') {
+                this.setState(state => { return {completions: addCompletion(state.completions, q), askInputText: ''}; });
+                const user = r.contents;
+                this.props.finish(user);
+            } else {
+                console.log(r);
+            }
+        });
+    };
+
+    replyClick = (msg: Message) => (evt: React.MouseEvent) => {
+        this.props.user.reply({tag: 'Answer', contents: this.props.user.prepareMessage(msg)}).then(r => {
+            if(r.tag === 'OK') {
+                this.setState({completions: List<Message>(), askInputText: ''});
+                this.props.finish(this.props.user);
+            } else {
+                console.log(r);
+            }
+        });
+    };
+}
+
+class ExpertComponent extends React.Component<ExpertProps & {label: string}, ExpertState> {
+    state: ExpertState;
+
+    constructor(props: ExpertProps & {label: string}) {
+        super(props);
+        this.state = {replyInputText: ''};
+    }
+
+    replyInputChange = (evt: React.ChangeEvent) => {
+        const target = evt.target as HTMLInputElement;
+        this.setState({replyInputText: target.value});
+    };
+
+    render() {
+        const user = this.props.user;
+        const ctxtProps = {
+            mapping: user.mapping,
+            expansion: user.expandedPointers,
+            expandedOccurrences: user.expandedOccurrences};
+        const ha = this.props.honestAnswer;
+        if(ha === null) {
+            return <div className="mainContainer">
+                       <span>{this.props.label}</span>
+                       <QuestionComponent {...ctxtProps} question={this.props.question} />
+                       <ReplyComponent inputText={this.state.replyInputText} onClick={this.replyClick} onChange={this.replyInputChange} />
+                   </div>;
+        } else {
+            return <div className="mainContainer">
+                       <span>{this.props.label}</span>
+                       <QuestionComponent {...ctxtProps} question={this.props.question} />
+                       <MessageComponent {...ctxtProps} message={ha} path="honest" />
+                       <ReplyComponent inputText={this.state.replyInputText} onClick={this.replyClick} onChange={this.replyInputChange} />
+                   </div>;
+        }
+    }
+
+    replyClick = (evt: React.MouseEvent) => {
+        const msg = messageParser(this.state.replyInputText);
+        this.props.user.reply({tag: 'Answer', contents: this.props.user.prepareMessage(msg)}).then(r => {
+            if(r.tag === 'OK') {
+                this.setState({replyInputText: ''});
+                this.props.finish(this.props.user);
+            } else {
+                console.log(r);
+            }
+        });
+    };
+}
+
+/* End Scripting stuff ****************************************************************************************************************/
+
 const mainDiv: HTMLElement = document.getElementById('main') as HTMLElement;
 getJoin(localStorage.userId).then(joinResponse => {
     const userId = joinResponse.data.userId;
     localStorage.userId = userId;
     const maybeSessionId = location.hash.slice(1);
-    render(<MainComponent userId={userId} sessionId={maybeSessionId === '' ? null : maybeSessionId} />, mainDiv);
+    // render(<MainComponent userId={userId} sessionId={maybeSessionId === '' ? null : maybeSessionId} />, mainDiv);
+    /*
+    const templates: {[template: string]: (u: ScriptUser, finish: (u: ScriptUser) => void, p: RQAData) => JSX.Element} = {
+        'rqa_template': (u: ScriptUser, finish: (u: ScriptUser) => void, p: RQAData) => {
+            const sqsU = p.subQuestions;
+            let sqs = List<[null, Message, Message|null]>();
+            if(sqsU !== void(0)) {
+                sqs = List<[null, Message, Message|null]>(List(sqsU).map(([x, y]) => [null, x, y] as [null, Message, Message|null]));
+            }
+            const ep = Map<Pointer, Message>();
+            return <RQAComponent user={u} finish={finish}
+                                 question={p.question} subQuestions={sqs} expandedPointers={ep} />;
+        }
+    }*/
+    const templates: {[template: string]: (u: ScriptUser, finish: (u: ScriptUser) => void, p: FEData) => JSX.Element} = {
+        'judge_template': (u: ScriptUser, finish: (u: ScriptUser) => void, p: FEData) => {
+            const sqsU = p.subQuestions;
+            let sqs = List<[null, Message, Message|null]>();
+            if(sqsU !== void(0)) {
+                sqs = List<[null, Message, Message|null]>(List(sqsU).map(([x, y]) => [null, x, y] as [null, Message, Message|null]));
+            }
+            const ep = Map<Pointer, Message>();
+            return <JudgeComponent user={u} finish={finish}
+                                 question={p.question}
+                                 subQuestions={sqs}
+                                 honestAnswer={p.honest_answer as Message}
+                                 maliciousAnswer={p.malicious_answer as Message}
+                                 expandedPointers={ep} />;
+        },
+        'honest_template': (u: ScriptUser, finish: (u: ScriptUser) => void, p: FEData) => {
+            const ep = Map<Pointer, Message>();
+            return <ExpertComponent user={u} finish={finish} label="Honest"
+                                 question={p.question}
+                                 honestAnswer={null}
+                                 expandedPointers={ep} />;
+        },
+        'malicious_template': (u: ScriptUser, finish: (u: ScriptUser) => void, p: FEData) => {
+            const ep = Map<Pointer, Message>();
+            return <ExpertComponent user={u} finish={finish} label="Malicious"
+                                 question={p.question}
+                                 honestAnswer={p.honest_answer as Message}
+                                 expandedPointers={ep} />;
+        }
+    }
+    render(<TemplateComponent
+                userId={userId}
+                sessionId={maybeSessionId === '' ? null : maybeSessionId}
+                templates={templates} />, mainDiv);
 }).catch(e => console.log(e));

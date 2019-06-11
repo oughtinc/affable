@@ -4,11 +4,14 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
 module Server where
+import Control.Concurrent ( forkIO ) -- base
 import Control.Concurrent.STM ( atomically ) -- stm
 import Control.Concurrent.STM.TChan ( TChan, newTChanIO, readTChan, writeTChan ) -- stm
 import Control.Concurrent.STM.TMVar ( TMVar, newEmptyTMVarIO, putTMVar, takeTMVar ) -- stm
+import Control.Monad ( forever ) -- base
 import Control.Monad.IO.Class ( liftIO ) -- base
-import Data.Aeson ( ToJSON, FromJSON ) -- aeson
+import Data.Aeson ( ToJSON, FromJSON, Value, Result, fromJSON, toJSON ) -- aeson
+import qualified Data.Aeson as Aeson ( Result(..) ) -- aeson
 import Data.Bifunctor ( second ) -- base
 import Data.Either ( partitionEithers ) -- base
 import Data.IORef ( IORef, newIORef, readIORef, writeIORef, atomicModifyIORef', modifyIORef' ) -- base
@@ -29,7 +32,8 @@ import DatabaseContext ( DatabaseContext(..) )
 import Exp ( Pattern, Name(..), Exp(..) )
 import Message ( Message(..), Pointer, stripLabel )
 import Scheduler ( SessionId, UserId, Event(..), SchedulerFn, SchedulerContext(..),
-                   newUserId, canonicalizeEvents, getWorkspace, createInitialWorkspace, labelMessage, createWorkspace )
+                   newUserId, newSessionId, canonicalizeEvents, getWorkspace, createInitialWorkspace, labelMessage, createWorkspace )
+import Scripting ( Script, TemplateId, RoleId, rqaScript, feScript )
 import Workspace ( Workspace(..), WorkspaceId, VersionId )
 
 data Response = OK | Error T.Text deriving ( Generic )
@@ -51,7 +55,10 @@ type AutoCompleteAPI = "completions" :> Capture "sessionId" SessionId :> Get '[J
 type NextAPI = "next" :> ReqBody '[JSON] (User, Maybe SessionId) :> Post '[JSON] (Maybe (Workspace, SessionId))
 type JoinAPI = "join" :> QueryParam "userId" UserId :> Get '[JSON] User
 
-type API = CommandAPI :<|> NextAPI :<|> JoinAPI :<|> PointerAPI :<|> AutoCompleteAPI
+type InteractAPI = "nextInteraction" :> ReqBody '[JSON] (User, Maybe SessionId) :> Post '[JSON] (Maybe (T.Text, Value, {-PointerEnvironment,-} SessionId))
+              :<|> "interact" :> ReqBody '[JSON] (User, SessionId, Value) :> Post '[JSON] Response
+
+type API = CommandAPI :<|> NextAPI :<|> JoinAPI :<|> PointerAPI :<|> AutoCompleteAPI :<|> InteractAPI
 
 type OverallAPI = StaticAPI :<|> API :<|> Raw
 
@@ -98,20 +105,114 @@ commandHandler reply = viewHandler :<|> replyHandler :<|> waitHandler
             print ("Wait", userId, versionId, msgOrPtrs) -- DELETEME
             OK <$ reply userId versionId (map (either Create Expand) msgOrPtrs ++ [Submit])
 
-overallHandler :: CompletionContext extra
+data ScriptInteraction d r
+    = NextInteraction !UserId !(TMVar (TemplateId, d))
+    | Release !UserId
+    | Wait !UserId !(TMVar r)
+    | Reply !UserId !r
+
+runScript :: (Show r, Show d) => Script (UserId, TChan (TemplateId, d)) d r a
+          -> (a -> IO ())
+          -> IO (UserId -> IO (TemplateId, d), UserId -> r -> IO ())
+runScript script done = do
+    -- TODO: This can be handled better rather than making a thread per user.
+    interactTChan <- newTChanIO
+    userTChan <- newTChanIO
+    let loop !uChans !replies = do
+            r <- atomically $ readTChan interactTChan
+            case r of
+                NextInteraction u mvar -> do
+                    print ("runScript.loop.NextInteraction", u) -- DELETEME
+                    case M.lookup u uChans of
+                        Just uChan -> do
+                            forkIO $ atomically $ do
+                                x <- readTChan uChan
+                                putTMVar mvar x
+                            loop uChans replies
+                        Nothing -> do
+                            uChan <- newTChanIO
+                            atomically $ writeTChan userTChan (u, uChan)
+                            forkIO $ atomically $ do
+                                x <- readTChan uChan
+                                putTMVar mvar x
+                            loop (M.insert u uChan uChans) replies
+                Release u -> do
+                    print ("runScript.loop.Release", u) -- DELETEME
+                    loop (M.delete u uChans) replies
+                Wait u mvar -> do
+                    print ("runScript.loop.Wait", u) -- DELETEME
+                    case M.lookup u replies of
+                        Nothing -> loop uChans (M.insert u (Left mvar) replies)
+                        Just (Right r) -> do
+                            atomically $ putTMVar mvar r
+                            loop uChans (M.delete u replies)
+                Reply u r -> do
+                    print ("runScript.loop.Reply", u, r) -- DELETEME
+                    case M.lookup u replies of
+                        Nothing -> loop uChans (M.insert u (Right r) replies)
+                        Just (Left mvar) -> do
+                            atomically $ putTMVar mvar r
+                            loop uChans (M.delete u replies)
+    forkIO $ loop M.empty M.empty
+    let newUser r = do
+            print ("newUser", r) -- DELETEME
+            atomically $ readTChan userTChan
+        release (u, _) = do
+            print ("release", u) -- DELETEME
+            atomically $ writeTChan interactTChan (Release u)
+        nextInteraction u = do
+            print ("nextInteraction", u) -- DELETEME
+            mvar <- newEmptyTMVarIO
+            atomically $ writeTChan interactTChan (NextInteraction u mvar)
+            atomically $ takeTMVar mvar
+        interact (u, uChan) t d = do
+            print ("interact", u, t, d) -- DELETEME
+            mvar <- newEmptyTMVarIO
+            atomically $ writeTChan interactTChan (Wait u mvar)
+            atomically $ writeTChan uChan (t, d)
+            atomically $ takeTMVar mvar
+        reply u r = do
+            print ("reply", u, r) -- DELETEME
+            atomically $ writeTChan interactTChan (Reply u r)
+    forkIO $ forever (script newUser release interact >>= done)
+    return (nextInteraction, reply)
+
+fromResult :: Result a -> a
+fromResult (Aeson.Error e) = error e
+fromResult (Aeson.Success a) = a
+
+fromJSON' :: (FromJSON r) => Value -> r
+fromJSON' = fromResult . fromJSON
+
+interactHandler :: (ToJSON d, FromJSON r) => (UserId -> IO (TemplateId, d)) -> (UserId -> r -> IO ()) -> Server InteractAPI
+interactHandler nextInteraction reply = nextInteractionHandler :<|> interactionHandler
+    where nextInteractionHandler (User userId, mSessionId) = liftIO $ do
+            print ("NextInteraction", userId, mSessionId) -- DELETEME
+            sessionId <- case mSessionId of Nothing -> newSessionId; Just sessId -> return sessId
+            (t, d) <- nextInteraction userId
+            return (Just (t, toJSON d, sessionId))
+          interactionHandler (User userId, sessionId, r) = liftIO $ do
+            print ("Interact", userId, sessionId, r) -- DELETEME
+            OK <$ reply userId (fromJSON' r)
+
+overallHandler :: (ToJSON d, FromJSON r)
+               => CompletionContext extra
                -> (Maybe UserId -> IO User)
                -> (User -> Maybe SessionId -> IO (Maybe (VersionId, SessionId)))
                -> (Pointer -> IO Message)
                -> (VersionId -> IO Workspace)
                -> (UserId -> VersionId -> [Event] -> IO ())
+               -> (UserId -> IO (TemplateId, d))
+               -> (UserId -> r -> IO ())
                -> Server OverallAPI
-overallHandler compCtxt makeUser nextWorkspace deref lookupWorkspace reply
+overallHandler compCtxt makeUser nextWorkspace deref lookupWorkspace reply nextInteraction interactReply
     = staticHandler
  :<|> (commandHandler reply
  :<|> nextHandler lookupWorkspace nextWorkspace
  :<|> joinHandler makeUser
  :<|> pointerHandler deref
- :<|> autoCompleteHandler compCtxt)
+ :<|> autoCompleteHandler compCtxt
+ :<|> interactHandler nextInteraction interactReply)
  :<|> return (\req respond -> do
                 let !(Just host) = requestHeaderHost req
                 respond (responseBuilder found302 [("Location", "https://" <> host <> "/static/index.html")] mempty))
@@ -251,4 +352,7 @@ initServer dbCtxt = do
 
     compCtxt <- makeCompletionContext dbCtxt ctxt
 
-    return $ serve (Proxy :: Proxy OverallAPI) (overallHandler compCtxt makeUser nextWorkspace (dereference ctxt) (getWorkspace ctxt) replyFromUser)
+    -- (nextInteraction, interactReply) <- runScript (rqaScript ctxt (Text "What is your question?")) print -- TODO
+    (nextInteraction, interactReply) <- runScript (feScript ctxt (Text "What is your question?")) print -- TODO
+
+    return $ serve (Proxy :: Proxy OverallAPI) (overallHandler compCtxt makeUser nextWorkspace (dereference ctxt) (getWorkspace ctxt) replyFromUser nextInteraction interactReply)
